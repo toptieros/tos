@@ -1,0 +1,620 @@
+/* Per-process address spaces.
+ *
+ * Every task gets its own PML4. The top two regions are shared by all tasks:
+ *
+ *   PML4[511] -> the higher-half kernel (one set of tables, made by vmm_init)
+ *   PML4[0]   -> per-process: low-identity direct map (kernel, US=0) in pd[0]
+ *                plus this task's own user window (US=1) in pd[2]
+ *
+ * Because each task has its own user page table backed by its own physical
+ * frames, two tasks mapping the same user virtual address see different memory.
+ * The low 2 MiB identity map is replicated into every PML4 so the kernel can
+ * always reach VGA / page-table frames whichever task's CR3 is loaded.
+ */
+#include "vmm.h"
+#include "fs.h"
+#include "ata.h"
+#include "console.h"
+#include "syscall.h"
+#include "cpu.h"
+#include "spinlock.h"
+#include <stdint.h>
+
+/* Guards the physical frame allocator (next_frame bump + free list). Most callers
+ * also hold sched_lock, but window surfaces are allocated from the syscall layer
+ * without it, so the allocator serialises itself. */
+static spinlock_t frame_lock = SPINLOCK_INIT;
+
+#define P    0x1
+#define W    0x2
+#define U    0x4
+#define HUGE 0x80
+
+#define GiB            0x40000000ULL
+#define KERNEL_VMA     0xFFFFFFFF80000000ULL  /* higher-half base (see linker.ld) */
+#define KERNEL_PHYS    0x200000      /* where the bootloader put the kernel */
+#define USER_STACK_PAGES 16          /* 64 KiB stack, just below the data page    */
+
+/* The kernel identity-maps ALL of physical RAM (2 MiB huge pages) so it can reach
+ * any frame it hands out; the frame pool is that whole span minus the kernel image
+ * and the 2 MiB user-window slot (which is per-process, not identity). The RAM
+ * size is read from QEMU's fw_cfg at init (`vmm_init`), so the pool scales to the
+ * machine -- no fixed cap. `ident_top` is the top of mapped RAM (2 MiB-aligned),
+ * `ident_pds` the number of page directories it spans (one per GiB), built into
+ * every address space's low half. IDENT_MIN is a floor if fw_cfg is unavailable. */
+#define IDENT_MIN      0x2000000ULL  /* 32 MiB floor */
+#define WINDOW_LO      0x400000ULL   /* user window virtual slot (USER_VBASE) ... */
+#define WINDOW_HI      0x600000ULL   /* ... not identity-mapped, so skip in the pool */
+
+static uint64_t ident_top  = IDENT_MIN;   /* top of identity-mapped RAM (set in vmm_init) */
+static int      ident_pds  = 1;           /* page directories the low map spans (1/GiB)   */
+static int      fb_pdpt_slot = 1;         /* pdpt_low slot for the on-demand user FB map  */
+static uint64_t user_fb_vaddr = GiB;      /* = fb_pdpt_slot GiB; placed just above all RAM */
+
+/* Window surfaces (shared between an app and the compositor) live in their own
+ * PDPT slot, just past the framebuffer slot. Each window id gets a fixed
+ * SURF_SLOT_BYTES vaddr window inside it; the same physical frames are mapped
+ * here in both the owning app and the compositor (4 KiB pages, US=1). */
+#define SURF_SLOT_BYTES 0x800000ULL       /* 8 MiB of vaddr per window (<=2048 pages)  */
+static int      surf_pdpt_slot = 2;
+static uint64_t surf_base = 2 * GiB;
+
+/* Anonymous mappings (SYS_MMAP): private RAM a task asks for at runtime -- the
+ * compositor's full-screen back buffer, a userspace heap arena, etc. They start
+ * just past the surface slot and GROW UPWARD across PDPT slots on demand (each
+ * task bumps its own brk), so the size is bounded only by RAM, never by a fixed
+ * vaddr window. Freed (frames and all) when the address space dies. */
+static int      anon_pdpt_slot = 3;
+static uint64_t anon_base = 3 * GiB;
+
+extern char __bss_end[];             /* end of the kernel image (virtual; linker.ld) */
+
+/* upt[] indices for the user window (USER_VBASE = 0x400000 -> pt index 0). The
+ * window is 512 pages (2 MiB). Layout: code/data/bss at the bottom, the stack
+ * just below the role/data page at the very top, with a large unmapped gap in
+ * between (a stack overflow grows down, away from both code and data). */
+#define UPT_DATA_IDX   511                              /* 0x5FF000 == USER_DATA_VADDR */
+#define UPT_STACK_HI   UPT_DATA_IDX                      /* exclusive top of the stack  */
+#define UPT_STACK_LO   (UPT_STACK_HI - USER_STACK_PAGES) /* 495 -> 0x5EF000             */
+
+/* Loadable segments may fill the user window from USER_VBASE up to the stack
+ * region -- the program is bounded by the window (~1.9 MiB), not a fixed buffer. */
+#define USER_SEG_LIMIT (USER_VBASE + UPT_STACK_LO * 0x1000ULL)    /* 0x5EF000 */
+
+/* Just enough ELF64 to load a static executable. */
+struct elf64_ehdr {
+    uint8_t  e_ident[16];
+    uint16_t e_type, e_machine;
+    uint32_t e_version;
+    uint64_t e_entry, e_phoff, e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx;
+};
+struct elf64_phdr {
+    uint32_t p_type, p_flags;
+    uint64_t p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align;
+};
+#define PT_LOAD     1
+#define ET_EXEC     2
+#define EM_X86_64   62
+
+/* Physical-page allocator over free RAM in the first 2 MiB (kernel lives at
+ * 2 MiB). Bumps a pointer for fresh frames and keeps a free list of reclaimed
+ * ones, so exited tasks return their page tables to the pool. */
+#define PHYS_MASK 0x000ffffffffff000ULL   /* page-frame bits of a PTE */
+
+/* The frame pool is the identity-mapped low memory [0x100000, IDENT_TOP), minus
+ * two reserved regions the bump pointer steps over: the kernel image (at
+ * KERNEL_PHYS) and the 2 MiB user-window slot at [WINDOW_LO, WINDOW_HI) (which is
+ * per-process, not identity-mapped, so frames can't live there). It panics
+ * rather than scribbling on the kernel when it runs dry. Reclaimed frames come
+ * back via the free list. */
+static uint64_t next_frame = 0x100000;
+static uint64_t shared_pdpt_high;    /* physical addr, shared kernel mapping */
+static uint64_t free_list = 0;       /* phys addr of head, 0 if empty */
+
+/* Framebuffer geometry, captured at init so SYS_FBINFO can map it on demand. */
+static int      fb_present = 0;
+static uint64_t fb_phys_base;
+static uint32_t fb_width, fb_height, fb_pitch;
+
+static uint64_t kernel_phys_end(void) {
+    uint64_t end = (uint64_t)__bss_end - KERNEL_VMA + KERNEL_PHYS;
+    return (end + 0xfff) & ~0xfffULL;                 /* page-aligned */
+}
+
+static uint64_t *frame_alloc(void) {
+    uint64_t lf = spin_lock_irqsave(&frame_lock);
+    uint64_t f;
+    if (free_list) {
+        f = free_list;
+        free_list = *(volatile uint64_t *)f;
+    } else {
+        for (;;) {                                    /* step over reserved regions */
+            if (next_frame >= KERNEL_PHYS && next_frame < kernel_phys_end())
+                next_frame = kernel_phys_end();
+            else if (next_frame >= WINDOW_LO && next_frame < WINDOW_HI)
+                next_frame = WINDOW_HI;
+            else break;
+        }
+        if (next_frame >= ident_top) {
+            console_puts("[kernel] PANIC: out of physical frames\r\n");
+            for (;;) __asm__ volatile("cli; hlt");
+        }
+        f = next_frame;
+        next_frame += 0x1000;
+    }
+    spin_unlock_irqrestore(&frame_lock, lf);
+    uint64_t *p = (uint64_t *)f;     /* identity-mapped, so virt == phys */
+    for (int i = 0; i < 512; i++)
+        p[i] = 0;
+    return p;
+}
+
+static void frame_free(uint64_t f) {
+    uint64_t lf = spin_lock_irqsave(&frame_lock);
+    *(volatile uint64_t *)f = free_list;
+    free_list = f;
+    spin_unlock_irqrestore(&frame_lock, lf);
+}
+
+/* Allocate `n` physically-contiguous, zeroed frames from the bump pointer
+ * (stepping over the reserved regions as a block). Multi-page kernel stacks need
+ * this -- they must be virtually contiguous, and here virt == phys. 0 on OOM. */
+static uint64_t frame_alloc_contig(int n) {
+    uint64_t need = (uint64_t)n * 0x1000;
+    uint64_t lf = spin_lock_irqsave(&frame_lock);
+    uint64_t base;
+    for (;;) {
+        uint64_t end;
+        base = next_frame; end = base + need;
+        if (end > ident_top) { spin_unlock_irqrestore(&frame_lock, lf); return 0; }
+        if (base < kernel_phys_end() && end > KERNEL_PHYS) { next_frame = kernel_phys_end(); continue; }
+        if (base < WINDOW_HI && end > WINDOW_LO)           { next_frame = WINDOW_HI;        continue; }
+        next_frame = end;
+        break;
+    }
+    spin_unlock_irqrestore(&frame_lock, lf);
+    for (uint64_t f = base; f < base + need; f += 0x1000) {     /* zero outside the lock */
+        uint64_t *p = (uint64_t *)f;
+        for (int i = 0; i < 512; i++) p[i] = 0;
+    }
+    return base;
+}
+
+/* Kernel stacks come from the frame pool, not a fixed .bss array, so the number
+ * of tasks scales with RAM rather than a compile-time cap. */
+uint64_t vmm_alloc_kstack(void)        { return frame_alloc_contig(KSTACK_SZ / 0x1000); }
+void     vmm_free_kstack(uint64_t base) {
+    if (!base) return;
+    for (uint64_t f = base; f < base + KSTACK_SZ; f += 0x1000) frame_free(f);
+}
+
+/* Total RAM in bytes, from QEMU's fw_cfg (key FW_CFG_RAM_SIZE = 0x0003, an LE
+ * uint64). Falls back to the floor if the value looks unavailable/insane, so the
+ * pool always covers at least IDENT_MIN. */
+#define FW_CFG_SELECT    0x510
+#define FW_CFG_DATA      0x511
+#define FW_CFG_RAM_SIZE  0x0003
+static uint64_t detect_ram(void) {
+    outw(FW_CFG_SELECT, FW_CFG_RAM_SIZE);
+    uint64_t ram = 0;
+    for (int i = 0; i < 8; i++) ram |= (uint64_t)inb(FW_CFG_DATA) << (i * 8);
+    if (ram < IDENT_MIN || ram > 512ULL * GiB) ram = IDENT_MIN;   /* sanity */
+    return ram & ~0x1fffffULL;                                    /* 2 MiB-aligned */
+}
+
+/* Build a per-process low-half identity map covering [0, ident_top): `ident_pds`
+ * page directories (one per GiB) of 2 MiB huge pages (kernel-only, US=0), linked
+ * into pdpt_low[0..ident_pds-1] (US=1 so the user window inside pd[0] is
+ * reachable). Returns the first PD, which carries the user-window slot at [2]. */
+static uint64_t *build_low_map(uint64_t *pdpt_low) {
+    uint64_t *pd0 = 0;
+    uint64_t pdes = ident_top / 0x200000ULL;          /* total 2 MiB huge pages */
+    for (int pd = 0; pd < ident_pds; pd++) {
+        uint64_t *pdt = frame_alloc();                /* zeroed: unused entries stay absent */
+        for (int i = 0; i < 512; i++) {
+            uint64_t idx = (uint64_t)pd * 512 + i;
+            if (idx < pdes) pdt[i] = idx * 0x200000ULL | P | W | HUGE;
+        }
+        pdpt_low[pd] = (uint64_t)pdt | P | W | U;
+        if (pd == 0) pd0 = pdt;
+    }
+    return pd0;
+}
+
+void vmm_init(struct boot_info *bi) {
+    ident_top = detect_ram();
+    ident_pds = (int)((ident_top + GiB - 1) / GiB);   /* one PD per GiB (>=1)      */
+    fb_pdpt_slot  = ident_pds;                        /* first PDPT slot past RAM  */
+    user_fb_vaddr = (uint64_t)fb_pdpt_slot * GiB;
+    surf_pdpt_slot = ident_pds + 1;                   /* window surfaces go past the FB slot */
+    surf_base      = (uint64_t)surf_pdpt_slot * GiB;
+    anon_pdpt_slot = ident_pds + 2;                   /* anonymous mmap region grows from here up */
+    anon_base      = (uint64_t)anon_pdpt_slot * GiB;
+
+    uint64_t *pd_high = frame_alloc();
+    pd_high[0] = KERNEL_PHYS | P | W | HUGE;          /* 0xFF..80000000 -> 2 MiB */
+
+    uint64_t *pdpt_high = frame_alloc();
+    pdpt_high[510] = (uint64_t)pd_high | P | W;       /* kernel */
+
+    /* map the framebuffer at FB_VBASE (PDPT index 511) so it lives in the
+     * shared higher half and stays mapped across per-process CR3 switches */
+    if (bi->console == BOOT_CONSOLE_FB) {
+        uint64_t fb_aligned = bi->fb_phys & ~0x1fffffULL;
+        uint64_t *pd_fb = frame_alloc();
+        for (int i = 0; i < 8; i++)                   /* 16 MiB window */
+            pd_fb[i] = (fb_aligned + (uint64_t)i * 0x200000) | P | W | HUGE;
+        pdpt_high[511] = (uint64_t)pd_fb | P | W;
+        fb_present  = 1;                              /* remember for SYS_FBINFO */
+        fb_phys_base = bi->fb_phys;
+        fb_width = bi->width; fb_height = bi->height; fb_pitch = bi->pitch;
+    }
+
+    /* map the Local APIC MMIO page (phys 0xFEE00000) into the shared higher half
+     * at LAPIC_VBASE (PDPT_high[509]), cache-disabled -- every CPU reaches its own
+     * LAPIC through this one mapping regardless of the active CR3. */
+    uint64_t *pd_apic = frame_alloc();
+    pd_apic[0] = 0xFEE00000ULL | P | W | HUGE | 0x10 /*PCD*/;
+    pdpt_high[509] = (uint64_t)pd_apic | P | W;
+
+    shared_pdpt_high = (uint64_t)pdpt_high;
+
+    uint64_t pool = (ident_top - 0x100000)
+                  - (kernel_phys_end() - KERNEL_PHYS)
+                  - (WINDOW_HI - WINDOW_LO);
+    console_puts("[kernel] frame pool: ");
+    console_putdec(pool / 0x1000);
+    console_puts(" frames (");
+    console_putdec(ident_top / (1024 * 1024));
+    console_puts(" MiB RAM identity-mapped)\r\n");
+}
+
+/* A bare kernel address space: the shared higher half plus the low-2-MiB
+ * direct map, with no user window. Used by the ring-0 idle task. */
+uint64_t vmm_kernel_pml4(void) {
+    uint64_t *pml4     = frame_alloc();
+    uint64_t *pdpt_low = frame_alloc();
+
+    pml4[0]   = (uint64_t)pdpt_low | P | W;
+    pml4[511] = shared_pdpt_high   | P | W;
+    build_low_map(pdpt_low);                           /* identity-map all RAM, no user window */
+    return (uint64_t)pml4;
+}
+
+/* Map (allocating a zeroed frame on first touch) the user page containing
+ * `vaddr` and return its identity-mapped physical address for the kernel to
+ * write through. `vaddr` must lie in the code window [USER_VBASE, limit). */
+static uint8_t *user_page(uint64_t *upt, uint64_t vaddr) {
+    uint32_t idx = (uint32_t)((vaddr - USER_VBASE) >> 12);
+    if (!(upt[idx] & P))
+        upt[idx] = (uint64_t)frame_alloc() | P | W | U;
+    return (uint8_t *)(upt[idx] & PHYS_MASK);
+}
+
+/* Stream `len` file bytes (at offset `foff` within the program file whose first
+ * disk sector is `base_lba`) into the user address space at vaddr `va` -- no
+ * whole-file buffer, so program size is bounded by the window, not a fixed
+ * scratch. Reads up to 8 sectors per disk op and writes a page at a time.
+ * Returns 0, or -1 on a disk error. */
+static int load_bytes(uint64_t *upt, uint32_t base_lba, uint32_t foff,
+                      uint64_t va, uint32_t len) {
+    uint8_t buf[4096];                              /* 8-sector bounce */
+    while (len) {
+        uint32_t soff = foff & 511;                 /* byte offset into the first sector */
+        uint32_t want = soff + len;                 /* bytes needed from that sector's start */
+        uint32_t secs = want > sizeof buf ? sizeof buf / 512 : (want + 511) / 512;
+        if (ata_read(base_lba + foff / 512, (uint8_t)secs, buf) < 0) return -1;
+        uint32_t chunk = secs * 512 - soff;         /* usable bytes this round */
+        if (chunk > len) chunk = len;
+        for (uint32_t i = 0; i < chunk; ) {         /* copy per page, not per byte */
+            uint8_t *pg = user_page(upt, va);
+            uint32_t poff = (uint32_t)(va & 0xfff);
+            uint32_t run  = 0x1000 - poff;
+            if (run > chunk - i) run = chunk - i;
+            for (uint32_t j = 0; j < run; j++) pg[poff + j] = buf[soff + i + j];
+            i  += run;
+            va += run;
+        }
+        foff += chunk; len -= chunk;
+    }
+    return 0;
+}
+
+/* Create a fresh address space and load the named ELF program into it. The ELF
+ * header + program headers are read first; each PT_LOAD segment is then streamed
+ * straight from disk to its p_vaddr (the gap up to p_memsz stays zero, giving
+ * .bss). Segments may fill the user window up to the stack (~1.9 MiB). A private
+ * stack and data page round it out. Returns the PML4 phys addr and the entry
+ * point in *entry; 0 on failure (no such file, bad/oversized ELF, disk error). */
+uint64_t vmm_create_user(const char *prog, uint64_t *entry) {
+    const struct tosfs_ent *e = fs_find(prog);
+    if (!e || e->size < sizeof(struct elf64_ehdr)) return 0;
+    uint32_t lba0 = fs_base_lba() + e->start_lba;      /* partition-relative -> disk LBA */
+
+    /* read the header + program headers (first <=4 KiB; our static binaries keep
+     * the phdrs right after the ehdr, well inside this) */
+    uint8_t hdr[4096];
+    uint32_t hbytes = e->size < sizeof(hdr) ? e->size : sizeof(hdr);
+    if (ata_read(lba0, (uint8_t)((hbytes + 511) / 512), hdr) < 0) return 0;
+
+    const struct elf64_ehdr *eh = (const struct elf64_ehdr *)hdr;
+    if (eh->e_ident[0] != 0x7f || eh->e_ident[1] != 'E' ||
+        eh->e_ident[2] != 'L'  || eh->e_ident[3] != 'F') return 0;
+    if (eh->e_ident[4] != 2) return 0;                 /* ELFCLASS64 */
+    if (eh->e_type != ET_EXEC || eh->e_machine != EM_X86_64) return 0;
+    if (eh->e_phentsize < sizeof(struct elf64_phdr)) return 0;
+    if (eh->e_phoff + (uint64_t)eh->e_phnum * eh->e_phentsize > sizeof(hdr)) return 0;
+
+    /* Validate every PT_LOAD segment up front, before allocating anything, so a
+     * malformed/oversized ELF fails without leaking page-table frames. */
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+        const struct elf64_phdr *ph =
+            (const struct elf64_phdr *)(hdr + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+        if (ph->p_vaddr < USER_VBASE) return 0;
+        if (ph->p_vaddr + ph->p_memsz > USER_SEG_LIMIT) return 0;   /* must fit the window */
+        if (ph->p_offset + ph->p_filesz > e->size) return 0;
+    }
+
+    uint64_t *pml4     = frame_alloc();
+    uint64_t *pdpt_low = frame_alloc();
+    uint64_t *upt      = frame_alloc();
+
+    pml4[0]   = (uint64_t)pdpt_low | P | W | U;
+    pml4[511] = shared_pdpt_high   | P | W;             /* shared kernel */
+    uint64_t *pd_low = build_low_map(pdpt_low);         /* identity-map all RAM */
+    pd_low[2] = (uint64_t)upt | P | W | U;              /* user window @ 0x400000 overrides 4..6 MiB */
+
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+        const struct elf64_phdr *ph =
+            (const struct elf64_phdr *)(hdr + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+        for (uint64_t v = ph->p_vaddr; v < ph->p_vaddr + ph->p_memsz; v += 0x1000)
+            user_page(upt, v);                          /* allocate (zeroed) the whole segment */
+        if (load_bytes(upt, lba0, (uint32_t)ph->p_offset,  /* fill the file-backed part */
+                       ph->p_vaddr, (uint32_t)ph->p_filesz) < 0) {
+            vmm_destroy_user((uint64_t)pml4);           /* disk error: reclaim everything */
+            return 0;
+        }
+    }
+
+    for (int i = UPT_STACK_LO; i < UPT_STACK_HI; i++)       /* multi-page stack */
+        upt[i] = (uint64_t)frame_alloc() | P | W | U;
+    uint64_t *data = frame_alloc();
+    upt[UPT_DATA_IDX] = (uint64_t)data | P | W | U;
+
+    /* seed this task's private data page with its program name (argv0-ish) */
+    char *d = (char *)data;
+    int i = 0;
+    while (prog[i]) { d[i] = prog[i]; i++; }
+    d[i] = 0;
+
+    *entry = eh->e_entry;
+    return (uint64_t)pml4;
+}
+
+/* Map the GOP framebuffer into the *calling* process (its CR3 is live) at
+ * USER_FB_VADDR with US=1, in its own PDPT slot, and fill *out with the geometry
+ * and the user pointer to pixel (0,0). Idempotent. Returns 0, or -1 on a
+ * text-mode boot (no framebuffer). `out` is a pointer in the caller's space. */
+int vmm_map_user_fb(struct fbinfo *out) {
+    if (!fb_present) { out->present = 0; return -1; }
+
+    uint64_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    uint64_t *pml4 = (uint64_t *)(cr3 & PHYS_MASK);
+    uint64_t *pdpt = (uint64_t *)(pml4[0] & PHYS_MASK);
+
+    if (!(pdpt[fb_pdpt_slot] & P)) {                   /* first call: build the mapping */
+        uint64_t fb_aligned = fb_phys_base & ~0x1fffffULL;
+        uint64_t *pd = frame_alloc();
+        for (int i = 0; i < 8; i++)                    /* 16 MiB window, user-accessible */
+            pd[i] = (fb_aligned + (uint64_t)i * 0x200000) | P | W | U | HUGE;
+        pdpt[fb_pdpt_slot] = (uint64_t)pd | P | W | U;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");   /* flush TLB */
+    }
+
+    out->present = 1;
+    out->width   = fb_width;
+    out->height  = fb_height;
+    out->pitch   = fb_pitch;
+    out->vaddr   = user_fb_vaddr + (fb_phys_base & 0x1fffffULL);
+    return 0;
+}
+
+/* --- window surfaces (shared memory between an app and the compositor) ----- *
+ * A surface is a run of contiguous frames. The same frames are mapped (US=1,
+ * 4 KiB pages) into both the owner and the compositor at vmm_surface_vaddr(id),
+ * so each draws/reads the same pixels through its own page tables. */
+uint64_t vmm_ram_bytes(void)            { return ident_top; }
+void vmm_fb_size(uint32_t *w, uint32_t *h) { *w = fb_width; *h = fb_height; }
+uint64_t vmm_surface_vaddr(int id)      { return surf_base + (uint64_t)id * SURF_SLOT_BYTES; }
+uint64_t vmm_current_pml4(void) {
+    uint64_t cr3; __asm__ volatile("mov %%cr3, %0" : "=r"(cr3)); return cr3 & PHYS_MASK;
+}
+void vmm_flush_self(void) {
+    uint64_t cr3; __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
+uint64_t vmm_alloc_surface(int nframes) { return frame_alloc_contig(nframes); }
+void vmm_free_surface(uint64_t base, int nframes) {
+    for (int i = 0; i < nframes; i++) frame_free(base + (uint64_t)i * 0x1000);
+}
+
+/* Map a single 4 KiB user page into address space `pml4_phys`, creating the PDPT
+ * slot's PD and the PT on demand. The surface slot is separate from the huge-page
+ * identity map, so its PD holds ordinary 4 KiB PTs. */
+static void map_page_user(uint64_t pml4_phys, uint64_t vaddr, uint64_t phys) {
+    uint64_t *pml4 = (uint64_t *)pml4_phys;
+    uint64_t *pdpt = (uint64_t *)(pml4[0] & PHYS_MASK);
+    int i3 = (vaddr >> 30) & 0x1ff, i2 = (vaddr >> 21) & 0x1ff, i1 = (vaddr >> 12) & 0x1ff;
+    if (!(pdpt[i3] & P)) pdpt[i3] = (uint64_t)frame_alloc() | P | W | U;
+    uint64_t *pd = (uint64_t *)(pdpt[i3] & PHYS_MASK);
+    if (!(pd[i2] & P)) pd[i2] = (uint64_t)frame_alloc() | P | W | U;
+    uint64_t *pt = (uint64_t *)(pd[i2] & PHYS_MASK);
+    pt[i1] = phys | P | W | U;
+}
+
+/* Map a surface's frames into `pml4_phys` at vmm_surface_vaddr(id). Caller must
+ * flush the TLB (vmm_flush_self) if pml4_phys is the live CR3. Returns the vaddr. */
+uint64_t vmm_map_surface(uint64_t pml4_phys, int id, uint64_t phys_base, int nframes) {
+    uint64_t v = vmm_surface_vaddr(id);
+    for (int i = 0; i < nframes; i++)
+        map_page_user(pml4_phys, v + (uint64_t)i * 0x1000, phys_base + (uint64_t)i * 0x1000);
+    return v;
+}
+
+/* Clear a surface's PTEs in `pml4_phys` (used when a window is removed). Leaves
+ * the PT/PD frames in place; they are reclaimed when the address space dies. */
+void vmm_unmap_surface(uint64_t pml4_phys, int id, int nframes) {
+    uint64_t v = vmm_surface_vaddr(id);
+    uint64_t *pml4 = (uint64_t *)pml4_phys;
+    uint64_t *pdpt = (uint64_t *)(pml4[0] & PHYS_MASK);
+    for (int i = 0; i < nframes; i++) {
+        uint64_t va = v + (uint64_t)i * 0x1000;
+        int i3 = (va >> 30) & 0x1ff, i2 = (va >> 21) & 0x1ff, i1 = (va >> 12) & 0x1ff;
+        if (!(pdpt[i3] & P)) continue;
+        uint64_t *pd = (uint64_t *)(pdpt[i3] & PHYS_MASK);
+        if (!(pd[i2] & P)) continue;
+        uint64_t *pt = (uint64_t *)(pd[i2] & PHYS_MASK);
+        pt[i1] = 0;
+    }
+}
+
+/* Map `nframes` of fresh, private, zeroed RAM into the LIVE address space at the
+ * caller's current anon break (*brk), growing the region upward: map_page_user
+ * creates new PDPT/PD/PT tables on demand, so the region spans as many GiB as
+ * asked for -- the size is bounded by physical RAM, never a fixed vaddr window.
+ * Frames need not be contiguous (each page mapped independently), so this reuses
+ * the free list well. Returns the base vaddr and advances *brk. The caller's own
+ * CR3 is live, so we flush it. (frame_alloc panics on true RAM exhaustion.) */
+uint64_t vmm_mmap(uint64_t *brk, int nframes) {
+    if (nframes <= 0) return 0;
+    if (*brk < anon_base) *brk = anon_base;            /* first use: start of the region */
+    uint64_t cr3 = vmm_current_pml4();
+    uint64_t v = *brk;
+    for (int i = 0; i < nframes; i++)
+        map_page_user(cr3, v + (uint64_t)i * 0x1000, (uint64_t)frame_alloc());
+    *brk = v + (uint64_t)nframes * 0x1000;
+    vmm_flush_self();
+    return v;
+}
+
+/* True if every byte in [vaddr, vaddr+len) is mapped present AND user-accessible
+ * (US=1) in the CURRENT address space. The syscall layer uses this to VALIDATE a
+ * user pointer before the kernel dereferences it -- a bad pointer then fails the
+ * syscall (returns -1) instead of taking a kernel-mode page fault that would halt
+ * the whole machine (e.g. exec'ing with a path that fork didn't copy into the
+ * child). Walks the live page tables, honouring 2 MiB huge pages; kernel-half and
+ * non-canonical addresses are rejected because their PML4 entry lacks US. */
+int vmm_user_ok(uint64_t vaddr, uint64_t len) {
+    if (len == 0) return 1;
+    if (vaddr + len < vaddr) return 0;                  /* wrap-around */
+    uint64_t *pml4 = (uint64_t *)vmm_current_pml4();
+    uint64_t end = vaddr + len;
+    for (uint64_t a = vaddr & ~0xfffULL; a < end; a += 0x1000) {
+        if (a >> 47) return 0;                          /* not low-canonical -> not a user pointer */
+        uint64_t e = pml4[(a >> 39) & 0x1ff];
+        if (!(e & P) || !(e & U)) return 0;
+        uint64_t *pdpt = (uint64_t *)(e & PHYS_MASK);
+        e = pdpt[(a >> 30) & 0x1ff];
+        if (!(e & P) || !(e & U)) return 0;
+        if (e & HUGE) continue;                         /* 1 GiB page */
+        uint64_t *pd = (uint64_t *)(e & PHYS_MASK);
+        e = pd[(a >> 21) & 0x1ff];
+        if (!(e & P) || !(e & U)) return 0;
+        if (e & HUGE) continue;                         /* 2 MiB page (the identity map) */
+        uint64_t *pt = (uint64_t *)(e & PHYS_MASK);
+        e = pt[(a >> 12) & 0x1ff];
+        if (!(e & P) || !(e & U)) return 0;
+    }
+    return 1;
+}
+
+/* True if a user pointer holds a NUL-terminated string no longer than `max`,
+ * with every page it spans mapped+user. Validates each page before touching it. */
+int vmm_user_str_ok(uint64_t vaddr, int max) {
+    for (int i = 0; i < max; i++) {
+        uint64_t a = vaddr + (uint64_t)i;
+        if (i == 0 || (a & 0xfff) == 0) { if (!vmm_user_ok(a, 1)) return 0; }
+        if (*(volatile char *)a == 0) return 1;
+    }
+    return 0;                                           /* unterminated within max */
+}
+
+/* Copy an address space (for fork): a fresh PML4 with the shared kernel half and
+ * the same identity map, plus private copies of every present user page (code,
+ * stack, data) so the child sees identical memory at identical virtual addresses.
+ * Runs on the parent's CR3, where both the parent's frames and the freshly
+ * allocated child frames are identity-mapped, so the copies are plain memcpy. */
+uint64_t vmm_fork(uint64_t parent_pml4) {
+    uint64_t *ppml4 = (uint64_t *)parent_pml4;
+    uint64_t  ppdpt = ppml4[0] & PHYS_MASK;
+    uint64_t  ppd   = ((uint64_t *)ppdpt)[0] & PHYS_MASK;
+    uint64_t  pupt  = ((uint64_t *)ppd)[2] & PHYS_MASK;
+    uint64_t *pupte = (uint64_t *)pupt;
+
+    uint64_t *pml4     = frame_alloc();
+    uint64_t *pdpt_low = frame_alloc();
+    uint64_t *upt      = frame_alloc();
+
+    pml4[0]   = (uint64_t)pdpt_low | P | W | U;
+    pml4[511] = shared_pdpt_high   | P | W;
+    uint64_t *pd_low = build_low_map(pdpt_low);
+    pd_low[2] = (uint64_t)upt | P | W | U;
+
+    for (int i = 0; i < 512; i++) {                      /* copy each present user page */
+        if (!(pupte[i] & P)) continue;
+        uint8_t *src = (uint8_t *)(pupte[i] & PHYS_MASK);
+        uint8_t *dst = (uint8_t *)frame_alloc();
+        for (int b = 0; b < 0x1000; b++) dst[b] = src[b];
+        upt[i] = (uint64_t)dst | (pupte[i] & 0xfff);     /* keep the parent's flags */
+    }
+    return (uint64_t)pml4;
+}
+
+/* Reclaim everything vmm_create_user allocated for a task: its private code,
+ * stack and data frames, the identity-map page directories, an on-demand
+ * framebuffer PD if any, and the PML4/PDPT. The shared higher half is left
+ * untouched. MUST be called when this PML4 is no longer the active CR3. */
+void vmm_destroy_user(uint64_t pml4_phys) {
+    uint64_t *pml4     = (uint64_t *)pml4_phys;
+    uint64_t  pdpt_low = pml4[0] & PHYS_MASK;
+    uint64_t *pdpte    = (uint64_t *)pdpt_low;
+    uint64_t  pd0      = pdpte[0] & PHYS_MASK;
+    uint64_t  upt      = ((uint64_t *)pd0)[2] & PHYS_MASK;
+    uint64_t *upte     = (uint64_t *)upt;
+
+    for (int i = 0; i < 512; i++)                      /* code, stack and data frames */
+        if (upte[i] & P) frame_free(upte[i] & PHYS_MASK);
+    frame_free(upt);
+    for (int pd = 0; pd < ident_pds; pd++)             /* the identity-map page directories */
+        if (pdpte[pd] & P) frame_free(pdpte[pd] & PHYS_MASK);
+    uint64_t fbpd = pdpte[fb_pdpt_slot];               /* the on-demand framebuffer PD (just past RAM) */
+    if (fbpd & P) frame_free(fbpd & PHYS_MASK);        /* free the PD, not the MMIO it maps */
+    uint64_t spd = pdpte[surf_pdpt_slot];              /* window-surface page tables for this AS */
+    if (spd & P) {                                     /* free the PTs + the PD, NOT the shared */
+        uint64_t *pd = (uint64_t *)(spd & PHYS_MASK);  /* surface frames they point at (the      */
+        for (int i = 0; i < 512; i++)                  /* window subsystem owns/frees those)     */
+            if (pd[i] & P) frame_free(pd[i] & PHYS_MASK);
+        frame_free(spd & PHYS_MASK);
+    }
+    for (int s = anon_pdpt_slot; s < 512; s++) {       /* anonymous mmap region: PRIVATE frames, */
+        uint64_t apd = pdpte[s];                       /* so free the mapped RAM too (it grows   */
+        if (!(apd & P)) continue;                      /* across slots, so sweep them all)       */
+        uint64_t *pd = (uint64_t *)(apd & PHYS_MASK);
+        for (int i = 0; i < 512; i++) {
+            if (!(pd[i] & P)) continue;
+            uint64_t *pt = (uint64_t *)(pd[i] & PHYS_MASK);
+            for (int j = 0; j < 512; j++)
+                if (pt[j] & P) frame_free(pt[j] & PHYS_MASK);   /* the mapped pages themselves */
+            frame_free(pd[i] & PHYS_MASK);
+        }
+        frame_free(apd & PHYS_MASK);
+    }
+    frame_free(pdpt_low);
+    frame_free(pml4_phys);
+}

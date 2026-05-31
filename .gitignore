@@ -1,0 +1,15 @@
+# Build output (everything generated lives here)
+/build/
+
+# Python caches (test harness + tools)
+__pycache__/
+*.pyc
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+
+# clangd index (no compile_commands.json checked in)
+.cache/
+compile_commands.json

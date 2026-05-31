@@ -1,0 +1,8 @@
+name      = Terminal
+exec      = bin/term
+icon      = icon.argb
+version   = 1.0
+category  = system
+pinned    = true
+min_width = 360
+min_height= 200

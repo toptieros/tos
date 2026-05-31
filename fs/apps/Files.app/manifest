@@ -1,0 +1,8 @@
+name      = Files
+exec      = bin/files
+icon      = icon.argb
+version   = 1.0
+category  = utility
+pinned    = true
+min_width = 380
+min_height= 240

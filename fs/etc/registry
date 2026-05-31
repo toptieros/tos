@@ -1,0 +1,14 @@
+# tOS system registry -- default settings (see design/settings.md).
+# Per-user overrides live in /Users/user/.config/registry and take precedence.
+# Format: one  key = value  per line; '#' starts a comment.
+
+theme.accent      = #5AA0FC
+theme.mode        = dark
+desktop.wallpaper = gradient
+
+ui.bar.autohide   = false
+ui.dock.autohide  = false
+ui.dock.size      = 48
+
+clock.format      = 24h
+dock.pinned       = Terminal,Files
