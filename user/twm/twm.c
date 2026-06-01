@@ -163,11 +163,17 @@ static int sb_net_x, sb_vol_x, sb_bat_x, sb_bell_x;   /* glyph left edges       
 #define TOAST_HOLD  300              /* visible frames (~3.7s at 12ms/frame)          */
 #define TOAST_OUT   9                /* slide-out frames                              */
 #define TOAST_LIFE  (TOAST_IN + TOAST_HOLD + TOAST_OUT)
+#define TOAST_MAXLINES 6             /* max body lines when a toast is expanded       */
+#define NC_SLIDE    8                /* frames to slide a new row into an open center */
 static struct notif notes[NOTE_KEEP];
 static int notes_n, notes_head, notes_unseen;   /* ring of kept notifications        */
 static int nc_open, nc_x, nc_y, nc_h;            /* notification-center panel          */
+static int nc_slide;                             /* >0: animate the newest center row */
 static struct notif toast;                       /* the active toast                  */
 static int toast_live, toast_age;                /* toast_live=0 -> none; else age 0.. */
+static int toast_expanded;                       /* body expanded to full (wrapped)   */
+static int toast_paused;                         /* hover/click froze the auto-dismiss */
+static int toast_collapsible;                    /* body was truncated -> chevron      */
 
 /* Menu bar (#6/#8): the logo and the focused app's name are clickable menu tiles
  * that open a dropdown. Today the menus are compositor-owned (the logo's system
@@ -716,10 +722,40 @@ static void fit_text(char *dst, int cap, const char *src, int maxw) {
     }
     dst[0] = 0;
 }
+/* Greedy word-wrap of src to maxw px, capped at TOAST_MAXLINES. When draw, render
+ * each line at (x, y0 + i*fh) in col; always returns the line count (>=1). */
+static int toast_wrap(const char *src, int maxw, int x, int y0, uint32_t col, int draw) {
+    char line[NOTIF_BODY]; int ll = 0, lines = 0, i = 0;
+    while (src[i] && lines < TOAST_MAXLINES) {
+        int we = i; while (src[we] && src[we] != ' ') we++;   /* end of the word    */
+        int ns = we; while (src[ns] == ' ') ns++;             /* end of its spaces  */
+        char cand[NOTIF_BODY]; int cl = 0;
+        for (int k = 0; k < ll; k++) cand[cl++] = line[k];
+        for (int k = i; k < we && cl < (int)sizeof cand - 1; k++) cand[cl++] = src[k];
+        cand[cl] = 0;
+        if (ll > 0 && ugfx_text_w(cand) > maxw) {             /* word overflows -> flush the line */
+            line[ll] = 0;
+            if (draw) ugfx_text(x, y0 + lines * fh, line, col, UGFX_TRANSPARENT);
+            lines++; ll = 0;
+        }
+        for (int k = i; k < ns && ll < (int)sizeof line - 1; k++) line[ll++] = src[k];  /* word + its spaces */
+        i = ns;
+    }
+    if (ll > 0 && lines < TOAST_MAXLINES) {
+        line[ll] = 0;
+        if (draw) ugfx_text(x, y0 + lines * fh, line, col, UGFX_TRANSPARENT);
+        lines++;
+    }
+    return lines ? lines : 1;
+}
+static int toast_body_lines(void) {
+    return toast_expanded ? toast_wrap(toast.body, TOAST_W - 2 * TOAST_PAD, 0, 0, 0, 0) : 1;
+}
+static int toast_height(void) { return TOAST_PAD * 2 + fh + 4 + toast_body_lines() * fh; }
 /* The active toast slides in from the right edge, holds, then slides back out. */
 static void toast_box(int *x, int *y, int *w, int *h) {
     *w = TOAST_W;
-    *h = TOAST_PAD * 2 + fh + 4 + fh;
+    *h = toast_height();
     int base_x = W - TOAST_W - 12, travel = TOAST_W + 24, off = 0;
     if (toast_age < TOAST_IN)
         off = travel * (TOAST_IN - toast_age) / TOAST_IN;
@@ -728,8 +764,9 @@ static void toast_box(int *x, int *y, int *w, int *h) {
     *x = base_x + off; *y = bar_h + 10;
 }
 static void dirty_toast(void) {                         /* the toast's full travel band + shadow */
-    int base_x = W - TOAST_W - 12, y = bar_h + 10, h = TOAST_PAD * 2 + fh + 4 + fh;
-    add_dirty(base_x - 8, y - 4, (W - base_x) + 8, h + 24);
+    int base_x = W - TOAST_W - 12, y = bar_h + 10;
+    int hmax = TOAST_PAD * 2 + fh + 4 + TOAST_MAXLINES * fh;   /* worst-case expanded height */
+    add_dirty(base_x - 8, y - 4, (W - base_x) + 8, hmax + 24);
 }
 static void draw_toast(void) {
     if (!toast_live) return;
@@ -739,10 +776,18 @@ static void draw_toast(void) {
     ugfx_rrect_aa(x, y, w, h, TH_R_MD, TH_SURF_3);
     ugfx_rrect_border(x, y, w, h, TH_R_MD, 1, TH_BORDER);
     ugfx_rrect_a(x + TOAST_PAD, y + TOAST_PAD + 2, 5, fh - 2, 2, g_accent);   /* accent stripe */
-    fit_text(buf, sizeof buf, toast.title, w - 2 * TOAST_PAD - 12);
+    int chev = toast_collapsible ? 16 : 0;
+    fit_text(buf, sizeof buf, toast.title, w - 2 * TOAST_PAD - 12 - chev);
     ugfx_text(x + TOAST_PAD + 12, y + TOAST_PAD, buf, TH_TEXT, UGFX_TRANSPARENT);
-    fit_text(buf, sizeof buf, toast.body, w - 2 * TOAST_PAD);
-    ugfx_text(x + TOAST_PAD, y + TOAST_PAD + fh + 4, buf, TH_MUTED, UGFX_TRANSPARENT);
+    if (toast_collapsible)                                   /* expand/collapse affordance */
+        ugfx_text(x + w - TOAST_PAD - 10, y + TOAST_PAD, toast_expanded ? "^" : "v", TH_MUTED, UGFX_TRANSPARENT);
+    int by = y + TOAST_PAD + fh + 4;
+    if (toast_expanded) {
+        toast_wrap(toast.body, w - 2 * TOAST_PAD, x + TOAST_PAD, by, TH_MUTED, 1);
+    } else {
+        fit_text(buf, sizeof buf, toast.body, w - 2 * TOAST_PAD);
+        ugfx_text(x + TOAST_PAD, by, buf, TH_MUTED, UGFX_TRANSPARENT);
+    }
 }
 static void nc_layout(void) {
     int rows = notes_n ? notes_n : 1;
@@ -760,18 +805,23 @@ static void draw_nc(void) {
     ugfx_rrect_border(nc_x, nc_y, NC_W, nc_h, CC_RAD, 1, TH_BORDER_DIM);
     ugfx_fill_a(nc_x + CC_RAD, nc_y, NC_W - 2 * CC_RAD, 1, ARGB(40, 255, 255, 255));   /* top sheen */
     ugfx_text(nc_x + NC_PAD, nc_y + NC_PAD, "Notifications", TH_TEXT, UGFX_TRANSPARENT);
+    if (notes_n) {                                      /* Clear button, header right */
+        int cwid = ugfx_text_w("Clear");
+        ugfx_text(nc_x + NC_W - NC_PAD - cwid, nc_y + NC_PAD, "Clear", g_accent, UGFX_TRANSPARENT);
+    }
     int y = nc_y + NC_PAD + fh + 10;
     char buf[96];
     if (!notes_n) { ugfx_text(nc_x + NC_PAD, y, "No notifications", TH_MUTED, UGFX_TRANSPARENT); return; }
     for (int k = 0; k < notes_n; k++) {                 /* newest first */
         int idx = (notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP;
         struct notif *nn = &notes[idx];
-        ugfx_rrect_a(nc_x + NC_PAD - 4, y - 3, NC_W - 2 * NC_PAD + 8, NC_ROW - 6, TH_R_SM, ARGB(40, 60, 68, 90));
-        ugfx_rrect_a(nc_x + NC_PAD + 2, y + 2, 4, fh - 2, 2, g_accent);
+        int sx = (k == 0 && nc_slide > 0) ? (NC_W - 2 * NC_PAD) * nc_slide / NC_SLIDE : 0;  /* slide newest in */
+        ugfx_rrect_a(nc_x + NC_PAD - 4 + sx, y - 3, NC_W - 2 * NC_PAD + 8, NC_ROW - 6, TH_R_SM, ARGB(40, 60, 68, 90));
+        ugfx_rrect_a(nc_x + NC_PAD + 2 + sx, y + 2, 4, fh - 2, 2, g_accent);
         fit_text(buf, sizeof buf, nn->title, NC_W - 2 * NC_PAD - 14);
-        ugfx_text(nc_x + NC_PAD + 12, y, buf, TH_TEXT, UGFX_TRANSPARENT);
+        ugfx_text(nc_x + NC_PAD + 12 + sx, y, buf, TH_TEXT, UGFX_TRANSPARENT);
         fit_text(buf, sizeof buf, nn->body, NC_W - 2 * NC_PAD - 4);
-        ugfx_text(nc_x + NC_PAD, y + fh + 2, buf, TH_MUTED, UGFX_TRANSPARENT);
+        ugfx_text(nc_x + NC_PAD + sx, y + fh + 2, buf, TH_MUTED, UGFX_TRANSPARENT);
         y += NC_ROW;
     }
 }
@@ -783,12 +833,26 @@ static int poll_notifications(void) {
         notes[notes_head] = nn;
         notes_head = (notes_head + 1) % NOTE_KEEP;
         if (notes_n < NOTE_KEEP) notes_n++;
-        notes_unseen++;
-        toast = nn; toast_live = 1; toast_age = 0;
         print("[twm] notify "); print(nn.title); print("\r\n");   /* harness hook */
+        if (nc_open) {                                  /* center open: slide into the list, no toast */
+            nc_slide = NC_SLIDE;
+            print("[twm] notif slide\r\n");
+        } else {                                        /* otherwise pop a top-right toast */
+            notes_unseen++;
+            toast = nn; toast_live = 1; toast_age = 0;
+            toast_expanded = 0; toast_paused = 0;
+            toast_collapsible = ugfx_text_w(nn.body) > TOAST_W - 2 * TOAST_PAD;
+            print("[twm] toast at "); printu((unsigned)(W - TOAST_W - 12)); print(" ");
+            printu((unsigned)(bar_h + 10)); print(" "); printu(TOAST_W); print(" ");
+            printu((unsigned)(TOAST_PAD * 2 + fh + 4 + fh)); print("\r\n");
+        }
         got = 1;
     }
-    if (got) { nc_layout(); dirty_toast(); add_dirty(sb_bell_x - 4, 0, SB_BELL_W + 12, bar_h); }
+    if (got) {
+        nc_layout();
+        if (nc_open) dirty_nc(); else dirty_toast();
+        add_dirty(sb_bell_x - 4, 0, SB_BELL_W + 12, bar_h);
+    }
     return got;
 }
 
@@ -1436,15 +1500,34 @@ void _ustart(void) {
                           ms.x >= sb_bell_x - 4 && ms.x < sb_bell_x + SB_BELL_W + 4;
             if (nc_open) {
                 handled = 1;
-                nc_open = 0;
-                dirty_nc(); add_dirty(0, 0, W, bar_h);
+                int cwid = ugfx_text_w("Clear");                  /* Clear button, header right */
+                int clx = nc_x + NC_W - NC_PAD - cwid, cly = nc_y + NC_PAD;
+                if (notes_n && ms.x >= clx - 4 && ms.x < clx + cwid + 4 &&
+                    ms.y >= cly - 2 && ms.y < cly + fh + 2) {     /* Clear: empty the ring, stay open */
+                    notes_n = 0; notes_head = 0; notes_unseen = 0; nc_slide = 0;
+                    dirty_nc(); add_dirty(0, 0, W, bar_h);
+                    print("[twm] notifcenter clear\r\n");
+                } else {                                          /* any other click dismisses it */
+                    nc_open = 0;
+                    dirty_nc(); add_dirty(0, 0, W, bar_h);
+                }
             } else if (on_bell) {
                 nc_open = 1; handled = 1; notes_unseen = 0;
                 if (cc_open) { cc_open = 0; dirty_cc(); }
                 if (menu_kind) menu_close();
                 if (toast_live) { toast_live = 0; dirty_toast(); }  /* center supersedes the toast */
                 dirty_nc(); add_dirty(0, 0, W, bar_h);
-                print("[twm] notifcenter open "); printu((unsigned)notes_n); print("\r\n");
+                print("[twm] notifcenter open "); printu((unsigned)notes_n);
+                print(" "); printu((unsigned)nc_x); print(" "); printu((unsigned)nc_y); print("\r\n");
+            }
+            /* The live toast: clicking a collapsible toast expands/collapses its body. */
+            if (toast_live && !handled) {
+                int tx, ty, tw, th2; toast_box(&tx, &ty, &tw, &th2);
+                if (toast_collapsible && ms.x >= tx && ms.x < tx + tw && ms.y >= ty && ms.y < ty + th2) {
+                    handled = 1; toast_expanded = !toast_expanded; toast_paused = 1;
+                    dirty_toast();
+                    print("[twm] toast expand "); printu((unsigned)toast_expanded); print("\r\n");
+                }
             }
             /* The dock is a top-most overlay, so it must get the click before any
              * window it overlaps -- otherwise a window behind the dock swallows the
@@ -1654,9 +1737,19 @@ void _ustart(void) {
             int cx = cc_btn_x - 8; add_dirty(cx, 0, W - cx, bar_h); }
 
         poll_notifications();                           /* drain notify() posts -> toast + center */
+        if (nc_slide > 0) { nc_slide--; dirty_nc(); }   /* animate a row sliding into the center */
         if (toast_live) {                               /* animate the toast (slide in/hold/out) */
-            dirty_toast();
-            if (++toast_age >= TOAST_LIFE) { toast_live = 0; dirty_toast(); }
+            int tx, ty, tw, th2; toast_box(&tx, &ty, &tw, &th2);
+            int hov = cur_x >= tx && cur_x < tx + tw && cur_y >= ty && cur_y < ty + th2;
+            if (hov) {                                  /* hover pauses the auto-dismiss timer */
+                if (toast_age < TOAST_IN) { toast_age++; dirty_toast(); }            /* finish sliding in */
+                else if (toast_age != TOAST_IN) { toast_age = TOAST_IN; dirty_toast(); }  /* snap fully open */
+                if (!toast_paused) { toast_paused = 1; print("[twm] toast pause\r\n"); }
+            } else {
+                toast_paused = 0;
+                dirty_toast();
+                if (++toast_age >= TOAST_LIFE) { toast_live = 0; dirty_toast(); }
+            }
         }
 
         /* repaint the dock when the running/focus/minimized set changes, so its

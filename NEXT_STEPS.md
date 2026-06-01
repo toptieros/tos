@@ -146,6 +146,18 @@ Ctrl+Backspace / Ctrl+Delete word-delete, the Delete key. **Still needs foundati
 
 Terse one-liners; the prose lives in git history + PROJECT.md. Newest first.
 
+- **Notification QoL (2026-06-01).** Four polish passes on the toast/center: (1) **hover
+  pauses** the auto-dismiss — while the cursor is over a toast it snaps fully open and
+  freezes (`[twm] toast pause`), resuming when the pointer leaves; (2) a **collapsible
+  toast** — when the body is truncated the card shows a `v`/`^` chevron and clicking it
+  expands the toast to the word-wrapped full body (`toast_wrap`, capped at
+  `TOAST_MAXLINES`; `[twm] toast expand 1/0`); (3) when the **center is open** a new
+  notification no longer pops a toast — it **slides into the top of the list**
+  (`nc_slide`; `[twm] notif slide`); (4) a header **Clear** button empties the center
+  ring (`[twm] notifcenter clear`). `dirty_toast` now covers the worst-case expanded
+  height so expand/collapse never smears; the open-center trace carries the panel
+  origin. Extended `t_notifications` (pause + expand + slide + clear); BIOS suite green
+  + expanded-toast & center screenshots.
 - **Notifications / toasts (ui.md phase 3, 2026-06-01).** A `notify(title, body)` SDK call
   (new `SYS_NOTIFY`) posts to a global kernel ring (`kernel/ipc.c`); the compositor drains
   it (`SYS_WM_NOTIFY` / `wm_poll_notify`, compositor-only) and turns each into a **top-right

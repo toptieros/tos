@@ -551,23 +551,44 @@ def t_statusbar(uefi):
 
 
 def t_notifications(uefi):
-    # ui.md phase 3: an app posts a notification with notify(); twm slides the newest in
-    # as a top-right toast and keeps a ring for the notification center (toggled by the
-    # bell status item). The shell's `notify <text>` posts one ("[twm] notify <title>").
-    # Clicking the bell opens the center ("[twm] notifcenter open <n>", n>=1 here).
+    # ui.md phase 3 + QoL: notify() pops a top-right toast ("[twm] notify <title>" and
+    # "[twm] toast at x y w h"). Hovering the toast pauses its auto-dismiss
+    # ("[twm] toast pause"); clicking a collapsible toast expands its wrapped body
+    # ("[twm] toast expand 1"). The bell opens the center ("[twm] notifcenter open
+    # <n> <x> <y>"); a notify() while the center is open slides into the list instead
+    # of toasting ("[twm] notif slide"); the header Clear button empties it
+    # ("[twm] notifcenter clear").
+    NC_W, NC_PAD = 300, 14                              # mirror twm.c (center panel metrics)
     with Tos(uefi=uefi) as t:
         assert t.open_terminal(), "desktop/terminal did not come up"
         m = re.search(r"\[twm\] statusbar .* bell (\d+) cc", t.serial())
         assert m, "status cluster (with bell) did not report its layout"
         bell_x = int(m.group(1))
-        t.line("notify Hello from tOS")
+        # a long body so the toast is collapsible (the expand chevron appears)
+        t.line("notify This is a deliberately long notification body so the toast overflows and becomes collapsible")
         assert t.wait_for("[twm] notify Terminal", 8), "notify() did not reach the compositor"
-        t.screenshot("/tmp/tos_toast.ppm")                  # toast is up ~3.7s
+        tm = re.search(r"\[twm\] toast at (\d+) (\d+) (\d+) (\d+)", t.serial())
+        assert tm, "the toast did not report its rect"
+        tx, ty, tw, th = (int(g) for g in tm.groups())
+        cx, cy = tx + tw // 2, ty + th // 2
+        t.mouse_to(cx, cy)                                  # hover -> pause the disappear timer
+        assert t.wait_for("[twm] toast pause", 6), "hovering the toast did not pause its timer"
+        t.screenshot("/tmp/tos_toast.ppm")
+        t.click(cx, cy)                                     # click a collapsible toast -> expand
+        assert t.wait_for("[twm] toast expand 1", 6), "clicking the toast did not expand it"
+        t.screenshot("/tmp/tos_toast_expanded.ppm")
         t.click(bell_x + 9, 11)                             # the bell status item -> open the center
         assert t.wait_for("[twm] notifcenter open", 6), "the bell did not open the notification center"
-        c = re.search(r"\[twm\] notifcenter open (\d+)", t.serial())
+        c = re.search(r"\[twm\] notifcenter open (\d+) (\d+) (\d+)", t.serial())
         assert c and int(c.group(1)) >= 1, "notification center did not list the posted notification"
+        nc_x, nc_y = int(c.group(2)), int(c.group(3))
+        # a notify() with the center already open slides into the list, no toast
+        t.line("notify second one while the center is open")
+        assert t.wait_for("[twm] notif slide", 8), "a notify with the center open did not slide into the list"
         t.screenshot("/tmp/tos_notifcenter.ppm")
+        # the header Clear button empties the center (and keeps it open)
+        t.click(nc_x + NC_W - NC_PAD - 8, nc_y + NC_PAD + 6)
+        assert t.wait_for("[twm] notifcenter clear", 6), "Clear did not empty the notification center"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
