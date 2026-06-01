@@ -36,8 +36,6 @@
 #define CURH      21
 #define DOCK_GAP  16
 #define DOCK_PAD  14
-#define DOCK_SH   20   /* dock drop-shadow margin: every dock damage rect must include  *
-                        * this halo or the soft shadow leaves residue when it animates.  */
 #define EDGE         4    /* screen-edge reveal zone for auto-hidden chrome (px)   */
 #define HIDE_LINGER  16   /* frames the chrome lingers after the cursor leaves     */
 #define SLIDE        6    /* chrome slide speed (px/frame)                         */
@@ -76,6 +74,17 @@ static int bar_y;                /* bar's current top: 0 = shown, -bar_h = hidde
 static int bar_linger, dock_linger;   /* reveal-linger counters for auto-hide               */
 
 struct rect { int x, y, w, h; };
+#define WIN_SHADOW_DY   6   /* window drop-shadow downward offset (>= the 5/6 used in draw) */
+#define DOCK_ELEVATION  3   /* the ugfx_elevation level the dock floats at                  */
+/* THE single source for every drop-shadow halo (invalidations AND culls): a rect grown
+ * to include a shadow that feathers `spread`px outward and rides `dy`px downward. Keeps
+ * the full `spread` on top and adds `dy` to the bottom for the offset, so the box never
+ * under-covers the shadow regardless of the offset. `spread` matches ugfx_shadow's
+ * feather; ugfx_elevation_extent supplies (spread, dy) for an elevation level. */
+static struct rect shadow_box(int x, int y, int w, int h, int spread, int dy) {
+    struct rect r = { x - spread, y - spread, w + 2 * spread, h + 2 * spread + dy };
+    return r;
+}
 static struct rect dirty[MAXDIRTY];
 static int ndirty;
 static struct rect cur_clip;     /* the rect compose() is currently painting */
@@ -113,10 +122,10 @@ static int sw_order[MAXW], sw_n, sw_pos, sw_until;
 #define CC_RAD       16     /* control-center panel corner radius          */
 #define CC_SHADOW_SP 24     /* control-center drop-shadow feather (px)      */
 #define CC_SHADOW_DY 6      /* control-center shadow vertical offset (px)   */
-/* dirty the whole panel INCLUDING its shadow halo (so opening/closing it leaves
- * no shadow residue) -- the +DY accounts for the downward shadow offset. */
-#define dirty_cc() add_dirty(cc_x - CC_SHADOW_SP, cc_y - CC_SHADOW_SP, \
-                             cc_w + 2 * CC_SHADOW_SP, cc_h + 2 * CC_SHADOW_SP + CC_SHADOW_DY)
+/* dirty the whole panel INCLUDING its shadow halo (so opening/closing it leaves no
+ * shadow residue) via the single shadow_box() extent. */
+#define dirty_cc() do { struct rect _r = shadow_box(cc_x, cc_y, cc_w, cc_h, CC_SHADOW_SP, CC_SHADOW_DY); \
+                        add_dirty(_r.x, _r.y, _r.w, _r.h); } while (0)
 static int cc_open;
 static int cc_x, cc_y, cc_w = 268, cc_h;          /* panel rect (h computed in cc_layout) */
 static int cc_btn_x, cc_btn_w = 24;               /* the bar status-item hit box           */
@@ -166,20 +175,19 @@ static void union_box(int *x, int *y, int *w, int *h, int bx, int by, int bw, in
 static void expand_to_panels(int *x, int *y, int *w, int *h) {
     if (bar_y > -bar_h && box_hit(*x, *y, *w, *h, 0, bar_y, W, bar_h))
         union_box(x, y, w, h, 0, bar_y, W, bar_h);
-    int dx = dock_x - DOCK_SH, dy = dock_y - DOCK_SH, dw = dock_w + 2 * DOCK_SH, dh = dock_h + 2 * DOCK_SH;
-    if (dock_w > 0 && box_hit(*x, *y, *w, *h, dx, dy, dw, dh))
-        union_box(x, y, w, h, dx, dy, dw, dh);
+    int dsp, ddy; ugfx_elevation_extent(DOCK_ELEVATION, &dsp, &ddy);   /* dock floats at this elevation */
+    struct rect d = shadow_box(dock_x, dock_y, dock_w, dock_h, dsp, ddy);
+    if (dock_w > 0 && box_hit(*x, *y, *w, *h, d.x, d.y, d.w, d.h))
+        union_box(x, y, w, h, d.x, d.y, d.w, d.h);
     if (cc_open) {
-        int cx = cc_x - CC_SHADOW_SP, cy = cc_y - CC_SHADOW_SP;
-        int cw = cc_w + 2 * CC_SHADOW_SP, ch = cc_h + 2 * CC_SHADOW_SP + CC_SHADOW_DY;
-        if (box_hit(*x, *y, *w, *h, cx, cy, cw, ch)) union_box(x, y, w, h, cx, cy, cw, ch);
+        struct rect c = shadow_box(cc_x, cc_y, cc_w, cc_h, CC_SHADOW_SP, CC_SHADOW_DY);
+        if (box_hit(*x, *y, *w, *h, c.x, c.y, c.w, c.h)) union_box(x, y, w, h, c.x, c.y, c.w, c.h);
     }
     int ov = overlay_slot();                            /* Launchpad: also frosted */
     if (ov >= 0) {
         struct cwin *o = &cw[ov];
-        int ox = o->wx - TH_SHADOW_SP, oy = o->wy - TH_SHADOW_SP;
-        int ow = owf(o) + 2 * TH_SHADOW_SP, oh = ohf(o) + 2 * TH_SHADOW_SP;
-        if (box_hit(*x, *y, *w, *h, ox, oy, ow, oh)) union_box(x, y, w, h, ox, oy, ow, oh);
+        struct rect ob = shadow_box(o->wx, o->wy, owf(o), ohf(o), TH_SHADOW_SP, WIN_SHADOW_DY);
+        if (box_hit(*x, *y, *w, *h, ob.x, ob.y, ob.w, ob.h)) union_box(x, y, w, h, ob.x, ob.y, ob.w, ob.h);
     }
 }
 static void add_dirty(int x, int y, int w, int h) {
@@ -212,8 +220,8 @@ static void add_dirty(int x, int y, int w, int h) {
     add_dirty(x, y, w, h);
 }
 static void dirty_win(struct cwin *c) {                /* a window incl. its shadow ring */
-    add_dirty(c->wx - TH_SHADOW_SP, c->wy - TH_SHADOW_SP,
-              owf(c) + 2 * TH_SHADOW_SP, ohf(c) + 2 * TH_SHADOW_SP);
+    struct rect r = shadow_box(c->wx, c->wy, owf(c), ohf(c), TH_SHADOW_SP, WIN_SHADOW_DY);
+    add_dirty(r.x, r.y, r.w, r.h);
 }
 
 /* ------------------------------------------------------------------ desktop */
@@ -344,7 +352,7 @@ static void draw_tile(struct icon *ic) {
     else if (st & 1)   ugfx_rrect_a(ic->cx - 2, iy, 4, 3, 1, ARGB(160, 200, 210, 230));     /* running: dot */
 }
 static void draw_dock(void) {
-    ugfx_elevation(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, 3);          /* float it off the desktop */
+    ugfx_elevation(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, DOCK_ELEVATION);  /* float it off the desktop */
     ugfx_frost(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, TH_DOCK_FROST);  /* frosted-glass panel      */
     ugfx_rrect_border(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, 1, TH_BORDER_DIM);  /* crisp edge     */
     ugfx_fill_a(dock_x + TH_DOCK_RAD, dock_y, dock_w - 2 * TH_DOCK_RAD, 1, TH_DOCK_HI_A);  /* top sheen   */
@@ -360,7 +368,7 @@ static void blit_btn(int cx, int cy, int idx) {
 static void draw_window(int slot) {
     struct cwin *c = &cw[slot];
     int ow = owf(c), oh = ohf(c), wx = c->wx, wy = c->wy;
-    struct rect wb = { wx - TH_SHADOW_SP, wy - TH_SHADOW_SP, ow + 2 * TH_SHADOW_SP, oh + 2 * TH_SHADOW_SP };
+    struct rect wb = shadow_box(wx, wy, ow, oh, TH_SHADOW_SP, WIN_SHADOW_DY);
     if (!rects_hit(cur_clip, wb)) return;               /* nothing of this window in the rect */
     int foc = (focus_slot() == slot);
     if (c->popup) {                                     /* borderless overlay: surface + shadow only */
@@ -509,8 +517,7 @@ static void draw_cc(void) {
      * still has to repaint it -- otherwise compose() paints the desktop over the
      * shadow and we never redraw it, leaving a moving "hole" trailing the cursor.
      * (Same fix draw_window() already applies via its TH_SHADOW_SP-padded box.) */
-    struct rect r = { cc_x - CC_SHADOW_SP, cc_y - CC_SHADOW_SP,
-                      cc_w + 2 * CC_SHADOW_SP, cc_h + 2 * CC_SHADOW_SP + CC_SHADOW_DY };
+    struct rect r = shadow_box(cc_x, cc_y, cc_w, cc_h, CC_SHADOW_SP, CC_SHADOW_DY);
     if (!rects_hit(cur_clip, r)) return;
     ugfx_shadow(cc_x, cc_y + CC_SHADOW_DY, cc_w, cc_h, CC_RAD, CC_SHADOW_SP, TH_SHADOW, 130);
     ugfx_frost(cc_x, cc_y, cc_w, cc_h, CC_RAD, TH_CC_FROST);             /* frosted-glass panel */
@@ -564,7 +571,8 @@ static void compose(struct rect r) {
     /* the dock hit-test must include its shadow halo, else a rect that clips only
      * the halo (a window edge or the cursor sliding past) repaints the desktop over
      * the shadow without redrawing it -- the same residue bug fixed for draw_cc. */
-    struct rect dckr = { dock_x - DOCK_SH, dock_y - DOCK_SH, dock_w + 2 * DOCK_SH, dock_h + 2 * DOCK_SH };
+    int dsp, ddy; ugfx_elevation_extent(DOCK_ELEVATION, &dsp, &ddy);
+    struct rect dckr = shadow_box(dock_x, dock_y, dock_w, dock_h, dsp, ddy);
     if (bar_y > -bar_h && rects_hit(r, barr)) draw_bar();
     if (rects_hit(r, dckr)) draw_dock();
     draw_cc();                                          /* control-center panel, over windows + dock */
@@ -849,8 +857,9 @@ static void update_chrome(int mx, int my) {
         if (dock_y < dt) { dock_y += SLIDE; if (dock_y > dt) dock_y = dt; }
         else             { dock_y -= SLIDE; if (dock_y < dt) dock_y = dt; }
         place_dock_icons();
-        add_dirty(dock_x - DOCK_SH, dock_y0 - DOCK_SH,           /* travel band incl. shadow halo */
-                  dock_w + 2 * DOCK_SH, H - dock_y0 + DOCK_SH);
+        int dsp, ddy; ugfx_elevation_extent(DOCK_ELEVATION, &dsp, &ddy);
+        add_dirty(dock_x - dsp, dock_y0 - dsp,                   /* travel band incl. shadow halo */
+                  dock_w + 2 * dsp, H - dock_y0 + dsp + ddy);
     }
 }
 
@@ -961,10 +970,11 @@ void _ustart(void) {
         unsigned rsig = running_sig();
         if (rsig != dock_sig) {
             dock_sig = rsig;
-            int oldtop = dock_y - DOCK_SH;
+            int dsp; ugfx_elevation_extent(DOCK_ELEVATION, &dsp, 0);
+            int oldtop = dock_y - dsp;
             rebuild_dock();
             layout_dock();
-            int newtop = dock_y - DOCK_SH;
+            int newtop = dock_y - dsp;
             int top = oldtop < newtop ? oldtop : newtop;
             add_dirty(0, top, W, H - top);          /* repaint the dock band over old + new extent */
         }
@@ -1275,7 +1285,9 @@ void _ustart(void) {
         for (int i = 0; i < nicons; i++) if (tile_hovered(&icons[i])) hovi = i;
         sig = sig * 131u + (unsigned)(hovi + 1);
         if (sig != last_dock_sig) { last_dock_sig = sig;
-            add_dirty(dock_x - DOCK_SH, dock_y - DOCK_SH, dock_w + 2 * DOCK_SH, dock_h + 2 * DOCK_SH); }
+            int dsp, ddy; ugfx_elevation_extent(DOCK_ELEVATION, &dsp, &ddy);
+            struct rect db = shadow_box(dock_x, dock_y, dock_w, dock_h, dsp, ddy);
+            add_dirty(db.x, db.y, db.w, db.h); }
 
         /* --- context-aware cursor shape -------------------------------------- */
         {

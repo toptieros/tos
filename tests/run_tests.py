@@ -383,6 +383,41 @@ def t_notepad_edit_save(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_notepad_wordedit(uefi):
+    # #5: word-wise editing lives in the shared toolkit TextField, so every toolkit
+    # app inherits it. Ctrl+Left/Right jump word-by-word (`[ui] wjump N`); Ctrl+Delete
+    # (and Ctrl+Backspace) delete the adjacent word (`[ui] wdel N`). Drive it
+    # keyboard-only through the real kernel->twm->toolkit path and confirm the
+    # resulting document on disk. Buffer: "alpha beta gamma" (indices: alpha 0-4,
+    # space 5, beta 6-9, space 10, gamma 11-15; len 16).
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        t.key("meta_l-spc", delay=0.1)                # Super+Space -> Spotlight
+        assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06)
+        t.key("ret", delay=0.1)                        # launch Notepad
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
+        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        t.type("alpha beta gamma", delay=0.05)         # caret ends at 16
+        # Ctrl+Left walks left word-by-word: 16 -> 11 (gamma) -> 6 (beta) -> 0 (alpha)
+        t.key("ctrl-left", delay=0.08); assert t.wait_for("[ui] wjump 11", 6), "Ctrl+Left did not jump to 'gamma'"
+        t.key("ctrl-left", delay=0.08); assert t.wait_for("[ui] wjump 6", 6),  "Ctrl+Left did not jump to 'beta'"
+        t.key("ctrl-left", delay=0.08); assert t.wait_for("[ui] wjump 0", 6),  "Ctrl+Left did not jump to 'alpha'"
+        # Ctrl+Right jumps to the end of "alpha" (the space at index 5)
+        t.key("ctrl-right", delay=0.08); assert t.wait_for("[ui] wjump 5", 6),  "Ctrl+Right did not jump forward a word"
+        # Ctrl+Delete removes the next word (" beta", indices 5..10) -> "alpha gamma"
+        t.key("ctrl-delete", delay=0.08); assert t.wait_for("[ui] wdel 5", 6),  "Ctrl+Delete did not delete the next word"
+        t.key("ctrl-s", delay=0.1)                      # save
+        assert t.wait_for("[notepad] saved /Users/user/untitled.txt (11 bytes)", 8), \
+            "word-edited note did not save with the expected length"
+        t.key("alt-tab", delay=0.1)                    # back to the terminal
+        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
+        t.line("cat untitled.txt")
+        assert t.wait_for("alpha gamma", 6), "word-edited document not as expected on disk"
+        t.screenshot("/tmp/tos_notepad_wordedit.ppm")
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_spotlight(uefi):
     # Super+Space opens the Spotlight launcher (a popup). Typing filters the
     # installed apps; Enter launches the match (here: Notepad).
@@ -755,6 +790,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     t_spawn_concurrency, t_gui, t_files_app, t_clipboard_summon, t_clipboard_popup_esc,
     t_window_switch, t_super_q_close, t_super_kill, t_term_paste, t_notepad_edit_save,
+    t_notepad_wordedit,
     t_spotlight, t_spotlight_nav, t_launchpad, t_launchpad_search, t_dock_launchpad,
     t_mouse, t_many_files, t_date, t_ram_scales, t_lspci, t_beep, t_reboot,
     t_scrollbar_drag,

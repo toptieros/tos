@@ -90,8 +90,8 @@ struct Launchpad : ui::Window {
     void layout() {
         int fh = ugfx_font_h();
         grid.fh = fh;
-        int qw = 360; if (qw > w - 80) qw = w - 80;
-        query.r = { (w - qw) / 2, 24, qw, fh + 16 };     /* centred search field at the top */
+        int qw = 420; if (qw > w - 80) qw = w - 80;
+        query.r = { (w - qw) / 2, 28, qw, fh + 26 };     /* centred Google-style pill search field */
         int top = query.r.y + query.r.h + 18;
         grid.r = { 20, top, w - 40, h - top - 24 };
     }
@@ -103,7 +103,7 @@ struct Launchpad : ui::Window {
         if (!create(cw, ch, "Launchpad")) return false;
         bg = TH_FROST_KEY;          /* compositor frosts the backdrop where the panel is */
         napp = app_scan(apps, 16);
-        query.bg = RGB(20, 23, 32); query.ctx = this;
+        query.bg = RGB(20, 23, 32); query.ctx = this; query.radius = TH_R_PILL;
         query.on_change = [](void *c) { ((Launchpad *)c)->refilter(); };
         grid.apps = apps; grid.ctx = this;
         grid.on_launch = [](void *c, int k) {        /* k is a filtered index */

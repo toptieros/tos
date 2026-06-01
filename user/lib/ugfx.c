@@ -327,6 +327,17 @@ void ugfx_state_layer(int x, int y, int w, int h, int rad, int alpha) {
     ugfx_rrect_a(x, y, w, h, rad, ((uint32_t)alpha << 24) | 0xffffff);
 }
 
+void ugfx_scroll_thumb(int x, int y, int w, int h, int top, int total, int vis, int active) {
+    if (total <= vis || vis <= 0 || h <= 0) return;          /* it all fits: no bar */
+    int maxtop = total - vis;
+    int th = (long)h * vis / total; if (th < 16) th = 16; if (th > h) th = h;
+    int travel = h - th;
+    if (top < 0) top = 0; if (top > maxtop) top = maxtop;
+    int ty = y + (maxtop > 0 && travel > 0 ? (long)travel * top / maxtop : 0);
+    ugfx_rrect_a(x, ty, w, th, w / 2,
+                 active ? ARGB(235, 150, 180, 230) : ARGB(150, 200, 210, 230));
+}
+
 /* --- frosted glass (backdrop blur) --------------------------------------- *
  * A separable box blur over the backdrop, then a tint on top. The big visual
  * difference between "a flat translucent rectangle" and "frosted glass". Integer
@@ -419,14 +430,21 @@ void ugfx_frost(int x, int y, int w, int h, int rad, uint32_t tint) {
  * both grow with `level` (0 = flush, 5 = highest), so surfaces read as a consistent
  * stack of layers rather than a flat collage. Mirrors caelestia's Elevation.qml
  * (blur + offset.y rise together with the elevation step). */
-void ugfx_elevation(int x, int y, int w, int h, int rad, int level) {
-    static const int sp[6] = { 0, 8, 14, 20, 27, 34 };     /* feather (px)  */
-    static const int dy[6] = { 0, 2,  4,  6,  9, 12 };     /* offset  (px)  */
-    static const int al[6] = { 0, 64, 84, 104, 122, 140 }; /* peak alpha    */
+void ugfx_elevation_extent(int level, int *spread, int *dy) {
+    static const int sp[6]  = { 0, 8, 14, 20, 27, 34 };    /* feather (px)  */
+    static const int off[6] = { 0, 2,  4,  6,  9, 12 };    /* offset  (px)  */
     if (level < 0) level = 0;
     if (level > 5) level = 5;
-    if (!sp[level]) return;
-    ugfx_shadow(x, y + dy[level], w, h, rad, sp[level], 0x000000, al[level]);
+    if (spread) *spread = sp[level];
+    if (dy)     *dy     = off[level];
+}
+void ugfx_elevation(int x, int y, int w, int h, int rad, int level) {
+    static const int al[6] = { 0, 64, 84, 104, 122, 140 }; /* peak alpha    */
+    int sp, dy; ugfx_elevation_extent(level, &sp, &dy);    /* single source for feather/offset */
+    if (level < 0) level = 0;
+    if (level > 5) level = 5;
+    if (!sp) return;
+    ugfx_shadow(x, y + dy, w, h, rad, sp, 0x000000, al[level]);
 }
 
 void ugfx_blit_round_bottom(int x, int y, const uint32_t *src, int sw, int sh, int spitch, int rad) {

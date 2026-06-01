@@ -41,7 +41,9 @@ struct Rect {
 /* decoded key codes delivered to on_key(); printable keys arrive as their ASCII */
 enum {
     UK_BACK = 8, UK_ENTER = 13, UK_ESC = 27,
-    UK_UP = 0x100, UK_DOWN, UK_LEFT, UK_RIGHT, UK_DEL, UK_HOME, UK_END
+    UK_UP = 0x100, UK_DOWN, UK_LEFT, UK_RIGHT, UK_DEL, UK_HOME, UK_END,
+    UK_WORD_LEFT, UK_WORD_RIGHT,    /* Ctrl+Left/Right: jump word-by-word        */
+    UK_WORD_DEL                     /* Ctrl+Delete: delete the word to the right  */
 };
 
 class Window;
@@ -67,6 +69,9 @@ public:
     virtual void on_leave() { hovered = false; }
     /* scroll wheel over the widget; delta>0 = wheel up. Return true if it scrolled. */
     virtual bool on_scroll(int delta) { (void)delta; return false; }
+    /* true if this widget draws a blinking caret while focused; Window pulses a
+     * repaint at the blink cadence so the caret keeps blinking when idle. */
+    virtual bool shows_caret() const { return false; }
 };
 
 /* -------------------------------------------------------------------- Label */
@@ -113,6 +118,41 @@ public:
     void draw() override;
 };
 
+/* ---------------------------------------------------------------- ScrollBar */
+/* The one scrollbar used everywhere. A scroll container embeds it, calls set()
+ * each draw with its viewport rect + content metrics (in row units), then draw().
+ * hit()/top_from_y() turn a press or drag on the right-edge track into a new top.
+ * Renders through ugfx_scroll_thumb so every scrollbar in the OS looks identical. */
+struct ScrollBar {
+    static const int STRIP = 8;     /* hit-test width hugging the content's right edge */
+    bool dragging = false;
+    Rect area{0, 0, 0, 0};          /* the content rect; the bar rides its right edge   */
+    int  top = 0, total = 1, vis = 1, maxtop = 0;
+    void set(Rect content, int top_, int total_, int vis_) {
+        area = content; top = top_;
+        total = total_ < 1 ? 1 : total_;
+        vis   = vis_   < 1 ? 1 : vis_;
+        maxtop = total - vis; if (maxtop < 0) maxtop = 0;
+    }
+    bool needed() const { return total > vis && maxtop > 0; }
+    bool hit(int px) const { return needed() && px >= area.x + area.w - STRIP; }
+    void draw() const {
+        if (!needed()) return;
+        int w = dragging ? 6 : 4;
+        ugfx_scroll_thumb(area.x + area.w - w - 2, area.y + 2, w, area.h - 4,
+                          top, total, vis, dragging);
+    }
+    int top_from_y(int py) const {  /* pointer y on the track -> clamped top (thumb-centred) */
+        int sy = area.y + 2, sh = area.h - 4;
+        int th = sh * vis / total; if (th < 16) th = 16; if (th > sh) th = sh;
+        int travel = sh - th; if (travel <= 0) return top;
+        int yy = py - sy - th / 2; if (yy < 0) yy = 0; if (yy > travel) yy = travel;
+        int nt = (int)((long)yy * maxtop / travel);
+        if (nt < 0) nt = 0; if (nt > maxtop) nt = maxtop;
+        return nt;
+    }
+};
+
 /* ----------------------------------------------------------------- ListView */
 /* The toolkit handles layout, scrolling, selection and hit-testing; the app
  * draws each row via render_row (so the list stays content-agnostic). */
@@ -134,10 +174,13 @@ public:
     bool on_hover(int x, int y) override;
     void on_leave() override;
     bool on_scroll(int delta) override;
+    void on_drag(int x, int y) override;        /* drag the shared scroll thumb (when focused) */
+    void on_button_up() override { sb.dragging = false; }
     int  rows_visible() const { return r.h / row_h; }
     void ensure_visible(int i);
     int  hover_row = -1;            /* row under the pointer (-1 none): faint hover layer */
 private:
+    ScrollBar sb;                  /* the shared scrollbar (Files + Spotlight get a real thumb) */
     unsigned last_tick = 0;
     int      last_row = -1;
 };
@@ -152,6 +195,7 @@ class TextField : public Widget {
 public:
     bool   multiline = false;
     bool   want_drag = true;        /* receive drag-select packets (on_drag wiring is in Window) */
+    int    radius = TH_R_SM;        /* corner radius; search boxes set TH_R_PILL for a Google-style pill */
     Color  bg, fg;
     void  *ctx = nullptr;
     void (*on_submit)(void *) = nullptr;    /* single-line: Enter           */
@@ -164,9 +208,10 @@ public:
     void        draw() override;
     bool        on_key(int key) override;
     bool        on_mouse(int x, int y, int btn) override;
-    void        on_drag(int x, int y) override { if (sb_drag) sb_set_top_from_y(y); else drag_to(x, y); }
-    void        on_button_up() override { sb_drag = false; }       /* end a scrollbar drag */
+    void        on_drag(int x, int y) override { if (sb.dragging) sb_set_top_from_y(y); else drag_to(x, y); }
+    void        on_button_up() override { sb.dragging = false; }   /* end a scrollbar drag */
     bool        on_scroll(int delta) override;                     /* multiline: scroll the viewport */
+    bool        shows_caret() const override { return visible; }    /* keeps the caret blinking when idle */
     void        drag_to(int x, int y);
     int         caret = 0;
 private:
@@ -174,10 +219,11 @@ private:
     int   len = 0, cap = 0;
     int   anchor = -1;              /* selection anchor (-1 = none) */
     int   top = 0, hoff = 0;        /* multiline vertical / single-line horizontal scroll */
-    bool  sb_drag = false;          /* dragging the right-edge scroll indicator (#12) */
-    int   sb_sy = 0, sb_sh = 0, sb_thumbh = 0, sb_maxtop = 0;  /* thumb geometry, cached by draw() */
+    ScrollBar sb;                   /* the shared scroll thumb (#12, now the global ScrollBar) */
     int   cols_cache = 1;
     int   last_caret = -1;          /* snap the view to the caret only when it moves (free wheel-scroll) */
+    unsigned last_click_t = 0;      /* tick of the last press, for double-click word-select */
+    int   last_click_i = -1;        /* caret index of the last press                         */
     void  ensure(int need);
     void  ins(const char *s, int n);
     void  del_range(int a, int b);
@@ -187,12 +233,13 @@ private:
     void  copy_sel(bool cut);
     void  paste();
     int   index_at(int px, int py);         /* pixel -> caret index */
-    /* scroll-indicator (#12): geometry of the right-edge thumb (false if not
-     * scrollable), the px hit-test for the thumb strip, and mapping a pointer y to
-     * the scroll position while dragging it. */
-    bool  sb_geom(int &sy, int &sh, int &thumby, int &thumbh, int &maxtop);
-    bool  in_scrollbar(int px) const { return px >= r.x + r.w - 8; }
+    /* scrollbar (#12, now the shared ScrollBar): press hit-test on the right-edge
+     * strip, and mapping a pointer y on the track to the scroll `top`. */
+    bool  in_scrollbar(int px) const { return sb.hit(px); }
     void  sb_set_top_from_y(int py);
+    void  select_word(int idx);             /* double-click: select the word around idx */
+    int   word_prev(int i) const;           /* Ctrl+Left:  start of the previous word    */
+    int   word_next(int i) const;           /* Ctrl+Right: start of the next word        */
     void  changed();
 };
 
@@ -235,6 +282,8 @@ protected:
     Vec<Widget *> kids;
     Widget *hot = nullptr;                      /* widget currently under the pointer */
     int esc = 0;                                /* ESC-sequence decoder state */
+    char csi[8] = {0};                          /* CSI parameter bytes (e.g. "1;5" for Ctrl) */
+    int  csi_n = 0;
 };
 
 } // namespace ui

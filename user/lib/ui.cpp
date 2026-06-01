@@ -90,9 +90,11 @@ void ListView::draw() {
         if (i != sel && i == hover_row)
             ugfx_state_layer(cell.x + TH_SP_XS, cell.y + 1, cell.w - 2 * TH_SP_XS, cell.h - 2, TH_R_SM, TH_HOVER_A);
     }
+    sb.set(r, top, count, rows_visible()); sb.draw();        /* the shared scroll thumb (Files / Spotlight) */
 }
 bool ListView::on_mouse(int x, int y, int btn) {
     (void)btn;
+    if (sb.hit(x)) { sb.dragging = true; top = sb.top_from_y(y); if (win) win->invalidate(); return true; }  /* scroll track */
     int row = top + (y - r.y) / row_h;
     if (row < 0 || row >= count) return true;
     sel = row;
@@ -121,6 +123,10 @@ bool ListView::on_scroll(int delta) {
     if (nt == top) return false;
     top = nt; return true;
 }
+void ListView::on_drag(int x, int y) {
+    (void)x;
+    if (sb.dragging) { int nt = sb.top_from_y(y); if (nt != top) { top = nt; if (win) win->invalidate(); } }
+}
 bool ListView::on_key(int key) {
     if (key == UK_UP)    { if (sel > 0) { sel--; ensure_visible(sel); if (on_select) on_select(ctx, sel); } return true; }
     if (key == UK_DOWN)  { if (sel + 1 < count) { sel++; ensure_visible(sel); if (on_select) on_select(ctx, sel); } return true; }
@@ -131,6 +137,14 @@ bool ListView::on_key(int key) {
 /* ---------------------------------------------------------------- TextField */
 #define TF_PAD 6
 #define TF_SEL RGB(54, 88, 144)
+#define TF_BLINK 32              /* caret on/off period, in event-loop ticks (~0.5s) */
+#define TF_DBLCLICK 24           /* max ticks between presses to count as a double-click */
+
+/* a "word" character for double-click select + Ctrl+arrow word jumps */
+static inline bool tf_wordch(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
 
 TextField::TextField() { bg = TH_SURF_0; fg = TH_TEXT; focusable = true; }
 TextField::~TextField() { if (buf) free(buf); }
@@ -220,35 +234,54 @@ int TextField::index_at(int px, int py) {
 }
 bool TextField::on_mouse(int x, int y, int btn) {
     (void)btn;
-    if (multiline && in_scrollbar(x)) {              /* press on the right-edge scroll thumb/track */
-        int sy, sh, ty, th, mt;
-        if (sb_geom(sy, sh, ty, th, mt)) { sb_drag = true; sb_set_top_from_y(y); return true; }
+    if (multiline && sb.hit(x)) { sb.dragging = true; sb_set_top_from_y(y); return true; }  /* press on the scroll track */
+    int idx = index_at(x, y);
+    unsigned now = win ? win->ticks : 0;
+    if (last_click_i >= 0 && (now - last_click_t) < TF_DBLCLICK &&
+        idx >= last_click_i - 1 && idx <= last_click_i + 1) {
+        select_word(idx);                 /* a quick second press near the first: select the word */
+    } else {
+        caret = idx; anchor = idx;        /* start a possible drag-selection */
     }
-    caret = index_at(x, y);
-    anchor = caret;                       /* start a possible drag-selection */
+    last_click_t = now; last_click_i = idx;
     if (win) win->invalidate();
     return true;
+}
+void TextField::select_word(int idx) {
+    if (!buf || len == 0) { anchor = -1; caret = 0; return; }
+    if (idx > len) idx = len;
+    int a, b;
+    if (idx < len && tf_wordch(buf[idx])) {           /* on a word char: take the whole run        */
+        a = b = idx;
+        while (a > 0   && tf_wordch(buf[a - 1])) a--;
+        while (b < len && tf_wordch(buf[b]))     b++;
+    } else if (idx > 0 && tf_wordch(buf[idx - 1])) {  /* just past a word: take the word to the left */
+        a = b = idx;
+        while (a > 0 && tf_wordch(buf[a - 1])) a--;
+    } else { anchor = idx; caret = idx; return; }     /* not on a word: just place the caret         */
+    anchor = a; caret = b;
+    printf("[ui] word %d %d\r\n", a, b);              /* double-click selection (also drives the test) */
+}
+int TextField::word_prev(int i) const {
+    if (!buf) return 0;
+    while (i > 0 && !tf_wordch(buf[i - 1])) i--;       /* skip separators left */
+    while (i > 0 &&  tf_wordch(buf[i - 1])) i--;       /* skip the word        */
+    return i;
+}
+int TextField::word_next(int i) const {
+    if (!buf) return 0;
+    while (i < len && !tf_wordch(buf[i])) i++;          /* skip separators right */
+    while (i < len &&  tf_wordch(buf[i])) i++;          /* skip the word         */
+    return i;
 }
 void TextField::drag_to(int x, int y) {
     int ni = index_at(x, y);
     if (ni != caret) { caret = ni; if (win) win->invalidate(); }
 }
-/* Geometry of the right-edge scroll thumb, cached by the last draw(). false when the
- * content fits (no scrollbar). */
-bool TextField::sb_geom(int &sy, int &sh, int &thumby, int &thumbh, int &maxtop) {
-    if (sb_sh <= 0 || sb_maxtop <= 0) return false;
-    sy = sb_sy; sh = sb_sh; thumbh = sb_thumbh; maxtop = sb_maxtop;
-    int travel = sh - thumbh;
-    thumby = sy + (maxtop > 0 && travel > 0 ? travel * top / maxtop : 0);
-    return true;
-}
-/* Map a pointer y on the track to a scroll position (thumb centre follows the
- * pointer), clamp, and emit telemetry the test reads. */
+/* Map a pointer y on the track to a scroll position (via the shared ScrollBar),
+ * clamp, and emit telemetry the test reads. */
 void TextField::sb_set_top_from_y(int py) {
-    if (sb_maxtop <= 0) return;
-    int travel = sb_sh - sb_thumbh; if (travel <= 0) return;
-    int ty = py - sb_sy - sb_thumbh / 2; if (ty < 0) ty = 0; if (ty > travel) ty = travel;
-    int nt = ty * sb_maxtop / travel; if (nt < 0) nt = 0; if (nt > sb_maxtop) nt = sb_maxtop;
+    int nt = sb.top_from_y(py);
     if (nt != top) { top = nt; if (win) win->invalidate(); }
     printf("[ui] sbtop=%d\r\n", top);
 }
@@ -276,6 +309,10 @@ bool TextField::on_key(int key) {
     }
     if (key == UK_LEFT)  { drop_sel_if(shift); if (caret > 0) caret--;   if (win) win->invalidate(); return true; }
     if (key == UK_RIGHT) { drop_sel_if(shift); if (caret < len) caret++; if (win) win->invalidate(); return true; }
+    if (key == UK_WORD_LEFT)  { anchor = -1; caret = word_prev(caret); printf("[ui] wjump %d\r\n", caret); if (win) win->invalidate(); return true; }
+    if (key == UK_WORD_RIGHT) { anchor = -1; caret = word_next(caret); printf("[ui] wjump %d\r\n", caret); if (win) win->invalidate(); return true; }
+    if (key == 0x17)          { del_range(word_prev(caret), caret); printf("[ui] wdel %d\r\n", caret); return true; }  /* Ctrl+Backspace */
+    if (key == UK_WORD_DEL)   { del_range(caret, word_next(caret)); printf("[ui] wdel %d\r\n", caret); return true; }  /* Ctrl+Delete    */
     if (key == UK_HOME)  { anchor = -1; while (caret > 0 && buf[caret - 1] != '\n') caret--; if (win) win->invalidate(); return true; }
     if (key == UK_END)   { anchor = -1; while (caret < len && buf[caret] != '\n') caret++; if (win) win->invalidate(); return true; }
     if ((key == UK_UP || key == UK_DOWN) && multiline) {
@@ -303,8 +340,10 @@ void TextField::draw() {
     int visrows = (r.h - 2 * TF_PAD) / rowh; if (visrows < 1) visrows = 1;
     bool foc = win && win->focus == this;
 
-    ugfx_fill(r.x, r.y, r.w, r.h, bg);
-    ugfx_rrect_border(r.x, r.y, r.w, r.h, TH_R_SM, 1, foc ? TH_ACCENT : TH_BORDER);
+    ugfx_rrect_aa(r.x, r.y, r.w, r.h, radius, bg);       /* rounded well (square corners read as "boxy") */
+    ugfx_rrect_border(r.x, r.y, r.w, r.h, radius, 1, foc ? TH_ACCENT : TH_BORDER);
+    /* single-line: vertically centre the text so a taller (pill) field looks right */
+    int sl_y = r.y + (r.h - fh) / 2;
 
     /* Follow the caret only when it MOVED (typing/arrows) so a wheel scroll is free;
      * always clamp the viewport to the content. */
@@ -322,13 +361,13 @@ void TextField::draw() {
     }
     else { if (cvc < hoff) hoff = cvc; if (cvc > hoff + cols - 1) hoff = cvc - (cols - 1); if (hoff < 0) hoff = 0; }
 
-    int sa = -1, sb = -1; if (has_sel()) sel_bounds(sa, sb);
+    int sa = -1, selb = -1; if (has_sel()) sel_bounds(sa, selb);   /* selection bounds (sb is the member) */
     ugfx_set_clip(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
     int vr = 0, vc = 0, caret_px = -1, caret_py = -1;
     for (int i = 0; i <= len; i++) {
         int dx, dy, drow;
         if (multiline) { drow = vr - top; dx = r.x + TF_PAD + vc * fw; dy = r.y + TF_PAD + drow * rowh; }
-        else           { drow = 0;        dx = r.x + TF_PAD + (vc - hoff) * fw; dy = r.y + TF_PAD; }
+        else           { drow = 0;        dx = r.x + TF_PAD + (vc - hoff) * fw; dy = sl_y; }
         bool onscreen = multiline ? (drow >= 0 && drow < visrows) : (vc >= hoff && vc < hoff + cols);
         if (i == caret && onscreen) { caret_px = dx; caret_py = dy; }
         if (i == len) break;
@@ -336,26 +375,16 @@ void TextField::draw() {
         if (multiline && ch == '\n') { vr++; vc = 0; continue; }
         char gc = (ch == '\n' || ch == '\t') ? ' ' : ch;
         if (onscreen) {
-            uint32_t cbg = (i >= sa && i < sb) ? TF_SEL : bg;
+            uint32_t cbg = (i >= sa && i < selb) ? TF_SEL : bg;
             if (cbg != bg) ugfx_fill(dx, dy, fw, fh, cbg);
             ugfx_char(dx, dy, gc, fg, cbg);
         }
         vc++;
         if (multiline && vc >= cols) { vr++; vc = 0; }
     }
-    if (foc && caret_px >= 0 && (((win ? win->ticks : 0) / 32) & 1) == 0)
-        ugfx_fill(caret_px, caret_py, 2, fh, TH_ACCENT);     /* blinking caret */
-    sb_sh = 0;                                               /* cache for the scrollbar hit-test/drag (#12) */
-    if (multiline && total_rows > visrows) {                 /* scroll indicator on the right edge */
-        int sy = r.y + 2, sh = r.h - 4;
-        int thumbh = sh * visrows / total_rows; if (thumbh < 16) thumbh = 16;
-        int maxtop = total_rows - visrows;
-        int thumby = sy + (maxtop > 0 ? (sh - thumbh) * top / maxtop : 0);
-        int tw = sb_drag ? 5 : 3;                                /* fatter + brighter while grabbed */
-        ugfx_rrect_a(r.x + r.w - tw - 2, thumby, tw, thumbh, 1,
-                     sb_drag ? ARGB(235, 150, 180, 230) : ARGB(150, 200, 210, 230));
-        sb_sy = sy; sb_sh = sh; sb_thumbh = thumbh; sb_maxtop = maxtop;
-    }
+    if (foc && caret_px >= 0 && (((win ? win->ticks : 0) / TF_BLINK) & 1) == 0)
+        ugfx_fill(caret_px, caret_py, 2, fh, TH_ACCENT);     /* blinking caret (Window pulses the repaint) */
+    if (multiline) { sb.set(r, top, total_rows, visrows); sb.draw(); }   /* the shared scroll thumb */
     ugfx_clip_none();
 }
 bool TextField::on_scroll(int delta) {
@@ -434,23 +463,32 @@ void Window::feed_key(int b) {
         if (b == 27) { esc = 1; return; }
         key = b;
     } else if (esc == 1) {
-        if (b == '[') { esc = 2; return; }
+        if (b == '[') { esc = 2; csi_n = 0; return; }
         esc = 0; key = b;
-    } else if (esc == 2) {
-        if (b >= '0' && b <= '9') { esc = 3; return; }    /* ESC[<n>~ : consume to '~' */
-        esc = 0;
+    } else { /* esc == 2: collect CSI parameters (digits + ';'), then a final byte */
+        if ((b >= '0' && b <= '9') || b == ';') {
+            if (csi_n < (int)sizeof(csi) - 1) csi[csi_n++] = (char)b;
+            return;
+        }
+        esc = 0; csi[csi_n] = 0;
+        int mod = 0;                                   /* xterm modifier param after ';' (Ctrl => 5) */
+        for (int i = 0; i < csi_n; i++) if (csi[i] == ';') {
+            for (int j = i + 1; j < csi_n && csi[j] >= '0' && csi[j] <= '9'; j++) mod = mod * 10 + (csi[j] - '0');
+            break;
+        }
+        bool ctrl = mod >= 2 && ((mod - 1) & 4);       /* (param-1) is a bitmask: Ctrl = bit 2 (4) */
         switch (b) {
         case 'A': key = UK_UP;    break;
         case 'B': key = UK_DOWN;  break;
-        case 'C': key = UK_RIGHT; break;
-        case 'D': key = UK_LEFT;  break;
+        case 'C': key = ctrl ? UK_WORD_RIGHT : UK_RIGHT; break;
+        case 'D': key = ctrl ? UK_WORD_LEFT  : UK_LEFT;  break;
         case 'H': key = UK_HOME;  break;
         case 'F': key = UK_END;   break;
+        case '~': if (csi_n >= 1 && csi[0] == '3') key = ctrl ? UK_WORD_DEL : UK_DEL;  /* ESC[3~ Del; ESC[3;5~ Ctrl+Del */
+                  else return;                                    /* Insert/PgUp/PgDn: ignored for now */
+                  break;
         default:  return;
         }
-    } else { /* esc == 3 */
-        if (b == '~') esc = 0;
-        return;
     }
     if (key < 0) return;
     bool handled = focus ? focus->on_key(key) : false;
@@ -495,6 +533,8 @@ int Window::run() {
             }
         }
         ticks++;
+        if (focus && focus->shows_caret() && (ticks % TF_BLINK) == 0)
+            dirty = true;                 /* pulse a repaint so the caret keeps blinking while idle */
         if (dirty) { redraw(); dirty = false; }
         sleep_ms(15);
     }

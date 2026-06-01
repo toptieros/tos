@@ -38,9 +38,9 @@ struct Spotlight : ui::Window {
     }
     void layout() {
         fh = ugfx_font_h();
-        int qh = fh + 16;
-        query.r = { 12, 12, w - 24, qh };
-        list.r  = { 8, 12 + qh + 8, w - 16, h - (12 + qh + 8) - 10 };
+        int qh = fh + 26;                                /* taller, Google-search-box proportions */
+        query.r = { 14, 14, w - 28, qh };
+        list.r  = { 8, 14 + qh + 10, w - 16, h - (14 + qh + 10) - 10 };
         list.row_h = fh + 14;
     }
     void on_resize(int, int) override { layout(); }
@@ -66,7 +66,7 @@ struct Spotlight : ui::Window {
         if (!create(cw, ch, "Spotlight")) return false;
         bg = RGB(28, 32, 44);
         napp = app_scan(apps, 16);
-        query.bg = RGB(20, 23, 32); query.ctx = this;
+        query.bg = RGB(20, 23, 32); query.ctx = this; query.radius = TH_R_PILL;
         query.on_change = [](void *c) { ((Spotlight *)c)->refilter(); };
         query.on_submit = [](void *c) { ((Spotlight *)c)->launch_sel(); };
         list.bg = RGB(24, 27, 37); list.ctx = this; list.render_row = render_row;

@@ -96,6 +96,8 @@ static void key_main(uint8_t sc) {
         if (raw == 'v') { emit((char)KEY_TERM_PASTE); return; }
     }
 
+    if (ctrl() && c == '\b') { emit(0x17); return; }               /* Ctrl+Backspace: delete previous word (^W) */
+
     if (c >= 'a' && c <= 'z') {                                     /* letter: Shift XOR Caps */
         if (shift() ^ caps) c -= 32;
     } else if (shift() && shifted[sc]) {                            /* symbol: Shift only      */
@@ -176,14 +178,14 @@ static void handle_extended(uint8_t code, int release) {
     switch (code) {
     case 0x48: emit_str("\x1b[A"); break;        /* Up    */
     case 0x50: emit_str("\x1b[B"); break;        /* Down  */
-    case 0x4D: emit_str("\x1b[C"); break;        /* Right */
-    case 0x4B: emit_str("\x1b[D"); break;        /* Left  */
+    case 0x4D: emit_str(ctrl() ? "\x1b[1;5C" : "\x1b[C"); break;   /* Right (Ctrl: word jump) */
+    case 0x4B: emit_str(ctrl() ? "\x1b[1;5D" : "\x1b[D"); break;   /* Left  (Ctrl: word jump) */
     case 0x47: emit_str("\x1b[H"); break;        /* Home  */
     case 0x4F: emit_str("\x1b[F"); break;        /* End   */
     case 0x49: emit_str("\x1b[5~"); break;       /* PgUp  */
     case 0x51: emit_str("\x1b[6~"); break;       /* PgDn  */
     case 0x52: emit_str("\x1b[2~"); break;       /* Insert */
-    case 0x53: emit_str("\x1b[3~"); break;       /* Delete */
+    case 0x53: emit_str(ctrl() ? "\x1b[3;5~" : "\x1b[3~"); break;  /* Delete (Ctrl: delete word) */
     case 0x1C: emit('\n'); break;                /* keypad Enter */
     case 0x35: emit('/'); break;                 /* keypad /     */
     }

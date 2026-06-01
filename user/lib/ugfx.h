@@ -64,6 +64,11 @@ void ugfx_rrect_a(int x, int y, int w, int h, int rad, uint32_t argb);   /* tran
 void ugfx_rrect_border(int x, int y, int w, int h, int rad, int t, uint32_t argb);
 /* A translucent-white "state layer" over a rounded rect: hover/press feedback. */
 void ugfx_state_layer(int x, int y, int w, int h, int rad, int alpha);
+/* The one scrollbar-thumb renderer shared by every scrollable surface in the OS
+ * (the toolkit ScrollBar and the terminal). Draws a rounded thumb inside the
+ * vertical strip [x,x+w) x [y,y+h), sized/placed to show `vis` of `total` units
+ * scrolled to `top`; `active` brightens it (e.g. while dragging). No-op if it fits. */
+void ugfx_scroll_thumb(int x, int y, int w, int h, int top, int total, int vis, int active);
 /* Frosted glass: blur the backdrop already painted in the target inside this
  * (optionally rounded) rect, then overlay `tint` (ARGB) on top -- the translucent
  * panel look of macOS/Quickshell, but with a real backdrop blur instead of a flat
@@ -73,6 +78,9 @@ void ugfx_state_layer(int x, int y, int w, int h, int rad, int alpha);
 void ugfx_frost(int x, int y, int w, int h, int rad, uint32_t tint);
 /* Soft elevation shadow; `level` 0..5 raises feather + downward offset together. */
 void ugfx_elevation(int x, int y, int w, int h, int rad, int level);
+/* The feather + downward offset a given elevation level extends, so a compositor can
+ * size the shadow's dirty/cull halo from the same numbers it's drawn with. */
+void ugfx_elevation_extent(int level, int *spread, int *dy);
 /* Soft drop shadow for a rounded rect of (w,h,rad): a `spread`-px feathered ring
  * of `color` at peak alpha `max_a`, drawn OUTSIDE the shape (the window covers
  * the inside). Draw it before the window. */

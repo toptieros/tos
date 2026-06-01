@@ -374,12 +374,10 @@ void _ustart(void) {
         } else if (cur_shown) hide_cursor();             /* scrolled back: no live cursor */
         if (dirty) {                                     /* scrollback position indicator on the right edge */
             if (view_off > 0 && sb_count > 0) {
-                ugfx_fill(sw - 3, 0, 3, sh, pal[DEF_BG]);             /* clear the strip, then draw the thumb */
-                int total = sb_count + rows, th = sh * rows / total; if (th < 16) th = 16;
-                int ty = (sh - th) * (sb_count - view_off) / sb_count;
-                ugfx_fill(sw - 3, ty, 3, th, RGB(120, 140, 170));
+                ugfx_fill(sw - 4, 0, 4, sh, pal[DEF_BG]);             /* clear the strip, then draw the shared thumb */
+                ugfx_scroll_thumb(sw - 4, 0, 4, sh, sb_count - view_off, sb_count + rows, rows, 0);
                 ind_shown = 1;
-            } else if (ind_shown) { ugfx_fill(sw - 3, 0, 3, sh, pal[DEF_BG]); ind_shown = 0; }
+            } else if (ind_shown) { ugfx_fill(sw - 4, 0, 4, sh, pal[DEF_BG]); ind_shown = 0; }
             win_present(win);
         }
 
