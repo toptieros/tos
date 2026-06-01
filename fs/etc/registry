@@ -11,4 +11,6 @@ ui.dock.autohide  = false
 ui.dock.size      = 48
 
 clock.format      = 24h
+clock.seconds     = true
+clock.weekday     = true
 dock.pinned       = Terminal,Files

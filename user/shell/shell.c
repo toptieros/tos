@@ -443,6 +443,9 @@ void _ustart(void) {
             cmd_sleep(line + 6);
         } else if (starts(line, "echo ")) {
             print(line + 5); print("\r\n");
+        } else if (starts(line, "notify ")) {
+            notify("Terminal", line + 7);            /* post a desktop notification (toast) */
+            print("notification sent\r\n");
         } else if (starts(line, "copy ")) {
             const char *t = line + 5; int n = 0; while (t[n]) n++;
             clip_put(CLIP_TEXT, "text", t, n);

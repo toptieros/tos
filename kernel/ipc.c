@@ -318,3 +318,40 @@ int wm_kill_window(int id) {
     if (owner < 0) return -1;
     return sched_request_kill(owner);
 }
+
+/* --- notifications -------------------------------------------------------- *
+ * A small global ring of pending notifications. Any task posts with notify();
+ * the compositor drains it one per frame (wm_poll_notify) and turns each into a
+ * toast + a notification-center entry. Overwrites the oldest if it overflows, so
+ * a burst always surfaces the newest. */
+#define NOTIFQ 16
+static struct notif notif_ring[NOTIFQ];
+static volatile int notif_h, notif_t;
+
+static void ncopy(char *dst, const char *src, int cap) {
+    int i = 0; for (; i < cap - 1 && src[i]; i++) dst[i] = src[i]; dst[i] = 0;
+}
+
+int notify_post(const struct notif *n) {
+    uint64_t f = spin_lock_irqsave(&ipc_lock);
+    int next = (notif_h + 1) % NOTIFQ;
+    if (next == notif_t) notif_t = (notif_t + 1) % NOTIFQ;   /* full: drop the oldest */
+    ncopy(notif_ring[notif_h].title, n->title, NOTIF_TITLE);
+    ncopy(notif_ring[notif_h].body,  n->body,  NOTIF_BODY);
+    notif_h = next;
+    spin_unlock_irqrestore(&ipc_lock, f);
+    return 0;
+}
+
+int wm_poll_notify(struct notif *out) {
+    if (sched_current() != compositor) return 0;
+    uint64_t f = spin_lock_irqsave(&ipc_lock);
+    int got = 0;
+    if (notif_t != notif_h) {
+        *out = notif_ring[notif_t];
+        notif_t = (notif_t + 1) % NOTIFQ;
+        got = 1;
+    }
+    spin_unlock_irqrestore(&ipc_lock, f);
+    return got;
+}

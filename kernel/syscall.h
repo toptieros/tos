@@ -72,9 +72,27 @@
 #define SYS_WM_KILL     58 /* (window id)        -> request an async kill of its owner; 0/-1 *
                             * compositor-only; the task dies on its next return to ring 3.   */
 
+/* --- notifications: any app posts a toast; the compositor drains the queue ------ */
+#define SYS_NOTIFY      59 /* (struct notif*)    -> post a notification to the WM; 0/-1       */
+#define SYS_WM_NOTIFY   60 /* (struct notif*)    -> compositor: dequeue one; 1 if got, else 0 */
+#define SYS_KBD_MODS    61 /* ()                 -> live keyboard modifier bitmask (KMOD_*)   */
+
+/* Keyboard modifier bitmask (SYS_KBD_MODS, and packed into WEV_KEY -- see below). */
+#define KMOD_SHIFT 1
+#define KMOD_CTRL  2
+#define KMOD_ALT   4
+#define KMOD_SUPER 8
+
 #define CLIP_TEXT 0
 #define CLIP_FILE 1
 struct clipinfo { uint32_t type; uint32_t len; uint32_t active; char name[32]; };
+
+/* A desktop notification: a short title + body an app posts with notify(); the
+ * compositor shows the newest as a top-right toast and keeps a ring for the
+ * notification center (design/ui.md). Fixed-size so it copies by value. */
+#define NOTIF_TITLE 48
+#define NOTIF_BODY  128
+struct notif { char title[NOTIF_TITLE]; char body[NOTIF_BODY]; };
 
 #define TIMER_HZ  100 /* PIT preemption/sleep ticks per second (see timer.c)        */
 
@@ -175,12 +193,18 @@ struct wininfo {              /* SYS_WIN_CREATE: in = w,h,title,flags; out = id,
     uint32_t flags;           /* in:  WIN_* (0 = an ordinary window) */
 };
 
-#define WEV_KEY    1          /* winevent.a = an input byte (may be part of an ESC seq) */
+#define WEV_KEY    1          /* key DOWN; a = WEV_KEY_PACK(byte, mods): byte in bits 0-7,
+                               * KMOD_* modifier flags in bits 8-11 (compositor packs the
+                               * live modifier state). Legacy readers can mask `a & 0xff`. */
 #define WEV_CLOSE  2          /* the compositor asked the window to close               */
 #define WEV_RESIZE 3          /* winevent.a = (w << 16) | h : new client size requested */
 #define WEV_MOUSE  4          /* a click in the client area; a = WEV_MOUSE_PACK(...)    */
 #define WEV_NAV    5          /* a navigation gesture: a = 0 back, 1 forward (mouse side buttons) */
 #define WEV_SCROLL 6          /* scroll wheel over the client: a = WEV_MOUSE_PACK(x,y,delta&0xff), delta signed (+ up) */
+#define WEV_KEYUP  7          /* a modifier key was released; a = the new KMOD_* mask still held */
+#define WEV_KEY_PACK(byte, mods) (((unsigned)(byte) & 0xff) | (((unsigned)(mods) & 0xf) << 8))
+#define WEV_KEY_BYTE(a) ((a) & 0xff)
+#define WEV_KEY_MODS(a) (((a) >> 8) & 0xf)
 /* WEV_MOUSE packs a click into the single event word: client-relative x,y (12
  * bits each) and the button bitmask (bit0 left). The compositor posts one on
  * each press edge inside a window's client area. */

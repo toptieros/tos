@@ -418,6 +418,35 @@ def t_notepad_wordedit(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_shift_select(uefi):
+    # Richer key events: the keyboard now encodes Shift into nav-key CSI sequences
+    # (xterm modifier param 2, like Ctrl=5), and the compositor surfaces the live
+    # modifier mask -- so the toolkit can finally SEE Shift. Shift+Left/Right/Home/End
+    # EXTEND the TextField selection (anchor kept) instead of dropping it, printed as
+    # "[ui] shsel a b". Releasing a modifier reaches the focused window as WEV_KEYUP,
+    # traced "[twm] keyup <mask>". Driven keyboard-only through kernel->twm->toolkit in
+    # Notepad. Buffer "hello world" -> caret ends at 11.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        t.key("meta_l-spc", delay=0.1)                 # Super+Space -> Spotlight
+        assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06); t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 18), "Notepad did not launch"
+        assert t.wait_for("[twm] focus Notepad", 12), "Notepad did not take focus"
+        t.type("hello world", delay=0.05)              # caret at 11
+        # Shift+Left extends the selection leftward one char at a time (anchor stays 11).
+        for want in ("[ui] shsel 10 11", "[ui] shsel 9 11", "[ui] shsel 8 11"):
+            t.key("shift-left", delay=0.08)
+            assert t.wait_for(want, 6), f"Shift+Left did not extend the selection: want {want!r}"
+        # Shift+Home extends to the start of the line -> selection [0,11].
+        t.key("shift-home", delay=0.1)
+        assert t.wait_for("[ui] shsel 0 11", 6), "Shift+Home did not extend to the line start"
+        # releasing a modifier surfaces as a key-up event to the focused window
+        assert t.wait_for("[twm] keyup", 6), "releasing a modifier did not post WEV_KEYUP"
+        t.screenshot("/tmp/tos_shiftselect.ppm")
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_spotlight(uefi):
     # Super+Space opens the Spotlight launcher (a popup). Typing filters the
     # installed apps; Enter launches the match (here: Notepad).
@@ -497,6 +526,79 @@ def t_dock_launchpad(uefi):
         t.click(*lp)                                  # single click opens it
         assert t.wait_for("[launchpad] up", 8), "clicking the dock Launchpad button did not open it"
         assert t.wait_for("[twm] focus Launchpad", 6), "Launchpad did not focus"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_statusbar(uefi):
+    # ui.md phase 2: the top bar's right side carries a status cluster -- placeholder
+    # network/volume/battery glyphs + a registry-driven clock. twm traces the cluster
+    # layout ("[twm] statusbar net ... vol ... bat ... cc ...", strictly L->R) and the
+    # formatted clock once ("[twm] clk \"...\""). The shipped defaults (clock.format=24h,
+    # clock.seconds=true, clock.weekday=true) render e.g. "Fri 14:09:09".
+    with Tos(uefi=uefi) as t:
+        assert t.wait_for("[twm] desktop ready", 12), "desktop did not come up"
+        m = re.search(r"\[twm\] statusbar net (\d+) vol (\d+) bat (\d+) bell (\d+) cc (\d+)", t.serial())
+        assert m, "status cluster did not report its layout"
+        net, vol, bat, bell, cc = (int(g) for g in m.groups())
+        assert cc < net < vol < bat < bell, \
+            f"cluster not laid out left-to-right: cc={cc} net={net} vol={vol} bat={bat} bell={bell}"
+        c = re.search(r'\[twm\] clk "([^"]*)"', t.serial())
+        assert c, "clock did not render / trace"
+        assert re.match(r"^[A-Z][a-z][a-z] \d\d:\d\d:\d\d$", c.group(1)), \
+            f"default clock format wrong: {c.group(1)!r} (want 'Ddd HH:MM:SS')"
+        t.screenshot("/tmp/tos_statusbar.ppm")
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_notifications(uefi):
+    # ui.md phase 3: an app posts a notification with notify(); twm slides the newest in
+    # as a top-right toast and keeps a ring for the notification center (toggled by the
+    # bell status item). The shell's `notify <text>` posts one ("[twm] notify <title>").
+    # Clicking the bell opens the center ("[twm] notifcenter open <n>", n>=1 here).
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        m = re.search(r"\[twm\] statusbar .* bell (\d+) cc", t.serial())
+        assert m, "status cluster (with bell) did not report its layout"
+        bell_x = int(m.group(1))
+        t.line("notify Hello from tOS")
+        assert t.wait_for("[twm] notify Terminal", 8), "notify() did not reach the compositor"
+        t.screenshot("/tmp/tos_toast.ppm")                  # toast is up ~3.7s
+        t.click(bell_x + 9, 11)                             # the bell status item -> open the center
+        assert t.wait_for("[twm] notifcenter open", 6), "the bell did not open the notification center"
+        c = re.search(r"\[twm\] notifcenter open (\d+)", t.serial())
+        assert c and int(c.group(1)) >= 1, "notification center did not list the posted notification"
+        t.screenshot("/tmp/tos_notifcenter.ppm")
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_menubar(uefi):
+    # #6/#8: the logo and the focused app's name are clickable menu-bar tiles. twm
+    # reports each tile's geometry ("[twm] menubar logo <x> <w> app <x> <w>") and, when
+    # a dropdown opens, its rows ("[twm] menu logo|app <t> y <rowtop> row <h> x <x>").
+    # Clicking the logo opens the system menu; clicking the app name opens the app menu,
+    # whose "Quit" item (index 1 -> "[twm] menuitem 2 1") closes the focused window.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never focused"
+        m = re.search(r"\[twm\] menubar logo (\d+) (\d+) app (\d+) (\d+)", t.serial())
+        assert m, "menu-bar tiles did not report their geometry"
+        lx, lw, ax, aw = (int(g) for g in m.groups())
+        # logo -> system menu
+        t.click(lx + lw // 2, 11)
+        assert t.wait_for("[twm] menu logo", 6), "clicking the logo did not open the system menu"
+        t.screenshot("/tmp/tos_menu_logo.ppm")
+        t.click(400, 320)                                   # click away dismisses the dropdown
+        # app name -> app menu
+        t.click(ax + aw // 2, 11)
+        assert t.wait_for("[twm] menu app Terminal", 6), "clicking the app name did not open the app menu"
+        g = re.search(r"\[twm\] menu app Terminal y (\d+) row (\d+) x (\d+)", t.serial())
+        assert g, "app menu did not report its row geometry"
+        rowtop, row, mx = (int(v) for v in g.groups())
+        t.screenshot("/tmp/tos_menu_app.ppm")
+        # click the 2nd row ("Quit") -> closes the focused Terminal window (WEV_CLOSE)
+        t.click(mx + 12, rowtop + row + row // 2)
+        assert t.wait_for("[twm] menuitem 2 1", 6), "selecting Quit did not register"
+        assert t.wait_for("[twm] focus desktop", 8), "Quit did not close the Terminal window"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -790,10 +892,10 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     t_spawn_concurrency, t_gui, t_files_app, t_clipboard_summon, t_clipboard_popup_esc,
     t_window_switch, t_super_q_close, t_super_kill, t_term_paste, t_notepad_edit_save,
-    t_notepad_wordedit,
-    t_spotlight, t_spotlight_nav, t_launchpad, t_launchpad_search, t_dock_launchpad,
+    t_notepad_wordedit, t_shift_select,
+    t_spotlight, t_spotlight_nav, t_launchpad, t_launchpad_search, t_dock_launchpad, t_menubar,
     t_mouse, t_many_files, t_date, t_ram_scales, t_lspci, t_beep, t_reboot,
-    t_scrollbar_drag,
+    t_scrollbar_drag, t_statusbar, t_notifications,
 ]
 # A representative subset on UEFI to confirm both boot paths reach the same OS.
 UEFI_TESTS = [t_boot_and_ls, t_cat_motd, t_write_then_cat, t_rm, t_partition,

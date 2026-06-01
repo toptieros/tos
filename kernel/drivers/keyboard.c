@@ -74,6 +74,37 @@ static int ctrl(void)  { return lctrl  || rctrl;  }
 static int alt(void)   { return lalt   || ralt;   }
 static int gui(void)   { return lgui   || rgui;   }   /* Super / Windows key */
 
+/* The live modifier bitmask (KMOD_*), surfaced to the compositor so apps can see
+ * which modifiers are held -- the foundation for shift-select, chord routing, and
+ * the Alt-Tab overlay. */
+unsigned kbd_mods(void) {
+    return (shift() ? KMOD_SHIFT : 0) | (ctrl() ? KMOD_CTRL : 0) |
+           (alt()   ? KMOD_ALT   : 0) | (gui()  ? KMOD_SUPER : 0);
+}
+/* xterm modifier parameter for a nav-key CSI: 1 + Shift(1) + Alt(2) + Ctrl(4),
+ * so 1 = no modifiers, 5 = Ctrl, 2 = Shift, 6 = Ctrl+Shift (matches the toolkit's
+ * CSI decoder, which reads (param-1) as a bitmask). */
+static int xterm_mod(void) {
+    return 1 + (shift() ? 1 : 0) + (alt() ? 2 : 0) + (ctrl() ? 4 : 0);
+}
+/* Emit a cursor/nav CSI, adding the xterm modifier param when a modifier is held.
+ * `lead` is the numeric prefix kept even when unmodified ("" for cursor/Home/End,
+ * which gain an implicit "1" only once modified; "3" for Delete's ESC[3~). */
+static void emit_nav(const char *lead, char final) {
+    int m = xterm_mod();
+    char seq[16]; int i = 0;
+    seq[i++] = 0x1b; seq[i++] = '[';
+    if (m > 1) {
+        const char *l = lead[0] ? lead : "1";
+        for (const char *p = l; *p; p++) seq[i++] = *p;
+        seq[i++] = ';'; seq[i++] = (char)('0' + m);
+    } else {
+        for (const char *p = lead; *p; p++) seq[i++] = *p;
+    }
+    seq[i++] = final; seq[i] = 0;
+    emit_str(seq);
+}
+
 /* A main-block key was pressed: translate with the current modifiers. */
 static void key_main(uint8_t sc) {
     char c = base[sc];
@@ -176,16 +207,16 @@ static void handle_extended(uint8_t code, int release) {
     if (release) return;
     gui_armed = 0;                               /* any other extended key press cancels the tap */
     switch (code) {
-    case 0x48: emit_str("\x1b[A"); break;        /* Up    */
-    case 0x50: emit_str("\x1b[B"); break;        /* Down  */
-    case 0x4D: emit_str(ctrl() ? "\x1b[1;5C" : "\x1b[C"); break;   /* Right (Ctrl: word jump) */
-    case 0x4B: emit_str(ctrl() ? "\x1b[1;5D" : "\x1b[D"); break;   /* Left  (Ctrl: word jump) */
-    case 0x47: emit_str("\x1b[H"); break;        /* Home  */
-    case 0x4F: emit_str("\x1b[F"); break;        /* End   */
+    case 0x48: emit_nav("", 'A'); break;         /* Up    (+Shift: extend selection) */
+    case 0x50: emit_nav("", 'B'); break;         /* Down  (+Shift: extend selection) */
+    case 0x4D: emit_nav("", 'C'); break;         /* Right (Ctrl: word jump; Shift: extend) */
+    case 0x4B: emit_nav("", 'D'); break;         /* Left  (Ctrl: word jump; Shift: extend) */
+    case 0x47: emit_nav("", 'H'); break;         /* Home  (+Shift: extend selection) */
+    case 0x4F: emit_nav("", 'F'); break;         /* End   (+Shift: extend selection) */
     case 0x49: emit_str("\x1b[5~"); break;       /* PgUp  */
     case 0x51: emit_str("\x1b[6~"); break;       /* PgDn  */
     case 0x52: emit_str("\x1b[2~"); break;       /* Insert */
-    case 0x53: emit_str(ctrl() ? "\x1b[3;5~" : "\x1b[3~"); break;  /* Delete (Ctrl: delete word) */
+    case 0x53: emit_nav("3", '~'); break;        /* Delete (Ctrl: delete word) */
     case 0x1C: emit('\n'); break;                /* keypad Enter */
     case 0x35: emit('/'); break;                 /* keypad /     */
     }

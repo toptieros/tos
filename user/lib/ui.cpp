@@ -127,7 +127,8 @@ void ListView::on_drag(int x, int y) {
     (void)x;
     if (sb.dragging) { int nt = sb.top_from_y(y); if (nt != top) { top = nt; if (win) win->invalidate(); } }
 }
-bool ListView::on_key(int key) {
+bool ListView::on_key(int key, bool shift) {
+    (void)shift;
     if (key == UK_UP)    { if (sel > 0) { sel--; ensure_visible(sel); if (on_select) on_select(ctx, sel); } return true; }
     if (key == UK_DOWN)  { if (sel + 1 < count) { sel++; ensure_visible(sel); if (on_select) on_select(ctx, sel); } return true; }
     if (key == UK_ENTER || key == '\n') { if (sel >= 0 && on_activate) on_activate(ctx, sel); return true; }
@@ -285,8 +286,7 @@ void TextField::sb_set_top_from_y(int py) {
     if (nt != top) { top = nt; if (win) win->invalidate(); }
     printf("[ui] sbtop=%d\r\n", top);
 }
-bool TextField::on_key(int key) {
-    bool shift = false;                   /* the toolkit doesn't surface Shift yet; selection via drag/Ctrl+A */
+bool TextField::on_key(int key, bool shift) {  /* shift => extend the selection (anchor kept) */
     if (key == 0x03) { copy_sel(false); return true; }            /* Ctrl+C */
     if (key == 0x18) { copy_sel(true);  return true; }            /* Ctrl+X */
     if (key == 0x16) { paste();         return true; }            /* Ctrl+V */
@@ -307,14 +307,16 @@ bool TextField::on_key(int key) {
         else if (caret < len) del_range(caret, caret + 1);
         return true;
     }
-    if (key == UK_LEFT)  { drop_sel_if(shift); if (caret > 0) caret--;   if (win) win->invalidate(); return true; }
-    if (key == UK_RIGHT) { drop_sel_if(shift); if (caret < len) caret++; if (win) win->invalidate(); return true; }
-    if (key == UK_WORD_LEFT)  { anchor = -1; caret = word_prev(caret); printf("[ui] wjump %d\r\n", caret); if (win) win->invalidate(); return true; }
-    if (key == UK_WORD_RIGHT) { anchor = -1; caret = word_next(caret); printf("[ui] wjump %d\r\n", caret); if (win) win->invalidate(); return true; }
+    /* report a shift-extended selection (drives the test + is handy telemetry) */
+    #define SHSEL() do { if (shift && has_sel()) { int _a, _b; sel_bounds(_a, _b); printf("[ui] shsel %d %d\r\n", _a, _b); } } while (0)
+    if (key == UK_LEFT)  { drop_sel_if(shift); if (caret > 0) caret--;   SHSEL(); if (win) win->invalidate(); return true; }
+    if (key == UK_RIGHT) { drop_sel_if(shift); if (caret < len) caret++; SHSEL(); if (win) win->invalidate(); return true; }
+    if (key == UK_WORD_LEFT)  { drop_sel_if(shift); caret = word_prev(caret); SHSEL(); printf("[ui] wjump %d\r\n", caret); if (win) win->invalidate(); return true; }
+    if (key == UK_WORD_RIGHT) { drop_sel_if(shift); caret = word_next(caret); SHSEL(); printf("[ui] wjump %d\r\n", caret); if (win) win->invalidate(); return true; }
     if (key == 0x17)          { del_range(word_prev(caret), caret); printf("[ui] wdel %d\r\n", caret); return true; }  /* Ctrl+Backspace */
     if (key == UK_WORD_DEL)   { del_range(caret, word_next(caret)); printf("[ui] wdel %d\r\n", caret); return true; }  /* Ctrl+Delete    */
-    if (key == UK_HOME)  { anchor = -1; while (caret > 0 && buf[caret - 1] != '\n') caret--; if (win) win->invalidate(); return true; }
-    if (key == UK_END)   { anchor = -1; while (caret < len && buf[caret] != '\n') caret++; if (win) win->invalidate(); return true; }
+    if (key == UK_HOME)  { drop_sel_if(shift); while (caret > 0 && buf[caret - 1] != '\n') caret--; SHSEL(); if (win) win->invalidate(); return true; }
+    if (key == UK_END)   { drop_sel_if(shift); while (caret < len && buf[caret] != '\n') caret++; SHSEL(); if (win) win->invalidate(); return true; }
     if ((key == UK_UP || key == UK_DOWN) && multiline) {
         int vr, vc; tf_posof(buf, len, caret, cols_cache, true, vr, vc);
         int tr = key == UK_UP ? vr - 1 : vr + 1; if (tr < 0) return true;
@@ -327,8 +329,9 @@ bool TextField::on_key(int key) {
                 if (ch == '\n') { if (r0 == tr) { found = i; break; } r0++; c0 = 0; }
                 else { c0++; if (c0 >= cols_cache) { if (r0 == tr) { found = i + 1; break; } r0++; c0 = 0; } } }
         }
-        anchor = -1; caret = found; if (win) win->invalidate(); return true;
+        drop_sel_if(shift); caret = found; SHSEL(); if (win) win->invalidate(); return true;
     }
+    #undef SHSEL
     return false;
 }
 void TextField::draw() {
@@ -459,6 +462,7 @@ void Window::dispatch_scroll(int x, int y, int delta) {
 }
 void Window::feed_key(int b) {
     int key = -1;
+    bool shift = false;                                /* set from the CSI modifier param (Shift => bit 0) */
     if (esc == 0) {
         if (b == 27) { esc = 1; return; }
         key = b;
@@ -477,6 +481,7 @@ void Window::feed_key(int b) {
             break;
         }
         bool ctrl = mod >= 2 && ((mod - 1) & 4);       /* (param-1) is a bitmask: Ctrl = bit 2 (4) */
+        shift     = mod >= 2 && ((mod - 1) & 1);        /* Shift = bit 0 (xterm param 2 = Shift)     */
         switch (b) {
         case 'A': key = UK_UP;    break;
         case 'B': key = UK_DOWN;  break;
@@ -491,7 +496,7 @@ void Window::feed_key(int b) {
         }
     }
     if (key < 0) return;
-    bool handled = focus ? focus->on_key(key) : false;
+    bool handled = focus ? focus->on_key(key, shift) : false;
     if (!handled) on_key(key);                       /* unconsumed keys -> app-level */
     dirty = true;
 }

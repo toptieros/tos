@@ -61,7 +61,7 @@ public:
     virtual bool on_mouse(int x, int y, int btn) { (void)x; (void)y; (void)btn; return false; }
     virtual void on_drag(int x, int y) { (void)x; (void)y; }     /* button-held move over this widget */
     virtual void on_button_up() {}                              /* pointer button released (end a drag) */
-    virtual bool on_key(int key) { (void)key; return false; }   /* true if consumed */
+    virtual bool on_key(int key, bool shift = false) { (void)key; (void)shift; return false; }  /* shift: held-Shift (selection extend); true if consumed */
     /* pointer moved over the widget (absolute coords); return true if its look
      * changed and the window must repaint. The base hover/leave (the `hovered`
      * flag) is managed by Window; override only for sub-element hover (rows etc.). */
@@ -170,7 +170,7 @@ public:
     ListView();
     void draw() override;
     bool on_mouse(int x, int y, int btn) override;
-    bool on_key(int key) override;
+    bool on_key(int key, bool shift = false) override;
     bool on_hover(int x, int y) override;
     void on_leave() override;
     bool on_scroll(int delta) override;
@@ -206,7 +206,7 @@ public:
     const char *text() const { return buf ? buf : ""; }
     int         length() const { return len; }
     void        draw() override;
-    bool        on_key(int key) override;
+    bool        on_key(int key, bool shift = false) override;
     bool        on_mouse(int x, int y, int btn) override;
     void        on_drag(int x, int y) override { if (sb.dragging) sb_set_top_from_y(y); else drag_to(x, y); }
     void        on_button_up() override { sb.dragging = false; }   /* end a scrollbar drag */

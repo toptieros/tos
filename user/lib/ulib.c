@@ -57,6 +57,16 @@ int  pty_read(int id, void *buf, int len)        { return (int)sc3(SYS_PTY_READ,
 int  pty_write(int id, const void *buf, int len) { return (int)sc3(SYS_PTY_WRITE, (uint64_t)id, (uint64_t)buf, (uint64_t)len); }
 void pty_close(int id)         { sc(SYS_PTY_CLOSE, (uint64_t)id); }
 void sysinfo(struct sysinfo *si) { sc(SYS_SYSINFO, (uint64_t)si); }
+void notify(const char *title, const char *body) {
+    struct notif n; int i = 0;
+    for (; i < NOTIF_TITLE - 1 && title && title[i]; i++) n.title[i] = title[i];
+    n.title[i] = 0;
+    for (i = 0; i < NOTIF_BODY - 1 && body && body[i]; i++) n.body[i] = body[i];
+    n.body[i] = 0;
+    sc(SYS_NOTIFY, (uint64_t)&n);
+}
+int wm_poll_notify(struct notif *out) { return (int)sc(SYS_WM_NOTIFY, (uint64_t)out); }
+unsigned kbd_mods(void)        { return (unsigned)sc(SYS_KBD_MODS, 0); }
 
 /* system clipboard */
 int  clip_put(int type, const char *name, const void *data, int len) {

@@ -14,13 +14,15 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done (see the changelog).
 ## Open — the road ahead
 
 ### Toolkit & desktop UI
-- [ ] **Menu-bar API for apps (#6).** When an app is focused the top-left shows its
-  name; design an API letting an app add **menu tiles** there (first tile = app name
-  → About / Preferences / Quit; apps add File / Edit / Help, macOS-style). The "app
-  menus" half of the Desktop UI roadmap. See [`design/ui.md`](design/ui.md).
-- [ ] **OS-logo dropdown (#8).** Clicking the logo at top-left opens a dropdown
-  (Preferences / Help / About; items can be inert placeholders at first). Shares the
-  menu-tile machinery from #6.
+- [x] **Status-bar cluster (ui.md phase 2).** *(done — see changelog)*
+- [x] **Notifications / toasts (ui.md phase 3).** *(done — see changelog)*
+- [~] **Menu-bar API for apps (#6).** The menu-tile machinery + the **app tile**
+  (the focused app's name → About / Quit, Quit = WEV_CLOSE) are **done** (compositor-
+  owned; see changelog). Still open: an **app→WM protocol** so apps declare their *own*
+  File / Edit / Help tiles + custom items (`SYS_WIN_SETMENU` + a `WEV_MENU` selection
+  event + a `ui::Window` menu API). See [`design/ui.md`](design/ui.md).
+- [x] **OS-logo dropdown (#8).** *(done — the logo opens the system menu: About This
+  tOS / Preferences… / Restart / Shut Down. See changelog.)*
 - [ ] **Desktop UI roadmap (beyond fullscreen).** Status-bar items, a
   notification/toast system, app menus (#6), dock magnification, and hiding a
   window's *own* chrome in fullscreen for a purer macOS look. See
@@ -88,6 +90,28 @@ Ctrl+Backspace / Ctrl+Delete word-delete, the Delete key. **Still needs foundati
   clipboard (transient single payload) with a curated multi-item staging shelf.
 
 ### Platform / runtime / storage
+- [ ] **A real shell + scripting (replace the hardcoded command dispatch).** Today
+  `user/shell/shell.c` is one ~530-line `if/else if (streq(line, ...))` chain: every
+  command is a baked-in special case (it only falls through to `fork`+`exec` for an
+  external program), and there's no scripting, variables, quoting, pipes, redirection,
+  or globbing. Build a proper shell instead, roughly:
+  1. **First step (low-risk cleanup):** drop the `help` command and trim the one-off
+     demo/diagnostic built-ins that don't earn their place (`spawn`/`fork`/`smp`/
+     `crash`/`colors`/`ticker`-style demos) — prefer turning real utilities into
+     external programs in `/System/bin` over hardcoding them in the shell.
+  2. A real **lexer + parser** (tokenise → an AST), so a line is parsed, not
+     string-matched: **quoting** (`'…'`/`"…"`), **variables + environment** (`$VAR`,
+     `export`, assignment), **`$(…)`/backtick** command substitution.
+  3. An execution model: a small set of true **builtins** (`cd`, `export`, `exit`, …)
+     vs **external commands resolved on `PATH`** (`/System/bin` first); **pipes** (`|`),
+     **redirection** (`>` `>>` `<`), and **`;` / `&&` / `||`** sequencing; **globbing**
+     (`*`/`?`); background jobs (`&`) + basic job control.
+  4. **Shell scripts** — a shell *is* its own interpreter (no separate VM needed): add
+     control flow (`if`/`for`/`while`/`case`, functions) and the ability to **source a
+     `.sh` file** (run a file of commands; `#!` shebang dispatch for executables). With
+     (2)–(3) in place this is mostly reusing the parser + an input source.
+  Bash-compatibility is the north star, but a clean POSIX-sh-like core first is the
+  pragmatic path. Big win for usability and for running the OS's own setup as scripts.
 - [ ] **Use all of RAM — remove the 3 GB cap (don't raise it).** The frame pool maps
   RAM as one contiguous block from address 0, which only holds *below* the PC PCI hole
   (~3.5 GB). Parse an **e820 / UEFI memory map** (passed via `boot_info`) and make
@@ -122,6 +146,25 @@ Ctrl+Backspace / Ctrl+Delete word-delete, the Delete key. **Still needs foundati
 
 Terse one-liners; the prose lives in git history + PROJECT.md. Newest first.
 
+- **Notifications / toasts (ui.md phase 3, 2026-06-01).** A `notify(title, body)` SDK call
+  (new `SYS_NOTIFY`) posts to a global kernel ring (`kernel/ipc.c`); the compositor drains
+  it (`SYS_WM_NOTIFY` / `wm_poll_notify`, compositor-only) and turns each into a **top-right
+  toast** (solid raised card with shadow + accent stripe; slides in / holds ~3.7s / slides
+  out — no alpha, so the dirty-rect math stays simple) plus a **notification-center** ring
+  (last 8) shown in a frosted panel toggled by a **bell** status item (with an unseen
+  badge). Opening the center clears the badge and supersedes any live toast. Shell gained
+  `notify <text>` to post one. twm traces `[twm] notify <title>` + `[twm] notifcenter open
+  <n>`. `t_notifications`; suite 45/45 + toast & center screenshots.
+- **Status-bar cluster (ui.md phase 2, 2026-06-01).** The top bar's right side gained
+  a macOS-style status cluster: vector placeholder glyphs for network (ascending signal
+  bars), volume (speaker + waves), and battery (shell + nub + charge fill), drawn
+  monochrome in the slate ink, plus a **registry-driven clock**. `build_clock()` reads
+  `clock.format` (24h|12h), `clock.seconds`, and `clock.weekday` live, so settings drive
+  the format (shipped defaults: 24h + weekday + seconds → "Fri 14:09:09"). `cc_layout()`
+  lays the cluster out right-to-left into fixed slots (reserving the worst-case clock
+  width) so the glyphs + CC button never jitter as the seconds tick; the per-second
+  dirty rect was widened to cover the whole cluster. twm traces `[twm] statusbar net …
+  vol … bat … cc …` + `[twm] clk "…"`. `t_statusbar`; suite 44/44 + screenshot.
 - **Single-sourced shadow halo extents (2026-06-01).** Every drop-shadow dirty/cull
   rect (windows, dock, Control Center, Launchpad) now comes from one twm
   `shadow_box(x,y,w,h,spread,dy)` helper fed by a new `ugfx_elevation_extent(level,
