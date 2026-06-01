@@ -1489,8 +1489,8 @@ void _ustart(void) {
                     switch_cancel(); continue;           /* a lone Esc cancels the switch */
                 }
                 if (key == '\n' || key == '\r') { switch_commit(); continue; }      /* Enter commits */
-                continue;                                /* swallow other keys while the card is up */
-            }
+                switch_commit();                         /* any other key commits, then is delivered */
+            }                                            /* ...to the now-focused window (fall through) */
             f = focus_slot();                                            /* a chord above may have changed focus */
             if (key == KEY_SUPER_Q)   { if (f >= 0) wm_post(cw[f].id, WEV_CLOSE, 0); continue; }  /* close focused */
             if (key == KEY_SUPER_KILL){ if (f >= 0) wm_kill(cw[f].id);              continue; }  /* force-kill focused process */
