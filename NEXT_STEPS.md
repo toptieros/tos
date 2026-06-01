@@ -80,9 +80,10 @@ Ctrl+Backspace / Ctrl+Delete word-delete, the Delete key. **Still needs foundati
   per-task capability set the kernel checks at the syscall boundary (fs jails,
   `spawn` / `window` / `notify` gating). See [`design/app-runtime.md`](design/app-runtime.md).
 - [~] **Ctrl+C / X / V everywhere.** GUI text widgets map the chords over the kernel
-  clipboard ring (`SYS_CLIP_*`) — **landed in `TextField`** (^C/^X/^V/^A). Still open:
-  **terminal** grid selection + paste using **Ctrl+Shift+C/V** (so plain Ctrl+C stays
-  `^C` to the pty), and Files-level copy/cut/paste (see Files app polish).
+  clipboard ring (`SYS_CLIP_*`) — **landed in `TextField`** (^C/^X/^V/^A) and the
+  **terminal** (mouse click-drag grid selection + **Ctrl+Shift+C/X/V**, so plain Ctrl+C
+  stays `^C` to the pty; `term_copy`/`term_paste`, covered by `t_term_copy` +
+  `t_term_paste`). Still open: Files-level copy/cut/paste (see Files app polish).
 - [ ] **Pocket Dimension — a per-session shelf (Super+D).** A slide-out panel from the
   **left** screen edge holding media stashed for later (typed payloads: file ref / text
   / image+thumbnail). *Interim with no DnD:* an "Add to Pocket" action + the Super+D
@@ -146,6 +147,15 @@ Ctrl+Backspace / Ctrl+Delete word-delete, the Delete key. **Still needs foundati
 
 Terse one-liners; the prose lives in git history + PROJECT.md. Newest first.
 
+- **Terminal copy-path coverage (2026-06-01).** The terminal's mouse grid selection +
+  **Ctrl+Shift+C/X/V** clipboard chords were already wired (`keyboard.c` emits
+  `KEY_TERM_COPY/CUT/PASTE` only when Ctrl+Shift is held, so plain Ctrl+C stays `^C`;
+  `term_copy`/`term_paste` over `SYS_CLIP_*`), but only the *paste* direction had a test.
+  Added a `[term] copy <n>` trace + a `[term] grid <fw> <fh> <cols> <rows>` metrics trace
+  and a deterministic `t_term_copy`: `clear` to fix the layout, `echo <token>` so the
+  output lands on row 1, drag-select that row off the `[twm] win` client rect, copy, and
+  assert the copied byte count equals the token length. BIOS suite green + selection
+  screenshot.
 - **Notification QoL (2026-06-01).** Four polish passes on the toast/center: (1) **hover
   pauses** the auto-dismiss — while the cursor is over a toast it snaps fully open and
   freezes (`[twm] toast pause`), resuming when the pointer leaves; (2) a **collapsible

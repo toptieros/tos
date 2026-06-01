@@ -356,6 +356,34 @@ def t_term_paste(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_term_copy(uefi):
+    # Grid selection + Ctrl+Shift+C copy. Clear the screen so the layout is fixed
+    # (prompt at row 0), echo a known token (its output lands on row 1), then
+    # drag-select that row and copy. The terminal reports the byte count it placed
+    # on the clipboard ("[term] copy <n>"), which must equal the token's length --
+    # proving the selection picked out exactly that row's text. (Paste is covered
+    # by t_term_paste; cell metrics come from "[term] grid fw fh cols rows" and the
+    # client-area origin from the "[twm] win" rect.)
+    TOKEN = "ZZCOPYZZ"                                   # 8 chars, distinct from prompt text
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        g = re.search(r"\[term\] grid (\d+) (\d+) (\d+) (\d+)", t.serial())
+        assert g, "term did not report its grid metrics"
+        fw, fh = int(g.group(1)), int(g.group(2))
+        rect = t.win_rect("Terminal")
+        assert rect, "terminal window rect not reported"
+        gx, gy = rect[0], rect[1]                        # client-area top-left
+        t.line("clear"); time.sleep(0.5)                 # prompt -> row 0
+        t.line("echo " + TOKEN); time.sleep(0.5)         # echo output -> row 1
+        y = gy + fh + fh // 2                            # centre of grid row 1
+        t.drag(gx + fw // 2, y, gx + (len(TOKEN) + 1) * fw, y)   # select the token
+        t.key("ctrl-shift-c", delay=0.1)
+        assert t.wait_for("[term] copy %d" % len(TOKEN), 6), \
+            "Ctrl+Shift+C did not copy the selected row's text"
+        t.screenshot("/tmp/tos_term_copy.ppm")
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_notepad_edit_save(uefi):
     # Notepad is a real editor. It is no longer pinned to the dock (only Terminal
     # and Files are), so open it via Spotlight; a running unpinned app then shows up
@@ -912,7 +940,7 @@ BIOS_TESTS = [
     t_directories, t_seed_tree, t_move, t_rm_recursive, t_dir_persist, t_registry,
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     t_spawn_concurrency, t_gui, t_files_app, t_clipboard_summon, t_clipboard_popup_esc,
-    t_window_switch, t_super_q_close, t_super_kill, t_term_paste, t_notepad_edit_save,
+    t_window_switch, t_super_q_close, t_super_kill, t_term_paste, t_term_copy, t_notepad_edit_save,
     t_notepad_wordedit, t_shift_select,
     t_spotlight, t_spotlight_nav, t_launchpad, t_launchpad_search, t_dock_launchpad, t_menubar,
     t_mouse, t_many_files, t_date, t_ram_scales, t_lspci, t_beep, t_reboot,

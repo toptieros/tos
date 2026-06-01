@@ -280,6 +280,7 @@ static void term_copy(void) {
         if (r < hi / cols && n < (int)sizeof out - 1) out[n++] = '\n';
     }
     if (n > 0) clip_put(CLIP_TEXT, "terminal", out, n);
+    print("[term] copy "); printu((unsigned)n); print("\r\n");   /* harness hook */
 }
 
 /* Paste the active clipboard entry into the shell (Ctrl+Shift+V): feed its bytes
@@ -308,6 +309,8 @@ void _ustart(void) {
     fw = ugfx_font_w(); fh = ugfx_font_h();
     setup_surface((int)wi.pitch);     /* sets cols/rows first ... */
     clear_grid();                     /* ... so this actually blanks the grid (was a no-op when rows==0) */
+    print("[term] grid "); printu((unsigned)fw); printc(' '); printu((unsigned)fh);
+    printc(' '); printu((unsigned)cols); printc(' '); printu((unsigned)rows); print("\r\n");  /* harness hook */
     render();
     win_present(win);
 
