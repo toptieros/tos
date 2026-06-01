@@ -294,6 +294,35 @@ def t_window_switch(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_alt_tab(uefi):
+    # macOS-style Alt-Tab switcher overlay (#7). With Terminal + Files open (Files
+    # focused), Alt+Tab opens a centred card of window tiles and advances the
+    # selection to the next MRU window (Terminal) WITHOUT changing focus yet
+    # ("[twm] altswitch open <n> <px> <py>" + "[twm] altswitch sel 1 Terminal").
+    # The harness can't hold a modifier, so the card commits on its linger timeout
+    # ("[twm] altswitch commit Terminal"), which focuses the selection. (On real
+    # hardware it commits on Alt release; ESC cancels, Enter / a tile click commit.)
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files")
+        assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        before = t.serial().count("[twm] focus Terminal")
+        t.key("alt-tab", delay=0.1)
+        assert t.wait_for("[twm] altswitch open 2", 6), "Alt+Tab did not open the switcher card"
+        assert t.wait_for("[twm] altswitch sel 1 Terminal", 6), \
+            "the switcher did not advance the selection to the next window"
+        t.screenshot("/tmp/tos_altswitch.ppm")          # card is up during the linger
+        assert t.wait_for("[twm] altswitch commit Terminal", 6), \
+            "the switcher did not commit the selection on the linger timeout"
+        assert _count_at_least(t, "[twm] focus Terminal", before + 1, 6), \
+            "committing the switch did not focus the selected window"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_clipboard_popup_esc(uefi):
     # The clipboard is a borderless popup overlay: Esc dismisses it (focus returns
     # to the window underneath).
@@ -940,7 +969,7 @@ BIOS_TESTS = [
     t_directories, t_seed_tree, t_move, t_rm_recursive, t_dir_persist, t_registry,
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     t_spawn_concurrency, t_gui, t_files_app, t_clipboard_summon, t_clipboard_popup_esc,
-    t_window_switch, t_super_q_close, t_super_kill, t_term_paste, t_term_copy, t_notepad_edit_save,
+    t_window_switch, t_alt_tab, t_super_q_close, t_super_kill, t_term_paste, t_term_copy, t_notepad_edit_save,
     t_notepad_wordedit, t_shift_select,
     t_spotlight, t_spotlight_nav, t_launchpad, t_launchpad_search, t_dock_launchpad, t_menubar,
     t_mouse, t_many_files, t_date, t_ram_scales, t_lspci, t_beep, t_reboot,

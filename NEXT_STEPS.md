@@ -36,9 +36,10 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done (see the changelog).
 - [ ] **Live resize preview + content reflow.** Resize snaps on mouse-up and keeps
   cells at their (row,col) without reflowing wrapped lines. A live outline while
   dragging the grip, and reflowing long lines, would polish it.
-- [ ] **macOS-style Alt-Tab animation (#7).** Windows shown side-by-side, moving
-  between them as you cycle — the full overlay the interim Super+Tab switcher left as
-  future. Needs the **richer key events** foundation (hold-Alt / release-to-commit).
+- [x] **macOS-style Alt-Tab animation (#7).** *(done — a centred card of window tiles
+  with an animated selection highlight; hold-Alt / release-to-commit via the modifier
+  mask, plus click-a-tile / Enter to commit, arrows to navigate, and ESC to cancel.
+  See changelog.)*
 - [ ] **Desktop-as-a-folder + selection suite (#10).** Treat the desktop as
   `/Users/user/Desktop`: right-click context menu, the directory's files as icons,
   click-select / Ctrl-multi-select. Same selection model in Files. Builds on the
@@ -147,6 +148,18 @@ Ctrl+Backspace / Ctrl+Delete word-delete, the Delete key. **Still needs foundati
 
 Terse one-liners; the prose lives in git history + PROJECT.md. Newest first.
 
+- **macOS-style Alt-Tab switcher (#7, 2026-06-01).** The interim Super/Alt+Tab MRU
+  switcher (which raised focus on every press) became a real **overlay**: Alt+Tab opens
+  a centred frosted card of window **tiles** (app icon + title) and steps the selection
+  through the MRU snapshot **without changing focus**, with the selection highlight
+  **easing between tiles** as you cycle. It **commits** (focuses the pick) on Alt release
+  after a genuine hold (`kbd_mods()` polled each frame), or a **click** on a tile, or
+  **Enter**, or a linger timeout (the fallback the test harness uses since QEMU can't
+  hold a modifier); **ESC cancels**; **arrows** / **Shift+Tab** walk it backward. Drawn
+  above windows/dock (`draw_switcher`, dirty-tracked with its shadow halo). Traces
+  `[twm] altswitch open/sel/commit/cancel`; `t_alt_tab` (open → sel → commit → focus) +
+  overlay screenshot; `t_window_switch` still green. Built on the richer key-events
+  foundation (the compositor polls the `SYS_KBD_MODS` modifier mask each frame).
 - **Terminal copy-path coverage (2026-06-01).** The terminal's mouse grid selection +
   **Ctrl+Shift+C/X/V** clipboard chords were already wired (`keyboard.c` emits
   `KEY_TERM_COPY/CUT/PASTE` only when Ctrl+Shift is held, so plain Ctrl+C stays `^C`;

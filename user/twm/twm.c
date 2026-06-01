@@ -114,6 +114,19 @@ static char pending_title[32];       /* the window title we expect it to map    
  * landed window becomes MRU-top for free) once the deadline lapses with no press. */
 #define SWITCH_LINGER 80             /* frames a switch session stays "warm" (~1s) */
 static int sw_order[MAXW], sw_n, sw_pos, sw_until;
+/* macOS-style switcher overlay (#7): Alt+Tab opens a centred card of window tiles
+ * (icon + title) with an animated selection highlight. It commits on Alt-release
+ * (after a genuine hold), a click on a tile, Enter, or the linger timeout; ESC
+ * cancels. Holding Alt keeps it up on real hardware; under the test harness (which
+ * can't hold a modifier) the linger timeout commits, so the card is still visible. */
+#define SW_CELL      108             /* per-tile cell width (icon + title)          */
+#define SW_PAD       18
+#define SW_SHADOW_SP 28
+#define SW_SHADOW_DY 8
+static int sw_overlay;               /* 1 while the switcher card is shown          */
+static int sw_alt_frames;            /* consecutive frames Alt seen held this session */
+static int sw_sel_x, sw_target_x;    /* animated highlight centre (px)              */
+static int sw_px, sw_py, sw_pw, sw_ph;  /* card rect (set by switcher_layout)        */
 
 /* Control Center: a quick-settings slide-over opened from a menu-bar status item
  * (design/ui.md). Live toggles for the dock/bar auto-hide (the registry keys
@@ -131,6 +144,7 @@ static int cc_x, cc_y, cc_w = 268, cc_h;          /* panel rect (h computed in c
 static int cc_btn_x, cc_btn_w = 24;               /* the bar status-item hit box           */
 static int cc_row1_y, cc_row2_y, cc_sep_y, cc_info_y, cc_btn_yy;
 static void draw_cc_button(int y);                /* defined below; called from draw_bar */
+static void draw_switcher(void);                  /* Alt-Tab overlay; called from compose */
 
 /* Status cluster (top bar, right side; design/ui.md phase 2): placeholder system
  * glyphs (network / volume / battery) + a registry-driven clock. The glyphs are
@@ -962,6 +976,7 @@ static void compose(struct rect r) {
                             (int)o->w, TH_RADIUS, TH_FROST_KEY);        /* content; sentinel bg lets the frost show */
         ugfx_rrect_border(ox, oy, ow, oh, TH_RADIUS, 1, TH_BORDER);
     }
+    draw_switcher();                                    /* Alt-Tab switcher card, above windows + dock */
     draw_toast();                                       /* notification toast, above windows/dock */
     draw_ghost();                                       /* minimize/restore genie, over everything */
     ugfx_blit_argb(cur_x - cursor_hotspot[cur_id][0], cur_y - cursor_hotspot[cur_id][1],
@@ -1184,19 +1199,99 @@ static void send_key(int id, int byte) {
     wm_post(id, WEV_KEY, WEV_KEY_PACK(byte, kbd_mods()));
 }
 
-/* Super+Tab: step the MRU window switcher (see the sw_* note up top). */
-static void window_switch(int frame) {
-    if (sw_until == 0 || frame >= sw_until) {     /* (re)start a session: snapshot MRU = reverse z */
+/* --- macOS-style Alt-Tab switcher overlay (#7) ------------------------------- */
+static void switcher_layout(void) {
+    int n = sw_n > 0 ? sw_n : 1;
+    sw_pw = n * SW_CELL + 2 * SW_PAD;
+    if (sw_pw > W - 40) sw_pw = W - 40;
+    sw_ph = SW_PAD + APPICON_SZ + 8 + fh + SW_PAD;
+    sw_px = (W - sw_pw) / 2;
+    sw_py = (H - sw_ph) / 2;
+}
+static int sw_tile_cx(int i) { return sw_px + SW_PAD + i * SW_CELL + SW_CELL / 2; }
+static void dirty_switcher(void) {
+    switcher_layout();
+    struct rect r = shadow_box(sw_px, sw_py, sw_pw, sw_ph, SW_SHADOW_SP, SW_SHADOW_DY);
+    add_dirty(r.x, r.y, r.w, r.h);
+}
+static void switch_report_sel(void) {
+    int slot = sw_order[sw_pos];
+    print("[twm] altswitch sel "); printu((unsigned)sw_pos); printc(' ');
+    print(slot >= 0 && slot < MAXW ? cw[slot].title : "?"); print("\r\n");
+}
+/* Alt+Tab: open the switcher card (first press) or step the selection; `backward`
+ * (Shift held) walks the other way. Focus does NOT change until commit. */
+static void window_switch(int frame, int backward) {
+    if (sw_until == 0 || frame >= sw_until || !sw_overlay) {   /* (re)start a session */
         sw_n = 0;
-        for (int i = nz - 1; i >= 0; i--) if (!cw[zo[i]].popup) sw_order[sw_n++] = zo[i];  /* [0]=top, skip overlays */
+        for (int i = nz - 1; i >= 0; i--) {                    /* [0]=top (current), MRU order */
+            int s = zo[i];
+            if (!cw[s].popup && cw[s].used && !cw[s].min) sw_order[sw_n++] = s;
+        }
         sw_pos = 0;
+        if (sw_n >= 2) {
+            sw_overlay = 1; sw_alt_frames = 0;
+            switcher_layout();
+            sw_sel_x = sw_target_x = sw_tile_cx(0);
+            print("[twm] altswitch open "); printu((unsigned)sw_n); printc(' ');
+            printu((unsigned)sw_px); printc(' '); printu((unsigned)sw_py); print("\r\n");
+        }
     }
     sw_until = frame + SWITCH_LINGER;
-    if (sw_n < 2) return;                          /* nothing to switch to */
-    for (int step = 0; step < sw_n; step++) {      /* advance to the next still-valid window */
-        sw_pos = (sw_pos + 1) % sw_n;
-        int slot = sw_order[sw_pos];
-        if (slot >= 0 && slot < MAXW && cw[slot].used && !cw[slot].min && !cw[slot].popup) { focus_window(slot); return; }
+    if (sw_n < 2) { sw_overlay = 0; return; }
+    sw_pos = (sw_pos + (backward ? sw_n - 1 : 1)) % sw_n;      /* step one tile */
+    sw_target_x = sw_tile_cx(sw_pos);
+    dirty_switcher();
+    switch_report_sel();
+}
+static void switch_commit(void) {
+    if (!sw_overlay) return;
+    int slot = sw_order[sw_pos];
+    sw_overlay = 0; sw_until = 0;
+    dirty_switcher();
+    if (slot >= 0 && slot < MAXW && cw[slot].used && !cw[slot].min) focus_window(slot);
+    print("[twm] altswitch commit "); print(slot >= 0 && slot < MAXW ? cw[slot].title : "?"); print("\r\n");
+}
+static void switch_cancel(void) {
+    if (!sw_overlay) return;
+    sw_overlay = 0; sw_until = 0;
+    dirty_switcher();
+    print("[twm] altswitch cancel\r\n");
+}
+/* A click inside the card selects + commits the tile under the cursor; a click
+ * outside cancels. Returns 1 if the click was consumed. */
+static int switch_click(int mx, int my) {
+    if (!sw_overlay) return 0;
+    switcher_layout();
+    if (mx >= sw_px && mx < sw_px + sw_pw && my >= sw_py && my < sw_py + sw_ph) {
+        int i = (mx - sw_px - SW_PAD) / SW_CELL;
+        if (i >= 0 && i < sw_n) { sw_pos = i; switch_report_sel(); }
+        switch_commit();
+    } else {
+        switch_cancel();
+    }
+    return 1;
+}
+static void draw_switcher(void) {
+    if (!sw_overlay) return;
+    switcher_layout();
+    struct rect r = shadow_box(sw_px, sw_py, sw_pw, sw_ph, SW_SHADOW_SP, SW_SHADOW_DY);
+    if (!rects_hit(cur_clip, r)) return;
+    ugfx_shadow(sw_px, sw_py + SW_SHADOW_DY, sw_pw, sw_ph, CC_RAD, SW_SHADOW_SP, TH_SHADOW, 150);
+    ugfx_frost(sw_px, sw_py, sw_pw, sw_ph, CC_RAD, TH_CC_FROST);
+    ugfx_rrect_border(sw_px, sw_py, sw_pw, sw_ph, CC_RAD, 1, TH_BORDER_DIM);
+    int hh = APPICON_SZ + 14, hy = sw_py + SW_PAD - 7;          /* animated selection highlight */
+    ugfx_rrect_a(sw_sel_x - SW_CELL / 2 + 6, hy, SW_CELL - 12, hh, TH_R_MD, ARGB(70, 122, 152, 222));
+    char buf[32];
+    for (int i = 0; i < sw_n; i++) {
+        int slot = sw_order[i]; if (slot < 0 || slot >= MAXW) continue;
+        int cx = sw_tile_cx(i), ix = cx - APPICON_SZ / 2, iy = sw_py + SW_PAD;
+        int ai = app_for_title(cw[slot].title);
+        if (ai >= 0 && apps[ai].img) ugfx_blit_argb(ix, iy, apps[ai].iw, apps[ai].ih, apps[ai].img);
+        else                         ugfx_blit_argb(ix, iy, APPICON_SZ, APPICON_SZ, appicons_argb[ICON_APP]);
+        fit_text(buf, sizeof buf, cw[slot].title, SW_CELL - 10);
+        int tw = ugfx_text_w(buf);
+        ugfx_text(cx - tw / 2, sw_py + SW_PAD + APPICON_SZ + 6, buf, i == sw_pos ? TH_TEXT : TH_MUTED, UGFX_TRANSPARENT);
     }
 }
 
@@ -1381,7 +1476,21 @@ void _ustart(void) {
                 else         summon("Launchpad", "launchpad", frame);
                 continue;
             }
-            if (key == KEY_ALT_TAB)     { window_switch(frame); continue; }                     /* window switcher   */
+            if (key == KEY_ALT_TAB)     { window_switch(frame, kbd_mods() & KMOD_SHIFT); continue; }  /* switcher */
+            if (sw_overlay) {                            /* keys while the switcher card is up */
+                if (key == 27) {                         /* ESC, or a nav-key CSI -> peek the next byte */
+                    int nx = twm_getkey();
+                    if (nx == '[' || nx == 'O') {
+                        int c2 = twm_getkey();
+                        if (c2 == 'C' || c2 == 'B')      window_switch(frame, 0);   /* Right/Down -> next */
+                        else if (c2 == 'D' || c2 == 'A') window_switch(frame, 1);   /* Left/Up   -> prev */
+                        continue;
+                    }
+                    switch_cancel(); continue;           /* a lone Esc cancels the switch */
+                }
+                if (key == '\n' || key == '\r') { switch_commit(); continue; }      /* Enter commits */
+                continue;                                /* swallow other keys while the card is up */
+            }
             f = focus_slot();                                            /* a chord above may have changed focus */
             if (key == KEY_SUPER_Q)   { if (f >= 0) wm_post(cw[f].id, WEV_CLOSE, 0); continue; }  /* close focused */
             if (key == KEY_SUPER_KILL){ if (f >= 0) wm_kill(cw[f].id);              continue; }  /* force-kill focused process */
@@ -1452,6 +1561,7 @@ void _ustart(void) {
         int down = ms.buttons & 1;
         if (down && !last_b) {                          /* press edge */
             int handled = 0;
+            if (sw_overlay) { switch_click(ms.x, ms.y); handled = 1; }   /* Alt-Tab card grabs the click */
             /* A focused popup overlay (clipboard/Spotlight) is modal-lite: a click
              * OUTSIDE it dismisses it and is consumed; a click inside falls through
              * to the window loop, which forwards it to the popup's client. */
@@ -1737,6 +1847,17 @@ void _ustart(void) {
             int cx = cc_btn_x - 8; add_dirty(cx, 0, W - cx, bar_h); }
 
         poll_notifications();                           /* drain notify() posts -> toast + center */
+        if (sw_overlay) {                               /* Alt-Tab card: commit + slide animation */
+            unsigned m = kbd_mods();
+            if (m & KMOD_ALT) { if (sw_alt_frames < 1000) sw_alt_frames++; }
+            else if (sw_alt_frames >= 3) switch_commit();   /* Alt was genuinely held, now released */
+            else if (frame >= sw_until)  switch_commit();   /* linger lapsed (no hold detected) */
+            if (sw_overlay && sw_sel_x != sw_target_x) {    /* ease the highlight toward its tile */
+                int d = sw_target_x - sw_sel_x;
+                sw_sel_x += d > 0 ? (d + 2) / 3 : (d - 2) / 3;
+                dirty_switcher();
+            }
+        }
         if (nc_slide > 0) { nc_slide--; dirty_nc(); }   /* animate a row sliding into the center */
         if (toast_live) {                               /* animate the toast (slide in/hold/out) */
             int tx, ty, tw, th2; toast_box(&tx, &ty, &tw, &th2);
