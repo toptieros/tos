@@ -25,6 +25,7 @@
 #include "icons.h"
 #include "manifest.h"
 #include "registry.h"
+#include "textutil.h"
 
 #define MAXW      8
 #define MAXICON   16             /* dock tiles: launchpad + pinned + running, see rebuild_dock */
@@ -738,29 +739,17 @@ static void fit_text(char *dst, int cap, const char *src, int maxw) {
 }
 /* Greedy word-wrap of src to maxw px, capped at TOAST_MAXLINES. When draw, render
  * each line at (x, y0 + i*fh) in col; always returns the line count (>=1). */
+/* the wrap logic itself is the pure tu_wrap (textutil.h, unit-tested); here we
+ * only supply the pixel-width measurer and a draw-emit callback. */
+struct toast_emit_ctx { int x, y0; uint32_t col; };
+static void toast_emit(void *vc, const char *line, int idx) {
+    struct toast_emit_ctx *c = (struct toast_emit_ctx *)vc;
+    ugfx_text(c->x, c->y0 + idx * fh, line, c->col, UGFX_TRANSPARENT);
+}
 static int toast_wrap(const char *src, int maxw, int x, int y0, uint32_t col, int draw) {
-    char line[NOTIF_BODY]; int ll = 0, lines = 0, i = 0;
-    while (src[i] && lines < TOAST_MAXLINES) {
-        int we = i; while (src[we] && src[we] != ' ') we++;   /* end of the word    */
-        int ns = we; while (src[ns] == ' ') ns++;             /* end of its spaces  */
-        char cand[NOTIF_BODY]; int cl = 0;
-        for (int k = 0; k < ll; k++) cand[cl++] = line[k];
-        for (int k = i; k < we && cl < (int)sizeof cand - 1; k++) cand[cl++] = src[k];
-        cand[cl] = 0;
-        if (ll > 0 && ugfx_text_w(cand) > maxw) {             /* word overflows -> flush the line */
-            line[ll] = 0;
-            if (draw) ugfx_text(x, y0 + lines * fh, line, col, UGFX_TRANSPARENT);
-            lines++; ll = 0;
-        }
-        for (int k = i; k < ns && ll < (int)sizeof line - 1; k++) line[ll++] = src[k];  /* word + its spaces */
-        i = ns;
-    }
-    if (ll > 0 && lines < TOAST_MAXLINES) {
-        line[ll] = 0;
-        if (draw) ugfx_text(x, y0 + lines * fh, line, col, UGFX_TRANSPARENT);
-        lines++;
-    }
-    return lines ? lines : 1;
+    if (!draw) return tu_wrap(src, maxw, TOAST_MAXLINES, ugfx_text_w, 0, 0);
+    struct toast_emit_ctx c = { x, y0, col };
+    return tu_wrap(src, maxw, TOAST_MAXLINES, ugfx_text_w, toast_emit, &c);
 }
 static int toast_body_lines(void) {
     return toast_expanded ? toast_wrap(toast.body, TOAST_W - 2 * TOAST_PAD, 0, 0, 0, 0) : 1;

@@ -5,6 +5,7 @@
 #pragma once
 #include "ulib.h"
 #include "manifest.h"
+#include "textutil.h"
 
 struct AppEntry { char name[24]; char exec[160]; uint32_t *icon; int iw, ih; };
 
@@ -66,19 +67,6 @@ static inline int app_scan(struct AppEntry *out, int max) {
     return cnt;
 }
 
-/* Case-insensitive "does name contain query" (empty query matches everything). */
-static inline int app_match(const char *name, const char *q) {
-    if (!q[0]) return 1;
-    for (int i = 0; name[i]; i++) {
-        int k = 0;
-        while (q[k]) {
-            char a = name[i + k], b = q[k];
-            if (a >= 'A' && a <= 'Z') a += 32;
-            if (b >= 'A' && b <= 'Z') b += 32;
-            if (a != b) break;
-            k++;
-        }
-        if (!q[k]) return 1;
-    }
-    return 0;
-}
+/* Case-insensitive "does name contain query" (empty query matches everything).
+ * The matcher itself is the pure tu_ci_contains (unit-tested in tests/unit). */
+static inline int app_match(const char *name, const char *q) { return tu_ci_contains(name, q); }

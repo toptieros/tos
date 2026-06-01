@@ -92,7 +92,7 @@ EFIAPP  := $(BUILD)/BOOTX64.EFI
 MKFS    := $(BUILD)/mkfs
 FSIMG   := $(BUILD)/fs.img
 
-.PHONY: all bios uefi run-bios run-uefi test test-bios clean
+.PHONY: all bios uefi run-bios run-uefi test test-bios unit check clean
 all: $(IMG) $(UEFIIMG)
 bios: $(IMG)
 uefi: $(UEFIIMG)
@@ -247,6 +247,21 @@ test: all
 
 test-bios: $(IMG) $(FSIMG)
 	cd tests && python3 run_tests.py --bios-only
+
+# Host unit tests for pure logic (parsers, index/geometry math). Compiled with the
+# HOST cc and run in milliseconds -- no QEMU. See design/testing.md.
+HOSTCC ?= cc
+UNIT_SRCS := $(wildcard tests/unit/t_*.c)
+unit:
+	@mkdir -p $(BUILD)/unit; fail=0; \
+	for f in $(UNIT_SRCS); do \
+	  bin=$(BUILD)/unit/$$(basename $$f .c); \
+	  $(HOSTCC) -std=c11 -Wall -Wextra -O0 -g -o $$bin $$f || exit 1; \
+	  $$bin || fail=1; \
+	done; exit $$fail
+
+# Everything: fast unit tests first, then the full e2e suite under QEMU.
+check: unit test
 
 clean:
 	rm -rf $(BUILD)

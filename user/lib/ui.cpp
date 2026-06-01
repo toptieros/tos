@@ -2,6 +2,7 @@
  * from the C ugfx backend. */
 #include "ui.h"
 #include "theme.h"
+#include "textutil.h"
 
 namespace ui {
 
@@ -142,10 +143,7 @@ bool ListView::on_key(int key, bool shift) {
 #define TF_DBLCLICK 24           /* max ticks between presses to count as a double-click */
 
 /* a "word" character for double-click select + Ctrl+arrow word jumps */
-static inline bool tf_wordch(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-           (c >= '0' && c <= '9') || c == '_';
-}
+static inline bool tf_wordch(char c) { return tu_wordch(c); }  /* pure; unit-tested in tests/unit */
 
 TextField::TextField() { bg = TH_SURF_0; fg = TH_TEXT; focusable = true; }
 TextField::~TextField() { if (buf) free(buf); }
@@ -263,18 +261,8 @@ void TextField::select_word(int idx) {
     anchor = a; caret = b;
     printf("[ui] word %d %d\r\n", a, b);              /* double-click selection (also drives the test) */
 }
-int TextField::word_prev(int i) const {
-    if (!buf) return 0;
-    while (i > 0 && !tf_wordch(buf[i - 1])) i--;       /* skip separators left */
-    while (i > 0 &&  tf_wordch(buf[i - 1])) i--;       /* skip the word        */
-    return i;
-}
-int TextField::word_next(int i) const {
-    if (!buf) return 0;
-    while (i < len && !tf_wordch(buf[i])) i++;          /* skip separators right */
-    while (i < len &&  tf_wordch(buf[i])) i++;          /* skip the word         */
-    return i;
-}
+int TextField::word_prev(int i) const { return buf ? tu_word_prev(buf, i) : 0; }
+int TextField::word_next(int i) const { return buf ? tu_word_next(buf, len, i) : 0; }
 void TextField::drag_to(int x, int y) {
     int ni = index_at(x, y);
     if (ni != caret) { caret = ni; if (win) win->invalidate(); }

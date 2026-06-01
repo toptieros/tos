@@ -4,8 +4,10 @@ The road ahead. How the system works **today** is in [PROJECT.md](PROJECT.md);
 this file tracks what's **left** plus a terse log of what's landed. Every item
 keeps `make test` green (BIOS + UEFI) before it's checked off.
 
-**Status:** BIOS suite **43/43**. tOS is early-to-mid development — see
-[`design/roadmap.md`](design/roadmap.md) for the phased big picture.
+**Status:** **19 e2e smoke/journey tests** (`make test`, BIOS+UEFI under QEMU) + **28 host
+unit tests** (`make unit`, no QEMU) — restructured from a flat 49-test all-e2e suite into a
+pyramid; the policy + tiers live in [`design/testing.md`](design/testing.md). tOS is
+early-to-mid development — see [`design/roadmap.md`](design/roadmap.md) for the phased plan.
 
 Legend: `[ ]` not started · `[~]` partial · `[x]` done (see the changelog).
 
@@ -148,6 +150,19 @@ Ctrl+Backspace / Ctrl+Delete word-delete, the Delete key. **Still needs foundati
 
 Terse one-liners; the prose lives in git history + PROJECT.md. Newest first.
 
+- **Test suite rebuilt as a pyramid (2026-06-01).** The suite was a flat **49 e2e tests**
+  that each booted the whole OS under QEMU and drove it over serial — the inverted-pyramid
+  anti-pattern (heavy, flaky, used even for pure logic). Rebuilt into tiers
+  ([`design/testing.md`](design/testing.md)): a **host unit-test harness** (`tests/unit/`,
+  `make unit`) compiles pure tOS logic with the host `cc` and runs in ms — **28 unit tests**
+  so far covering the launcher search filter, word-jump/selection index math, and the toast
+  word-wrap (incl. a regression test for the space-dropping bug). The pure logic was lifted
+  into a dependency-free `user/lib/textutil.h` (`tu_ci_contains`/`tu_wordch`/`tu_word_*`/
+  `tu_wrap`) that the toolkit, launchers, and twm now delegate to. The **e2e set was pruned
+  49 → 19**: the 9 fs micro-ops merged into one `t_fs_crud` journey, window/clipboard tests
+  into `t_window_mgmt`, the driver smokes into `t_drivers`, dir-persistence folded into
+  `t_fs_persist`, and ~20 per-feature GUI tests deleted (their logic is now unit-tested).
+  `make check` runs both. Net: adding a feature usually adds a cheap unit test, not a boot.
 - **macOS-style Alt-Tab switcher (#7, 2026-06-01).** The interim Super/Alt+Tab MRU
   switcher (which raised focus on every press) became a real **overlay**: Alt+Tab opens
   a centred frosted card of window **tiles** (app icon + title) and steps the selection

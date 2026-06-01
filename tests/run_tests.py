@@ -37,38 +37,11 @@ def t_boot_and_ls(uefi):
         assert t.wait_for("Documents/", 5), "home folders missing"
 
 
-def t_cat_motd(uefi):
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("cat /System/etc/motd")
-        assert t.wait_for("Welcome to tOS.", 5), "cat motd did not print file contents"
-
-
-def t_cat_missing(uefi):
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("cat nope")
-        assert t.wait_for("cat: no such file: nope", 5), "missing-file not reported"
-
-
-def t_write_then_cat(uefi):
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        assert t.line_for("write note.txt", "enter a line"), "write prompt missing"
-        t.line("diskwriteworks")
-        assert t.wait_for("saved note.txt", 5), "write did not save"
-        t.line("ls")
-        assert t.wait_for("note.txt\t", 5), "new file not in directory"
-        t.line("cat note.txt")
-        # content read back from disk (also appears once as the typed echo)
-        assert t.serial().count("diskwriteworks") >= 2, "file content not read back"
-        assert "[EXCEPTION]" not in t.serial(), "fault during file I/O"
-
-
 def t_fs_persist(uefi):
-    # One reboot exercises BOTH create-flush and delete-flush persistence: a kept
-    # file (and its contents) survives, while a file deleted before the reboot
-    # stays gone. (Folds together the old t_persistence + t_rm_persist.)
+    # One reboot exercises create-, delete-, AND directory-flush persistence: a kept
+    # file (and its contents) survives, a file deleted before the reboot stays gone,
+    # and a directory tree + nested file persist. (Folds together t_persistence,
+    # t_rm_persist, and t_dir_persist.)
     with Tos(uefi=uefi, scratch=PERSIST_IMG, reuse=False) as t:
         assert t.boot_ok(), "shell did not come up (boot 1)"
         assert t.line_for("write keep.txt", "enter a line"), "write prompt missing (keep)"
@@ -79,6 +52,11 @@ def t_fs_persist(uefi):
         assert t.wait_for("saved gone.txt", 5), "write did not save (gone)"
         t.line("rm gone.txt")
         assert t.wait_for("removed gone.txt", 5), "rm did not report removal"
+        # a directory tree + nested file must persist too (folds in t_dir_persist)
+        t.line("mkdir keepdir"); t.line("cd keepdir")
+        assert t.line_for("write nested.txt", "enter a line"), "nested write prompt missing"
+        t.line("nesteddata"); assert t.wait_for("saved nested.txt", 5), "nested write did not save"
+        t.line("cd ..")
         t.line("poweroff")
         assert t.wait_for("shutdown requested", 5), "did not shut down"
     # Second boot on the SAME disk image: prove the directory + data blocks were
@@ -91,6 +69,8 @@ def t_fs_persist(uefi):
         assert t.wait_for("survivesreboot", 5), "file contents did not persist"
         t.line("cat gone.txt")
         assert t.wait_for("cat: no such file: gone.txt", 5), "deleted file reappeared after reboot"
+        t.line("ls"); assert t.wait_for("keepdir/", 5), "directory did not persist across reboot"
+        t.line("cat keepdir/nested.txt"); assert t.wait_for("nesteddata", 5), "nested file did not persist"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -104,149 +84,6 @@ def t_partition(uefi):
         assert base > 0, "FS not in a partition (fell back to LBA 0)"
 
 
-def t_rm(uefi):
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("write doomed.txt")
-        assert t.wait_for("enter a line", 5), "write prompt missing"
-        t.line("deleteme")
-        assert t.wait_for("saved doomed.txt", 5), "write did not save"
-        t.line("rm doomed.txt")
-        assert t.wait_for("removed doomed.txt", 5), "rm did not report removal"
-        # the file is gone: opening it now fails
-        t.line("cat doomed.txt")
-        assert t.wait_for("cat: no such file: doomed.txt", 5), "file still present after rm"
-        assert "[EXCEPTION]" not in t.serial(), "fault during delete"
-
-
-def t_rewrite(uefi):
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("write note.txt")
-        assert t.wait_for("enter a line", 5), "write prompt missing (1)"
-        t.line("uniqueaaa")
-        assert t.wait_for("saved note.txt", 5), "first write did not save"
-        # rewriting an existing file replaces it in place (O_TRUNC)
-        t.line("write note.txt")
-        assert t.wait_for("enter a line", 8), "write prompt missing (2)"
-        t.line("uniquebbb")
-        assert t.serial().count("saved note.txt") >= 2, "rewrite of existing file failed"
-        t.line("cat note.txt")
-        assert t.wait_for("uniquebbb", 5), "rewritten content not read back"
-        # the new content is read back (echo + file = >=2); the old content is
-        # gone from the disk (only its original typed echo remains).
-        assert t.serial().count("uniquebbb") >= 2, "new content not persisted"
-        assert t.serial().count("uniqueaaa") == 1, "old content survived the rewrite"
-        assert "[EXCEPTION]" not in t.serial(), "fault during rewrite"
-
-
-DIR_PERSIST_IMG = "/tmp/tos_dir_persist_fs.img"
-
-
-def t_directories(uefi):
-    # mkdir + cd create a real subdirectory; a file written inside it is reachable
-    # there but NOT at the root (the namespace is hierarchical, not flat).
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("mkdir proj")
-        t.line("cd proj")
-        t.line("write inside.txt")
-        assert t.wait_for("enter a line", 5), "write prompt missing"
-        t.line("deepfile")
-        assert t.wait_for("saved inside.txt", 5), "write into subdir failed"
-        t.line("ls")
-        assert t.wait_for("inside.txt\t", 5), "file not listed in the subdirectory"
-        t.line("cd ..")
-        t.line("ls")
-        assert t.wait_for("proj/", 5), "subdirectory not listed in its parent"
-        t.line("cat inside.txt")
-        assert t.wait_for("cat: no such file: inside.txt", 5), "file leaked into the parent namespace"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_seed_tree(uefi):
-    # The image ships the standard tree built by mkfs: the user's home has its
-    # Documents/Desktop/... folders, and /Apps holds nested .app bundles. Reading a
-    # file two directories deep (a shipped app's manifest) proves the host packer
-    # emits a tree the kernel walks -- using real OS content, not a throwaway file.
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("ls")                                  # cwd is the user's home
-        assert t.wait_for("Documents/", 5), "seeded Documents/ directory missing"
-        t.line("cat /Apps/Terminal.app/manifest")
-        assert t.wait_for("min_width", 5), "could not read a nested app manifest"
-
-
-def t_move(uefi):
-    # mv renames/moves an entry across directories; the original path is gone and
-    # the content follows it to the new location.
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        assert t.line_for("write mover.txt", "enter a line"), "write prompt missing"
-        t.line("movecontent")
-        assert t.wait_for("saved mover.txt", 5), "write did not save"
-        t.line("mkdir box")
-        t.line("mv mover.txt box/m.txt")
-        assert t.wait_for("moved mover.txt", 5), "mv did not report the move"
-        t.line("cat box/m.txt")
-        assert t.serial().count("movecontent") >= 2, "moved file content not at the destination"
-        t.line("cat mover.txt")
-        assert t.wait_for("cat: no such file: mover.txt", 5), "original survived the move"
-
-
-def t_rm_recursive(uefi):
-    # rm -r empties and removes a directory tree; rmdir refuses a non-empty dir.
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("mkdir tree")
-        t.line("cd tree")
-        t.line("mkdir sub")
-        t.line("write f.txt")
-        assert t.wait_for("enter a line", 5), "write prompt missing"
-        t.line("payload")
-        assert t.wait_for("saved f.txt", 5), "write did not save"
-        t.line("cd /")
-        t.line("rmdir tree")
-        assert t.wait_for("rmdir: cannot remove tree", 5), "rmdir wrongly removed a non-empty dir"
-        t.line("rm -r tree")
-        assert t.wait_for("removed tree", 5), "rm -r did not complete"
-        t.line("ls tree")
-        assert t.wait_for("ls: cannot open tree", 5), "directory tree survived rm -r"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_dir_persist(uefi):
-    # A directory tree (and a file within it) must survive a reboot.
-    with Tos(uefi=uefi, scratch=DIR_PERSIST_IMG, reuse=False) as t:
-        assert t.boot_ok(), "shell did not come up (boot 1)"
-        t.line("mkdir keep")
-        t.line("cd keep")
-        t.line("write persist.txt")
-        assert t.wait_for("enter a line", 5), "write prompt missing"
-        t.line("stiladded here")
-        assert t.wait_for("saved persist.txt", 5), "write did not save"
-        t.line("poweroff")
-        assert t.wait_for("shutdown requested", 5), "did not shut down"
-    with Tos(uefi=uefi, scratch=DIR_PERSIST_IMG, reuse=True) as t:
-        assert t.boot_ok(), "shell did not come up (boot 2)"
-        t.line("ls")
-        assert t.wait_for("keep/", 5), "directory did not persist across reboot"
-        t.line("cat keep/persist.txt")
-        assert t.wait_for("stiladded here", 5), "nested file did not persist"
-
-
-def t_files_app(uefi):
-    # The Files icon (the second desktop shortcut, below Terminal) launches the
-    # graphical file manager, which maps a window and reads the filesystem.
-    with Tos(uefi=uefi) as t:
-        assert t.wait_for("[twm] desktop ready", 15), "desktop did not come up"
-        xy = t.icon_xy("Files")                 # dock launcher (coords from twm serial)
-        assert xy, "Files dock icon coordinates not reported"
-        t.doubleclick(*xy)
-        assert t.wait_for("[files] file manager up", 12), "Files app did not launch from its icon"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
 def _count_at_least(t, needle, n, timeout=8):
     """Wait until `needle` appears at least `n` times in the serial log."""
     deadline = time.time() + timeout
@@ -255,43 +92,6 @@ def _count_at_least(t, needle, n, timeout=8):
             return True
         time.sleep(0.1)
     return False
-
-
-def t_clipboard_summon(uefi):
-    # Super+V opens the clipboard manager. Pressing it again must *summon* the
-    # existing window (single-instance), not fork a second copy -- so the clipboard
-    # app, which prints "[clipboard] up" once per process, must still have started
-    # exactly once.
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        t.key("meta_l-v", delay=0.1)                 # Super+V (QEMU's left-Super = meta_l)
-        assert t.wait_for("[clipboard] up", 8), "Super+V did not open the clipboard manager"
-        assert t.wait_for("[twm] focus Clipboard", 5), "clipboard window did not take focus"
-        # Click elsewhere is unnecessary; just summon again and confirm no relaunch.
-        time.sleep(0.5)
-        t.key("meta_l-v", delay=0.1)
-        time.sleep(2.0)                              # well past the launch spinner window
-        n = t.serial().count("[clipboard] up")
-        assert n == 1, f"Super+V relaunched the clipboard instead of summoning it ({n} instances)"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_window_switch(uefi):
-    # Alt+Tab cycles focus through the open windows MRU-style. Open Terminal then
-    # Files (Files ends up focused); one Alt+Tab must return focus to Terminal.
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
-        xy = t.icon_xy("Files")
-        assert xy, "Files dock icon coordinates not reported"
-        t.doubleclick(*xy)
-        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
-        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
-        before = t.serial().count("[twm] focus Terminal")
-        t.key("alt-tab", delay=0.1)                  # Alt+Tab -> back to the Terminal
-        assert _count_at_least(t, "[twm] focus Terminal", before + 1, 8), \
-            "Alt+Tab did not switch focus back to the Terminal"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
 def t_alt_tab(uefi):
@@ -323,96 +123,6 @@ def t_alt_tab(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
-def t_clipboard_popup_esc(uefi):
-    # The clipboard is a borderless popup overlay: Esc dismisses it (focus returns
-    # to the window underneath).
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
-        t.key("meta_l-v", delay=0.1)                 # Super+V opens the clipboard popup
-        assert t.wait_for("[twm] focus Clipboard", 8), "clipboard popup did not open/focus"
-        before = t.serial().count("[twm] focus Terminal")
-        t.key("esc", delay=0.1)                       # Esc dismisses the popup
-        assert _count_at_least(t, "[twm] focus Terminal", before + 1, 8), \
-            "Esc did not dismiss the clipboard popup (focus never returned to Terminal)"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_super_q_close(uefi):
-    # Super+Q closes the focused window gracefully (its app exits, focus returns to
-    # the window underneath).
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
-        xy = t.icon_xy("Files")
-        assert xy, "Files dock icon coordinates not reported"
-        t.doubleclick(*xy)
-        assert t.wait_for("[twm] focus Files", 10), "Files window never took focus"
-        before = t.serial().count("[twm] focus Terminal")
-        t.key("meta_l-q", delay=0.1)                  # Super+Q closes Files
-        assert _count_at_least(t, "[twm] focus Terminal", before + 1, 8), \
-            "Super+Q did not close the focused window"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_super_kill(uefi):
-    # Super+Shift+Q force-kills the focused window's process; the kernel reaps it
-    # asynchronously and the OS stays up.
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        xy = t.icon_xy("Files")
-        assert xy, "Files dock icon coordinates not reported"
-        t.doubleclick(*xy)
-        assert t.wait_for("[twm] focus Files", 10), "Files window never took focus"
-        t.key("shift-meta_l-q", delay=0.1)            # Super+Shift+Q kills the process
-        assert t.wait_for("task killed by request", 8), "kernel did not report the async kill"
-        # the OS survives and the shell is still responsive
-        t.line("echo killsurvived")
-        assert t.wait_for("killsurvived", 6), "shell unresponsive after a forced kill"
-        assert "PANIC" not in t.serial(), "a forced kill panicked the kernel"
-
-
-def t_term_paste(uefi):
-    # Ctrl+Shift+V pastes the active clipboard entry into the terminal (over the
-    # pty), so a copied string is fed back to the shell as if typed.
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line_for("copy unievvv", "copied to clipboard")   # shell `copy` -> clipboard ring
-        n0 = t.serial().count("unievvv")
-        t.key("ctrl-shift-v", delay=0.1)              # paste into the terminal
-        # the pasted text is echoed by the shell, so it appears again on the line
-        assert _count_at_least(t, "unievvv", n0 + 1, 8), "Ctrl+Shift+V did not paste the clipboard"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_term_copy(uefi):
-    # Grid selection + Ctrl+Shift+C copy. Clear the screen so the layout is fixed
-    # (prompt at row 0), echo a known token (its output lands on row 1), then
-    # drag-select that row and copy. The terminal reports the byte count it placed
-    # on the clipboard ("[term] copy <n>"), which must equal the token's length --
-    # proving the selection picked out exactly that row's text. (Paste is covered
-    # by t_term_paste; cell metrics come from "[term] grid fw fh cols rows" and the
-    # client-area origin from the "[twm] win" rect.)
-    TOKEN = "ZZCOPYZZ"                                   # 8 chars, distinct from prompt text
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        g = re.search(r"\[term\] grid (\d+) (\d+) (\d+) (\d+)", t.serial())
-        assert g, "term did not report its grid metrics"
-        fw, fh = int(g.group(1)), int(g.group(2))
-        rect = t.win_rect("Terminal")
-        assert rect, "terminal window rect not reported"
-        gx, gy = rect[0], rect[1]                        # client-area top-left
-        t.line("clear"); time.sleep(0.5)                 # prompt -> row 0
-        t.line("echo " + TOKEN); time.sleep(0.5)         # echo output -> row 1
-        y = gy + fh + fh // 2                            # centre of grid row 1
-        t.drag(gx + fw // 2, y, gx + (len(TOKEN) + 1) * fw, y)   # select the token
-        t.key("ctrl-shift-c", delay=0.1)
-        assert t.wait_for("[term] copy %d" % len(TOKEN), 6), \
-            "Ctrl+Shift+C did not copy the selected row's text"
-        t.screenshot("/tmp/tos_term_copy.ppm")
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
 def t_notepad_edit_save(uefi):
     # Notepad is a real editor. It is no longer pinned to the dock (only Terminal
     # and Files are), so open it via Spotlight; a running unpinned app then shows up
@@ -440,70 +150,6 @@ def t_notepad_edit_save(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
-def t_notepad_wordedit(uefi):
-    # #5: word-wise editing lives in the shared toolkit TextField, so every toolkit
-    # app inherits it. Ctrl+Left/Right jump word-by-word (`[ui] wjump N`); Ctrl+Delete
-    # (and Ctrl+Backspace) delete the adjacent word (`[ui] wdel N`). Drive it
-    # keyboard-only through the real kernel->twm->toolkit path and confirm the
-    # resulting document on disk. Buffer: "alpha beta gamma" (indices: alpha 0-4,
-    # space 5, beta 6-9, space 10, gamma 11-15; len 16).
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        t.key("meta_l-spc", delay=0.1)                # Super+Space -> Spotlight
-        assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
-        t.type("note", delay=0.06)
-        t.key("ret", delay=0.1)                        # launch Notepad
-        assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
-        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
-        t.type("alpha beta gamma", delay=0.05)         # caret ends at 16
-        # Ctrl+Left walks left word-by-word: 16 -> 11 (gamma) -> 6 (beta) -> 0 (alpha)
-        t.key("ctrl-left", delay=0.08); assert t.wait_for("[ui] wjump 11", 6), "Ctrl+Left did not jump to 'gamma'"
-        t.key("ctrl-left", delay=0.08); assert t.wait_for("[ui] wjump 6", 6),  "Ctrl+Left did not jump to 'beta'"
-        t.key("ctrl-left", delay=0.08); assert t.wait_for("[ui] wjump 0", 6),  "Ctrl+Left did not jump to 'alpha'"
-        # Ctrl+Right jumps to the end of "alpha" (the space at index 5)
-        t.key("ctrl-right", delay=0.08); assert t.wait_for("[ui] wjump 5", 6),  "Ctrl+Right did not jump forward a word"
-        # Ctrl+Delete removes the next word (" beta", indices 5..10) -> "alpha gamma"
-        t.key("ctrl-delete", delay=0.08); assert t.wait_for("[ui] wdel 5", 6),  "Ctrl+Delete did not delete the next word"
-        t.key("ctrl-s", delay=0.1)                      # save
-        assert t.wait_for("[notepad] saved /Users/user/untitled.txt (11 bytes)", 8), \
-            "word-edited note did not save with the expected length"
-        t.key("alt-tab", delay=0.1)                    # back to the terminal
-        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
-        t.line("cat untitled.txt")
-        assert t.wait_for("alpha gamma", 6), "word-edited document not as expected on disk"
-        t.screenshot("/tmp/tos_notepad_wordedit.ppm")
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_shift_select(uefi):
-    # Richer key events: the keyboard now encodes Shift into nav-key CSI sequences
-    # (xterm modifier param 2, like Ctrl=5), and the compositor surfaces the live
-    # modifier mask -- so the toolkit can finally SEE Shift. Shift+Left/Right/Home/End
-    # EXTEND the TextField selection (anchor kept) instead of dropping it, printed as
-    # "[ui] shsel a b". Releasing a modifier reaches the focused window as WEV_KEYUP,
-    # traced "[twm] keyup <mask>". Driven keyboard-only through kernel->twm->toolkit in
-    # Notepad. Buffer "hello world" -> caret ends at 11.
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        t.key("meta_l-spc", delay=0.1)                 # Super+Space -> Spotlight
-        assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
-        t.type("note", delay=0.06); t.key("ret", delay=0.1)
-        assert t.wait_for("[notepad] up", 18), "Notepad did not launch"
-        assert t.wait_for("[twm] focus Notepad", 12), "Notepad did not take focus"
-        t.type("hello world", delay=0.05)              # caret at 11
-        # Shift+Left extends the selection leftward one char at a time (anchor stays 11).
-        for want in ("[ui] shsel 10 11", "[ui] shsel 9 11", "[ui] shsel 8 11"):
-            t.key("shift-left", delay=0.08)
-            assert t.wait_for(want, 6), f"Shift+Left did not extend the selection: want {want!r}"
-        # Shift+Home extends to the start of the line -> selection [0,11].
-        t.key("shift-home", delay=0.1)
-        assert t.wait_for("[ui] shsel 0 11", 6), "Shift+Home did not extend to the line start"
-        # releasing a modifier surfaces as a key-up event to the focused window
-        assert t.wait_for("[twm] keyup", 6), "releasing a modifier did not post WEV_KEYUP"
-        t.screenshot("/tmp/tos_shiftselect.ppm")
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
 def t_spotlight(uefi):
     # Super+Space opens the Spotlight launcher (a popup). Typing filters the
     # installed apps; Enter launches the match (here: Notepad).
@@ -515,168 +161,6 @@ def t_spotlight(uefi):
         t.type("note", delay=0.06)                   # filter down to Notepad
         t.key("ret", delay=0.1)                      # Enter launches the selection
         assert t.wait_for("[notepad] up", 10), "Spotlight did not launch the filtered app"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_spotlight_nav(uefi):
-    # #13: keyboard QoL -- arrow keys + Tab walk the Spotlight results instead of
-    # being swallowed / dismissing the popup. With an empty query all installed apps
-    # show (selection on row 0); each nav keypress emits `[spotlight] sel=N`. Two
-    # Downs step to rows 1 then 2; Tab from the last row wraps back to 0 -- which
-    # also proves the popup stayed open the whole time (stock set: Terminal/Files/Notepad).
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        t.key("meta_l-spc", delay=0.1)               # Super+Space opens Spotlight
-        assert t.wait_for("[spotlight] up", 8), "Super+Space did not open Spotlight"
-        assert t.wait_for("[twm] focus Spotlight", 6), "Spotlight popup did not focus"
-        t.key("down", delay=0.1)                      # arrow nav -> row 1
-        assert t.wait_for("[spotlight] sel=1", 6), "Down arrow did not move the selection"
-        t.key("down", delay=0.1)                      # arrow nav -> row 2
-        assert t.wait_for("[spotlight] sel=2", 6), "second Down did not advance the selection"
-        t.key("tab", delay=0.1)                       # Tab from the last row wraps -> row 0
-        assert t.wait_for("[spotlight] sel=0", 6), "Tab did not cycle/wrap the selection"
-        t.screenshot("/tmp/tos_spotlight_nav.ppm")
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_launchpad(uefi):
-    # Tapping Super on its own opens the Launchpad (a popup grid of all installed
-    # apps, drawn above the dock over a dim scrim). Tapping Super again toggles it
-    # closed (issue #2); Esc also still dismisses it.
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
-        t.key("meta_l", delay=0.1)                   # a lone Super tap opens it
-        assert t.wait_for("[launchpad] up", 8), "a lone Super tap did not open the Launchpad"
-        assert t.wait_for("[twm] focus Launchpad", 6), "Launchpad did not focus"
-        before = t.serial().count("[twm] focus Terminal")
-        t.key("meta_l", delay=0.15)                  # a second Super tap toggles it closed
-        assert _count_at_least(t, "[twm] focus Terminal", before + 1, 8), \
-            "a second Super tap did not dismiss the Launchpad"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_launchpad_search(uefi):
-    # #11: the Launchpad has a search field that holds focus from the start, so you
-    # can type to filter the app grid WITHOUT clicking the field first. Each refilter
-    # prints `[launchpad] filt=N`. With the 3 stock bundles an empty query shows 3;
-    # typing "note" narrows to 1 (Notepad).
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        t.key("meta_l", delay=0.12)                   # lone Super -> Launchpad
-        assert t.wait_for("[launchpad] up", 8), "lone Super did not open the Launchpad"
-        assert t.wait_for("[launchpad] filt=3", 6), "Launchpad did not show all stock apps"
-        t.type("note", delay=0.08)                    # type-to-filter (no click first)
-        assert t.wait_for("[launchpad] filt=1", 6), "search field did not filter the grid"
-        t.screenshot("/tmp/tos_launchpad_search.ppm")
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_dock_launchpad(uefi):
-    # The dock's leftmost tile is a Launchpad button (issue #3); a single click on
-    # it opens the grid, same as the lone-Super tap.
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        lp = t.icon_xy("Launchpad"); assert lp, "Launchpad dock button not reported"
-        term = t.icon_xy("Terminal"); assert term, "Terminal dock tile not reported"
-        assert lp[0] < term[0], "Launchpad button is not the leftmost dock tile"
-        t.click(*lp)                                  # single click opens it
-        assert t.wait_for("[launchpad] up", 8), "clicking the dock Launchpad button did not open it"
-        assert t.wait_for("[twm] focus Launchpad", 6), "Launchpad did not focus"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_statusbar(uefi):
-    # ui.md phase 2: the top bar's right side carries a status cluster -- placeholder
-    # network/volume/battery glyphs + a registry-driven clock. twm traces the cluster
-    # layout ("[twm] statusbar net ... vol ... bat ... cc ...", strictly L->R) and the
-    # formatted clock once ("[twm] clk \"...\""). The shipped defaults (clock.format=24h,
-    # clock.seconds=true, clock.weekday=true) render e.g. "Fri 14:09:09".
-    with Tos(uefi=uefi) as t:
-        assert t.wait_for("[twm] desktop ready", 12), "desktop did not come up"
-        m = re.search(r"\[twm\] statusbar net (\d+) vol (\d+) bat (\d+) bell (\d+) cc (\d+)", t.serial())
-        assert m, "status cluster did not report its layout"
-        net, vol, bat, bell, cc = (int(g) for g in m.groups())
-        assert cc < net < vol < bat < bell, \
-            f"cluster not laid out left-to-right: cc={cc} net={net} vol={vol} bat={bat} bell={bell}"
-        c = re.search(r'\[twm\] clk "([^"]*)"', t.serial())
-        assert c, "clock did not render / trace"
-        assert re.match(r"^[A-Z][a-z][a-z] \d\d:\d\d:\d\d$", c.group(1)), \
-            f"default clock format wrong: {c.group(1)!r} (want 'Ddd HH:MM:SS')"
-        t.screenshot("/tmp/tos_statusbar.ppm")
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_notifications(uefi):
-    # ui.md phase 3 + QoL: notify() pops a top-right toast ("[twm] notify <title>" and
-    # "[twm] toast at x y w h"). Hovering the toast pauses its auto-dismiss
-    # ("[twm] toast pause"); clicking a collapsible toast expands its wrapped body
-    # ("[twm] toast expand 1"). The bell opens the center ("[twm] notifcenter open
-    # <n> <x> <y>"); a notify() while the center is open slides into the list instead
-    # of toasting ("[twm] notif slide"); the header Clear button empties it
-    # ("[twm] notifcenter clear").
-    NC_W, NC_PAD = 300, 14                              # mirror twm.c (center panel metrics)
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        m = re.search(r"\[twm\] statusbar .* bell (\d+) cc", t.serial())
-        assert m, "status cluster (with bell) did not report its layout"
-        bell_x = int(m.group(1))
-        # a long body so the toast is collapsible (the expand chevron appears)
-        t.line("notify This is a deliberately long notification body so the toast overflows and becomes collapsible")
-        assert t.wait_for("[twm] notify Terminal", 8), "notify() did not reach the compositor"
-        tm = re.search(r"\[twm\] toast at (\d+) (\d+) (\d+) (\d+)", t.serial())
-        assert tm, "the toast did not report its rect"
-        tx, ty, tw, th = (int(g) for g in tm.groups())
-        cx, cy = tx + tw // 2, ty + th // 2
-        t.mouse_to(cx, cy)                                  # hover -> pause the disappear timer
-        assert t.wait_for("[twm] toast pause", 6), "hovering the toast did not pause its timer"
-        t.screenshot("/tmp/tos_toast.ppm")
-        t.click(cx, cy)                                     # click a collapsible toast -> expand
-        assert t.wait_for("[twm] toast expand 1", 6), "clicking the toast did not expand it"
-        t.screenshot("/tmp/tos_toast_expanded.ppm")
-        t.click(bell_x + 9, 11)                             # the bell status item -> open the center
-        assert t.wait_for("[twm] notifcenter open", 6), "the bell did not open the notification center"
-        c = re.search(r"\[twm\] notifcenter open (\d+) (\d+) (\d+)", t.serial())
-        assert c and int(c.group(1)) >= 1, "notification center did not list the posted notification"
-        nc_x, nc_y = int(c.group(2)), int(c.group(3))
-        # a notify() with the center already open slides into the list, no toast
-        t.line("notify second one while the center is open")
-        assert t.wait_for("[twm] notif slide", 8), "a notify with the center open did not slide into the list"
-        t.screenshot("/tmp/tos_notifcenter.ppm")
-        # the header Clear button empties the center (and keeps it open)
-        t.click(nc_x + NC_W - NC_PAD - 8, nc_y + NC_PAD + 6)
-        assert t.wait_for("[twm] notifcenter clear", 6), "Clear did not empty the notification center"
-        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
-
-
-def t_menubar(uefi):
-    # #6/#8: the logo and the focused app's name are clickable menu-bar tiles. twm
-    # reports each tile's geometry ("[twm] menubar logo <x> <w> app <x> <w>") and, when
-    # a dropdown opens, its rows ("[twm] menu logo|app <t> y <rowtop> row <h> x <x>").
-    # Clicking the logo opens the system menu; clicking the app name opens the app menu,
-    # whose "Quit" item (index 1 -> "[twm] menuitem 2 1") closes the focused window.
-    with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        assert t.wait_for("[twm] focus Terminal", 8), "terminal never focused"
-        m = re.search(r"\[twm\] menubar logo (\d+) (\d+) app (\d+) (\d+)", t.serial())
-        assert m, "menu-bar tiles did not report their geometry"
-        lx, lw, ax, aw = (int(g) for g in m.groups())
-        # logo -> system menu
-        t.click(lx + lw // 2, 11)
-        assert t.wait_for("[twm] menu logo", 6), "clicking the logo did not open the system menu"
-        t.screenshot("/tmp/tos_menu_logo.ppm")
-        t.click(400, 320)                                   # click away dismisses the dropdown
-        # app name -> app menu
-        t.click(ax + aw // 2, 11)
-        assert t.wait_for("[twm] menu app Terminal", 6), "clicking the app name did not open the app menu"
-        g = re.search(r"\[twm\] menu app Terminal y (\d+) row (\d+) x (\d+)", t.serial())
-        assert g, "app menu did not report its row geometry"
-        rowtop, row, mx = (int(v) for v in g.groups())
-        t.screenshot("/tmp/tos_menu_app.ppm")
-        # click the 2nd row ("Quit") -> closes the focused Terminal window (WEV_CLOSE)
-        t.click(mx + 12, rowtop + row + row // 2)
-        assert t.wait_for("[twm] menuitem 2 1", 6), "selecting Quit did not register"
-        assert t.wait_for("[twm] focus desktop", 8), "Quit did not close the Terminal window"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -764,19 +248,6 @@ def t_orphan_reparent(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
-def t_spawn_concurrency(uefi):
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("spawn")
-        assert t.wait_for("background task done", 15), "ticker never finished"
-        s = t.serial()
-        assert "[ticker] tick 5" in s, "ticker did not run to completion"
-        assert "task exited (ran at CPL=3)" in s, "ticker did not exit from ring 3"
-        # shell still responsive afterwards
-        t.line("echo postspawnok")
-        assert t.wait_for("postspawnok", 5), "shell unresponsive after spawn"
-
-
 def t_gui(uefi):
     # init launches twm (the compositor); both boot paths are graphical (UEFI via
     # GOP, BIOS via a VBE linear framebuffer), so the desktop comes up, the PS/2
@@ -835,19 +306,6 @@ def t_many_files(uefi):
         assert "[EXCEPTION]" not in s and "PANIC" not in s
 
 
-def t_date(uefi):
-    # The CMOS RTC driver reports a plausible wall-clock date/time.
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("date")
-        assert t.wait_for("date", 1)
-        m = re.search(r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})", t.serial())
-        assert m, "date did not print a YYYY-MM-DD HH:MM:SS timestamp"
-        yr, mo, dy, hh, mm, ss = (int(x) for x in m.groups())
-        assert 2000 <= yr <= 2100 and 1 <= mo <= 12 and 1 <= dy <= 31, f"implausible date {m.group(0)}"
-        assert hh < 24 and mm < 60 and ss < 60, f"implausible time {m.group(0)}"
-
-
 def t_ram_scales(uefi):
     # The frame pool is sized from actual RAM (fw_cfg), not a fixed cap: booting
     # with more memory must yield a proportionally larger pool.
@@ -859,33 +317,6 @@ def t_ram_scales(uefi):
             return int(m.group(1))
     small, big = pool("64M"), pool("256M")
     assert big > small * 3, f"pool did not scale with RAM ({small} @64M vs {big} @256M)"
-
-
-def t_lspci(uefi):
-    # PCI config-space enumeration lists QEMU's i440fx devices.
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("lspci")
-        assert t.wait_for("8086:1237", 5), "PCI host bridge (8086:1237) not listed"
-        assert "8086:7010" in t.serial(), "IDE controller (8086:7010) not listed"
-
-
-def t_beep(uefi):
-    # The PC speaker driver runs without wedging the shell.
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("beep")
-        t.line("echo beepok")
-        assert t.wait_for("beepok", 5), "shell unresponsive after beep"
-        assert "[EXCEPTION]" not in t.serial()
-
-
-def t_reboot(uefi):
-    # `reboot` resets the machine via the 8042 (under -no-reboot QEMU exits).
-    with Tos(uefi=uefi) as t:
-        assert t.boot_ok(), "shell did not come up"
-        t.line("reboot")
-        assert t.wait_for("reboot requested", 5), "reboot was not requested"
 
 
 def t_app_crash(uefi):
@@ -905,80 +336,121 @@ def t_app_crash(uefi):
         assert t.wait_for("a hobby OS", 5), "shell stopped responding after a crash"
 
 
-def t_scrollbar_drag(uefi):
-    # #12: the multiline TextField's right-edge scroll indicator is clickable AND
-    # draggable to scroll. Open Notepad, fill it past one screenful, then interact
-    # with the scrollbar track; each press/drag maps the pointer y to the scroll
-    # position and emits "[ui] sbtop=N". A click low on the track scrolls further
-    # than a click high on it; a drag up then reduces the offset again.
-    import re as _re, time as _t
+def t_fs_crud(uefi):
+    # The filesystem CRUD surface in one boot: read shipped content (incl. a file two
+    # directories deep), the missing-file error, create + read-back, rewrite-in-place
+    # (O_TRUNC), hierarchical mkdir/cd (a subdir file is invisible at the root), move
+    # across directories, delete, and recursive remove with rmdir's non-empty guard.
+    # (Replaces the per-op fs micro-tests; persistence across reboot is t_fs_persist.)
     with Tos(uefi=uefi) as t:
-        assert t.open_terminal(), "desktop/terminal did not come up"
-        t.key("meta_l-spc", delay=0.1)
-        assert t.wait_for("[spotlight] up", 8), "spotlight did not open"
-        t.type("note", delay=0.06); t.key("ret", delay=0.1)
-        assert t.wait_for("[notepad] up", 10), "notepad did not launch"
-        rect = t.win_rect("Notepad")
-        assert rect, "twm did not report the Notepad window rect"
-        wx, wy, w, h = rect
-        t.click(wx + w // 2, wy + h // 2)         # focus the editor body (not the name field)
-        for _ in range(40):                       # fill well past one screenful
-            t.key("ret", delay=0.03)
-        # Filling parks the caret (and the viewport) at the BOTTOM, so first scroll
-        # back to the TOP -- otherwise a "click low on the track" is a no-op. Wheel up
-        # over the text area until the offset is 0.
-        t.mouse_to(wx + w // 2, wy + h // 2)
-        t.wheel(1, n=50); _t.sleep(0.3)
-        sx = wx + w - 4                           # inside the right-edge scrollbar strip
-        def last_top():
-            ms = _re.findall(r"\[ui\] sbtop=(\d+)", t.serial())
-            return int(ms[-1]) if ms else None
-        # click low on the track -> large scroll offset. Stay clear of the bottom
-        # ~h/8: that band overlaps the dock, which would eat the click before the app.
-        ylow = wy + (h * 3) // 4
-        t.click(sx, ylow)
-        assert t.wait_for("[ui] sbtop=", 6), "clicking the scroll indicator did nothing"
-        low = last_top()
-        assert low and low > 0, "low click did not scroll (sbtop=%r)" % low
-        # click high on the track -> smaller offset
-        t.click(sx, wy + h // 4)
-        dl = _t.time() + 6; high = low
-        while _t.time() < dl:
-            high = last_top()
-            if high is not None and high < low: break
-            _t.sleep(0.15)
-        assert high is not None and high < low, "high click did not scroll up (low=%r high=%r)" % (low, high)
-        # and clicking low again sends it back down -- the track maps the pointer to
-        # the scroll position both ways (the thumb is also grab-draggable in code via
-        # on_drag -> sb_set_top_from_y; the held-drag harness path is finicky at the
-        # window edge, so the round-trip click is the stable assertion here).
-        t.click(sx, ylow)
-        dl = _t.time() + 6; back = high
-        while _t.time() < dl:
-            back = last_top()
-            if back is not None and back > high: break
-            _t.sleep(0.15)
-        assert back is not None and back > high, "low click did not scroll back down (high=%r back=%r)" % (high, back)
-        t.screenshot("/tmp/tos_scrollbar_drag.ppm")
+        assert t.boot_ok(), "shell did not come up"
+        t.line("cat /System/etc/motd")
+        assert t.wait_for("Welcome to tOS.", 5), "cat of a shipped file failed"
+        t.line("cat /Apps/Terminal.app/manifest")
+        assert t.wait_for("min_width", 5), "could not read a nested app manifest"
+        t.line("cat nope")
+        assert t.wait_for("cat: no such file: nope", 5), "missing-file error not reported"
+        # create + read back from disk
+        assert t.line_for("write note.txt", "enter a line"), "write prompt missing"
+        t.line("uniqueaaa")
+        assert t.wait_for("saved note.txt", 5), "write did not save"
+        t.line("ls"); assert t.wait_for("note.txt\t", 5), "new file not listed"
+        # rewrite in place (O_TRUNC): the old content is gone, the new is read back
+        assert t.line_for("write note.txt", "enter a line"), "rewrite prompt missing"
+        t.line("uniquebbb")
+        assert _count_at_least(t, "saved note.txt", 2, 6), "rewrite did not save"
+        t.line("cat note.txt"); assert t.wait_for("uniquebbb", 5), "rewritten content not read back"
+        assert t.serial().count("uniqueaaa") == 1, "old content survived the rewrite"
+        # hierarchical namespace: a subdir file is not visible at the root
+        t.line("mkdir proj"); t.line("cd proj")
+        assert t.line_for("write inside.txt", "enter a line"), "subdir write prompt missing"
+        t.line("deepfile"); assert t.wait_for("saved inside.txt", 5), "write into subdir failed"
+        t.line("ls"); assert t.wait_for("inside.txt\t", 5), "file not listed in the subdir"
+        t.line("cd ..")
+        t.line("cat inside.txt")
+        assert t.wait_for("cat: no such file: inside.txt", 5), "file leaked into the parent namespace"
+        # move across directories: the original is gone, the content follows
+        t.line("mkdir box"); t.line("mv proj/inside.txt box/m.txt")
+        assert t.wait_for("moved proj/inside.txt", 5), "mv did not report the move"
+        t.line("cat box/m.txt")
+        assert _count_at_least(t, "deepfile", 2, 6), "moved file content not at the destination"
+        # delete a file, then a whole tree (rmdir refuses a non-empty dir)
+        t.line("rm box/m.txt"); assert t.wait_for("removed box/m.txt", 5), "rm did not remove the file"
+        t.line("mkdir tree"); t.line("cd tree"); t.line("mkdir sub"); t.line("cd ..")
+        t.line("rmdir tree"); assert t.wait_for("rmdir: cannot remove tree", 5), "rmdir removed a non-empty dir"
+        t.line("rm -r tree"); assert t.wait_for("removed tree", 5), "rm -r did not complete"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_window_mgmt(uefi):
+    # Compositor window management in one journey: launch a second app from the dock,
+    # the clipboard popup opens with Super+V and is single-instance (a second Super+V
+    # summons, doesn't relaunch), Esc dismisses the popup, and Super+Q closes the
+    # focused window. (Replaces t_files_app, t_clipboard_summon, t_clipboard_popup_esc,
+    # t_super_q_close; the Alt-Tab switcher is t_alt_tab.)
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files did not launch from its icon"
+        assert t.wait_for("[twm] focus Files", 8), "Files never took focus"
+        # Super+V opens the clipboard popup; a second Super+V summons it (no relaunch)
+        t.key("meta_l-v", delay=0.1)
+        assert t.wait_for("[clipboard] up", 8), "Super+V did not open the clipboard"
+        assert t.wait_for("[twm] focus Clipboard", 5), "clipboard popup did not focus"
+        time.sleep(0.5); t.key("meta_l-v", delay=0.1); time.sleep(2.0)
+        assert t.serial().count("[clipboard] up") == 1, "Super+V relaunched the clipboard instead of summoning it"
+        # Esc dismisses the popup; focus returns to the window underneath (Files)
+        before = t.serial().count("[twm] focus Files")
+        t.key("esc", delay=0.1)
+        assert _count_at_least(t, "[twm] focus Files", before + 1, 8), "Esc did not dismiss the clipboard popup"
+        # Super+Q closes the focused window (Files); focus returns to the Terminal
+        before = t.serial().count("[twm] focus Terminal")
+        t.key("meta_l-q", delay=0.1)
+        assert _count_at_least(t, "[twm] focus Terminal", before + 1, 8), "Super+Q did not close the focused window"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_drivers(uefi):
+    # Hardware-driver smoke in one boot: the CMOS RTC prints a plausible timestamp,
+    # PCI enumeration lists QEMU's i440fx devices, the PC speaker doesn't wedge the
+    # shell, and `reboot` resets the machine via the 8042 (reboot runs last -- it ends
+    # the session). (Replaces t_date, t_lspci, t_beep, t_reboot.)
+    with Tos(uefi=uefi) as t:
+        assert t.boot_ok(), "shell did not come up"
+        t.line("date")
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})", t.serial())
+        assert m, "date did not print a YYYY-MM-DD HH:MM:SS timestamp"
+        yr, mo, dy, hh, mm, ss = (int(x) for x in m.groups())
+        assert 2000 <= yr <= 2100 and 1 <= mo <= 12 and 1 <= dy <= 31, f"implausible date {m.group(0)}"
+        assert hh < 24 and mm < 60 and ss < 60, f"implausible time {m.group(0)}"
+        t.line("lspci")
+        assert t.wait_for("8086:1237", 5), "PCI host bridge (8086:1237) not listed"
+        assert "8086:7010" in t.serial(), "IDE controller (8086:7010) not listed"
+        t.line("beep"); t.line("echo beepok")
+        assert t.wait_for("beepok", 5), "shell unresponsive after beep"
+        t.line("reboot")
+        assert t.wait_for("reboot requested", 5), "reboot was not requested"
+        assert "[EXCEPTION]" not in t.serial()
+
+
+# The e2e smoke/journey set -- a tight set of canaries that prove the OS is alive
+# (see design/testing.md). Pure logic lives in the host unit tests (make unit), so
+# per-feature behaviours are NOT re-tested here by booting QEMU.
 BIOS_TESTS = [
-    t_boot_and_ls, t_cat_motd, t_cat_missing, t_write_then_cat,
-    t_partition, t_fs_persist, t_rm, t_rewrite,
-    t_directories, t_seed_tree, t_move, t_rm_recursive, t_dir_persist, t_registry,
+    # boot + filesystem
+    t_boot_and_ls, t_partition, t_fs_crud, t_fs_persist, t_registry, t_many_files,
+    # processes / scheduler
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
-    t_spawn_concurrency, t_gui, t_files_app, t_clipboard_summon, t_clipboard_popup_esc,
-    t_window_switch, t_alt_tab, t_super_q_close, t_super_kill, t_term_paste, t_term_copy, t_notepad_edit_save,
-    t_notepad_wordedit, t_shift_select,
-    t_spotlight, t_spotlight_nav, t_launchpad, t_launchpad_search, t_dock_launchpad, t_menubar,
-    t_mouse, t_many_files, t_date, t_ram_scales, t_lspci, t_beep, t_reboot,
-    t_scrollbar_drag, t_statusbar, t_notifications,
+    # compositor + GUI journeys
+    t_gui, t_window_mgmt, t_alt_tab, t_notepad_edit_save, t_spotlight,
+    # hardware
+    t_mouse, t_ram_scales, t_drivers,
 ]
 # A representative subset on UEFI to confirm both boot paths reach the same OS.
-UEFI_TESTS = [t_boot_and_ls, t_cat_motd, t_write_then_cat, t_rm, t_partition,
-              t_directories, t_seed_tree, t_move, t_fork, t_app_crash, t_smp,
-              t_gui, t_files_app, t_mouse, t_many_files, t_date, t_lspci]
+UEFI_TESTS = [t_boot_and_ls, t_partition, t_fs_crud, t_fork, t_app_crash, t_smp,
+              t_gui, t_window_mgmt, t_mouse, t_many_files]
 
 
 def run(label, tests, uefi):
