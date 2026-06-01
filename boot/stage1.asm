@@ -12,7 +12,7 @@
 ;   LBA 0              : this boot sector (stage 1) + MBR partition table
 ;   LBA 1..7           : rest of this binary (stage 2)            -> 0x7e00
 ;   LBA 8..(8+N-1)     : kernel.bin (N = KERNEL_SECTORS, -D'd in) -> 0x10000
-;   LBA 2048..4095     : the tosfs partition (the FS the kernel mounts)
+;   LBA 2048..6143     : the tosfs partition (the FS the kernel mounts)
 ;
 ; The boot sector carries an MBR partition table whose one entry marks the
 ; tosfs partition; the kernel finds it by reading the table (see fs.c). The user
@@ -38,7 +38,7 @@ VBE_MODE        equ 0x2400               ; VBE mode info (transient)
 %endif
 
 FS_PART_LBA   equ 2048           ; tosfs partition start (1 MiB in, past the kernel)
-FS_PART_CNT   equ 2048           ; tosfs partition size in sectors (== TOSFS_DISK_SECTORS)
+FS_PART_CNT   equ 4096           ; tosfs partition size in sectors (== TOSFS_DISK_SECTORS)
 FS_PART_TYPE  equ 0x7f           ; MBR type byte for the tosfs partition (== TOSFS_PART_TYPE)
 
 ; ---------------------------------------------------------------------------

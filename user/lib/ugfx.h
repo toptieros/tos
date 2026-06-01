@@ -41,8 +41,12 @@ void ugfx_text(int x, int y, const char *s, uint32_t fg, uint32_t bg);
 /* Blit a w*h ARGB image (alpha in the high byte) over the framebuffer at (x,y),
  * alpha-blended against what is already there. Used for the desktop logo. */
 void ugfx_blit_argb(int x, int y, int w, int h, const uint32_t *argb);
-/* Nearest-neighbour scaled ARGB blit: draw a sw*sh source into a dw*dh dest box. */
+/* Smooth scaled ARGB blit (area-average down / bilinear up, premultiplied alpha):
+ * draw a sw*sh source into a dw*dh dest box without the old nearest-neighbour jaggies. */
 void ugfx_blit_scaled(int dx, int dy, int dw, int dh, const uint32_t *src, int sw, int sh);
+/* Blit a baked alpha mask (white ARGB) recoloured to `tint` (tint's alpha scales
+ * coverage) -- the menu-bar status glyphs tint to the theme ink or the accent. */
+void ugfx_blit_tint(int x, int y, int w, int h, const uint32_t *mask, uint32_t tint);
 
 uint32_t ugfx_get(int x, int y);            /* read a pixel back from the target */
 void ugfx_cursor(int x, int y);             /* move the arrow cursor (saves/restores under it) */

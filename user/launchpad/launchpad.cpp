@@ -50,7 +50,7 @@ struct Grid : ui::Widget {
             ugfx_rrect_a(x + pad, y + 12, ts, ts, 18, tile);
             ugfx_rrect_border(x + pad, y + 12, ts, ts, 18, 1, TH_BORDER);
             if (a.icon) {                                /* the app's real icon, centred in the tile */
-                int is = ts - 28; if (is > 64) is = 64;
+                int is = ts - 28; if (is > 96) is = 96;   /* hi-res 128px master -> crisp area-downscale */
                 ugfx_blit_scaled(x + pad + (ts - is) / 2, y + 12 + (ts - is) / 2, is, is, a.icon, a.iw, a.ih);
             } else {
                 char init[2] = { a.name[0], 0 };         /* fall back to a big initial */

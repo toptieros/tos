@@ -16,20 +16,24 @@ Run once and commit the header; the build does not depend on PIL.
 import sys, os, struct
 from PIL import Image, ImageDraw
 
-APP = 48        # app tile size
-FILE = 48       # file-type icon size (hi-res: looks crisp in the Files details preview;
-                # the list downsamples it for small rows)
-SS = 4
+APP = 48        # app tile array/display size (APPICON_SZ); the dock blits it 1:1
+FILE = 64       # file-type icon array res -- downsampled crisply in the Files lists
+                # and shown 1:1 in the 64px details preview
+BUNDLE = 128    # .app bundle icon.argb master res; dock/launchpad/switcher scale it
+                # DOWN with the smooth resampler, so the visible app tiles stay crisp
+SS = 4          # supersample factor for anti-aliased rendering
 
 def rrect_mask(S, rad):
     m = Image.new("L", (S, S), 0)
     ImageDraw.Draw(m).rounded_rectangle([0, 0, S - 1, S - 1], radius=rad, fill=255)
     return m
 
-def tile(c_top, c_bot, glyph):
-    """A rounded-square app tile with a vertical gradient, sheen, and a glyph."""
-    S = APP * SS
-    rad = int(APP * 0.235) * SS
+def tile(c_top, c_bot, glyph, out=APP):
+    """A rounded-square app tile with a vertical gradient, sheen, and a glyph,
+    rendered supersampled and downsized to `out` px (the glyphs are S/48 scaled,
+    so any output size stays proportional)."""
+    S = out * SS
+    rad = int(out * 0.235) * SS
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     grad = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     gd = ImageDraw.Draw(grad)
@@ -41,11 +45,11 @@ def tile(c_top, c_bot, glyph):
     d = ImageDraw.Draw(img)
     # top sheen
     sheen = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(sheen).rounded_rectangle([2 * SS, 2 * SS, (APP - 3) * SS, (APP * 0.45) * SS],
+    ImageDraw.Draw(sheen).rounded_rectangle([2 * SS, 2 * SS, (out - 3) * SS, (out * 0.45) * SS],
                                             radius=rad, fill=(255, 255, 255, 38))
     img.alpha_composite(sheen)
     glyph(d, S)
-    return img.resize((APP, APP), Image.LANCZOS)
+    return img.resize((out, out), Image.LANCZOS)
 
 WHITE = (245, 248, 252, 255)
 
@@ -86,8 +90,8 @@ def g_note(d, S):
                fill=(150, 120, 60, 255), width=max(1, int(1.6 * u)))
 
 # ---- file-type icons (small documents / folder) ----------------------------
-def doc(base, fold=(230, 234, 240), accent=None, mark=None):
-    S = FILE * SS
+def doc(base, fold=(230, 234, 240), accent=None, mark=None, out=FILE):
+    S = out * SS
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     u = S / 22.0
@@ -101,7 +105,7 @@ def doc(base, fold=(230, 234, 240), accent=None, mark=None):
         # front flap, slightly lower, with a thin top sheen line
         d.rounded_rectangle([3 * u, 9 * u, 19 * u, 17.8 * u], radius=2.2 * u, fill=front)
         d.line([(5 * u, 9.6 * u), (17 * u, 9.6 * u)], fill=sheen, width=max(1, int(0.6 * u)))
-        return img.resize((FILE, FILE), Image.LANCZOS)
+        return img.resize((out, out), Image.LANCZOS)
     # a page with a folded corner
     body = fold
     d.polygon([(5 * u, 3 * u), (13 * u, 3 * u), (17 * u, 7 * u), (17 * u, 19 * u), (5 * u, 19 * u)], fill=body + (255,))
@@ -117,7 +121,7 @@ def doc(base, fold=(230, 234, 240), accent=None, mark=None):
     elif mark == "image":
         d.ellipse([7 * u, 9 * u, 9.5 * u, 11.5 * u], fill=(245, 200, 90, 255))
         d.polygon([(6 * u, 17 * u), (10 * u, 12 * u), (13 * u, 15 * u), (15 * u, 13 * u), (16 * u, 17 * u)], fill=(90, 170, 120, 255))
-    return img.resize((FILE, FILE), Image.LANCZOS)
+    return img.resize((out, out), Image.LANCZOS)
 
 def write_argb_bin(path, img):
     """Bundle icon format: u32 width, u32 height, then w*h LE 0xAARRGGBB pixels."""
@@ -144,10 +148,13 @@ def main():
         elif args[i] == "--app-icons": app_icons_dir = args[i + 1]; i += 2
         else: out = args[i]; i += 1
 
-    apps = [("TERMINAL", tile((58, 64, 82), (32, 36, 50), g_terminal)),
-            ("FILES",    tile((86, 150, 240), (44, 96, 200), g_folder)),
-            ("NOTEPAD",  tile((247, 207, 112), (224, 162, 58), g_note)),
-            ("APP",      tile((96, 104, 124), (60, 66, 82), g_gear))]
+    # (name, gradient-top, gradient-bottom, glyph) -- rendered to the small in-binary
+    # array (APP px, the dock 1:1 size) and, for the bundles, to the BUNDLE master.
+    app_specs = [("TERMINAL", (58, 64, 82),    (32, 36, 50),  g_terminal),
+                 ("FILES",    (86, 150, 240),  (44, 96, 200), g_folder),
+                 ("NOTEPAD",  (247, 207, 112), (224, 162, 58), g_note),
+                 ("APP",      (96, 104, 124),  (60, 66, 82),  g_gear)]
+    apps = [(nm, tile(ct, cb, gl, APP)) for nm, ct, cb, gl in app_specs]
     files = [("FOLDER",  doc("folder")),
              ("TEXT",    doc("doc", accent=(96, 152, 232), mark="lines")),
              ("EXEC",    doc("doc", accent=(80, 180, 100), mark="exec")),
@@ -185,10 +192,10 @@ def main():
 
     if app_icons_dir:
         os.makedirs(app_icons_dir, exist_ok=True)
-        for nm, img in apps:
+        for nm, ct, cb, gl in app_specs:          # bundles get the hi-res BUNDLE master
             p = os.path.join(app_icons_dir, "%s.argb" % APP_LABEL[nm])
-            write_argb_bin(p, img)
-            print("wrote %s" % p)
+            write_argb_bin(p, tile(ct, cb, gl, BUNDLE))
+            print("wrote %s (%dpx master)" % (p, BUNDLE))
 
     if preview:
         bg = Image.new("RGB", (APP * len(apps) + 20, APP + FILE + 40), (28, 32, 44))

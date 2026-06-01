@@ -71,9 +71,24 @@ static void copy_name(char *dst, const char *src) {
 
 static uint32_t sectors_for(uint32_t bytes) { return (bytes + 511) / 512; }
 
-/* All FS sector numbers are relative to our partition; these add the base. */
-static int fs_sread(uint32_t lba, uint8_t n, void *buf)  { return ata_read(base_lba + lba, n, buf); }
-static int fs_swrite(uint32_t lba, uint8_t n, const void *buf) { return ata_write(base_lba + lba, n, buf); }
+/* All FS sector numbers are relative to our partition; these add the base. The
+ * count is chunked into <=128-sector ATA transfers (the ATA count register is only
+ * 8-bit) so multi-sector I/O like the directory table -- now >256 sectors on a
+ * larger disk -- isn't capped to a single command. Lets TOSFS_DISK_SECTORS scale. */
+static int fs_sread(uint32_t lba, uint32_t n, void *buf) {
+    uint8_t *p = (uint8_t *)buf;
+    while (n) { uint8_t c = n > 128 ? 128 : (uint8_t)n;
+        if (ata_read(base_lba + lba, c, p) < 0) return -1;
+        lba += c; p += (uint32_t)c * 512; n -= c; }
+    return 0;
+}
+static int fs_swrite(uint32_t lba, uint32_t n, const void *buf) {
+    const uint8_t *p = (const uint8_t *)buf;
+    while (n) { uint8_t c = n > 128 ? 128 : (uint8_t)n;
+        if (ata_write(base_lba + lba, c, p) < 0) return -1;
+        lba += c; p += (uint32_t)c * 512; n -= c; }
+    return 0;
+}
 
 uint32_t fs_base_lba(void) { return base_lba; }
 

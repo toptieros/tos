@@ -213,13 +213,14 @@ $(EFIAPP): $(EDIR)/uefi.c $(BUILD)/kernel_blob.h
 ESP_LBA     := 2048
 ESP_SECTORS := 32768
 UFS_LBA     := 34816
+UFS_SECTORS := 4096          # tosfs partition size in sectors (== TOSFS_DISK_SECTORS / FS_PART_CNT)
 $(UEFIIMG): $(EFIAPP) $(FSIMG)
 	truncate -s $$(( $(ESP_SECTORS) * 512 )) $(ESPPART)
 	mformat -i $(ESPPART) ::
 	mmd   -i $(ESPPART) ::/EFI ::/EFI/BOOT
 	mcopy -i $(ESPPART) $(EFIAPP) ::/EFI/BOOT/BOOTX64.EFI
-	truncate -s $$(( ($(UFS_LBA) + 2048) * 512 )) $@
-	printf 'label: dos\nstart=$(ESP_LBA), size=$(ESP_SECTORS), type=ef, bootable\nstart=$(UFS_LBA), size=2048, type=7f\n' | sfdisk $@ >/dev/null
+	truncate -s $$(( ($(UFS_LBA) + $(UFS_SECTORS)) * 512 )) $@
+	printf 'label: dos\nstart=$(ESP_LBA), size=$(ESP_SECTORS), type=ef, bootable\nstart=$(UFS_LBA), size=$(UFS_SECTORS), type=7f\n' | sfdisk $@ >/dev/null
 	dd if=$(ESPPART) of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc status=none
 	dd if=$(FSIMG)   of=$@ bs=512 seek=$(UFS_LBA) conv=notrunc status=none
 	@echo "built $@ (ESP @ LBA $(ESP_LBA), tosfs @ LBA $(UFS_LBA))"

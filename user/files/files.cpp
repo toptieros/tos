@@ -73,19 +73,10 @@ static void join(char *out, int cap, const char *dir, const char *name) {
     for (int i = 0; name[i] && n < cap - 1; i++) out[n++] = name[i];
     out[n] = 0;
 }
-/* nearest-neighbour, alpha-blended scale of a sw*sh ARGB image into a dst box */
+/* smooth (area/bilinear) alpha-blended scale of a sw*sh ARGB image into a dst box;
+ * forwards to the shared ugfx resampler so file-list icons get the same crisp scaling */
 static void blit_scaled(int dx, int dy, int dw, int dh, const uint32_t *src, int sw, int sh) {
-    if (dw <= 0 || dh <= 0 || !src) return;
-    for (int j = 0; j < dh; j++) {
-        int sy = j * sh / dh;
-        for (int i = 0; i < dw; i++) {
-            int sx = i * sw / dw;
-            uint32_t s = src[sy * sw + sx], a = s >> 24;
-            if (!a) continue;
-            int px = dx + i, py = dy + j;
-            ugfx_pixel(px, py, a >= 255 ? (s & 0xffffff) : ugfx_blend(ugfx_get(px, py), s & 0xffffff, a));
-        }
-    }
+    ugfx_blit_scaled(dx, dy, dw, dh, src, sw, sh);
 }
 static uint32_t *load_icon_argb(const char *path, int *w, int *h) {
     int fd = fopen(path, O_RDONLY);

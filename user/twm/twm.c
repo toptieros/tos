@@ -23,6 +23,7 @@
 #include "winbtns.h"
 #include "cursors.h"
 #include "icons.h"
+#include "statusicons.h"
 #include "manifest.h"
 #include "registry.h"
 #include "textutil.h"
@@ -153,10 +154,10 @@ static void draw_switcher(void);                  /* Alt-Tab overlay; called fro
  * read as iconic indicators, not as fake readings. Laid out right-to-left in
  * cc_layout() into fixed slots so the cluster never jitters as the clock ticks. */
 #define SB_GLYPH   ARGB(235, 222, 228, 240)   /* status-glyph ink (alpha-aware)      */
-#define SB_NET_W   16
-#define SB_VOL_W   18
-#define SB_BAT_W   22
-#define SB_BELL_W  18
+#define SB_NET_W   STATUSICON_SZ              /* all glyphs are the same square Lucide box */
+#define SB_VOL_W   STATUSICON_SZ
+#define SB_BAT_W   STATUSICON_SZ
+#define SB_BELL_W  STATUSICON_SZ
 #define SB_GAP     12
 static int sb_clk_w;                          /* reserved (worst-case) clock width   */
 static int sb_net_x, sb_vol_x, sb_bat_x, sb_bell_x;   /* glyph left edges            */
@@ -361,38 +362,19 @@ static const char *weekday(int y, int m, int d) {
     return names[(h + 6) % 7];                       /* remap to 0=Sun .. 6=Sat */
 }
 
-/* --- status-cluster glyphs (vector, monochrome) drawn centred on cy, left edge x */
-static void draw_net_glyph(int x, int cy, uint32_t col) {   /* ascending signal bars */
-    int base = cy + 6;                                      /* bars grow up from a common floor */
-    for (int i = 0; i < 4; i++) {
-        int bh = 3 + i * 3;
-        ugfx_rrect_a(x + i * 4, base - bh, 3, bh, 1, col);
-    }
+/* --- status-cluster glyphs: crisp Lucide line icons (tools/genstatus.py), blitted
+ * as alpha masks recoloured to `col`, centred vertically on cy with left edge x.
+ * Replaces the old hand-stacked 1px-rectangle glyphs, which had no anti-aliasing. */
+static void draw_status_glyph(int x, int cy, uint32_t col, int idx) {
+    ugfx_blit_tint(x, cy - STATUSICON_SZ / 2, STATUSICON_SZ, STATUSICON_SZ,
+                   statusicons_argb[idx], col);
 }
-static void draw_vol_glyph(int x, int cy, uint32_t col) {   /* speaker + two sound waves */
-    ugfx_fill_a(x, cy - 4, 4, 8, col);                      /* driver box                */
-    for (int c = 0; c < 7; c++) {                           /* cone widening to the mouth */
-        int hh = 2 + (10 * (c + 1)) / 7;
-        ugfx_fill_a(x + 4 + c, cy - hh / 2, 1, hh, col);
-    }
-    ugfx_fill_a(x + 13, cy - 3, 1, 6,  col);                /* near wave */
-    ugfx_fill_a(x + 15, cy - 5, 1, 10, col);                /* far wave  */
-}
-static void draw_bat_glyph(int x, int cy, uint32_t col) {   /* shell + nub + charge fill */
-    int bw = 20, bh = 11, by = cy - bh / 2;
-    ugfx_rrect_border(x, by, bw, bh, 3, 1, col);            /* shell outline */
-    ugfx_fill_a(x + bw, cy - 3, 2, 6, col);                 /* positive nub  */
-    ugfx_rrect_a(x + 2, by + 2, bw - 4, bh - 4, 1, col);    /* full charge (placeholder) */
-}
-static void draw_bell_glyph(int x, int cy, uint32_t col, int badge) {  /* dome + clapper */
-    int cx = x + SB_BELL_W / 2, top = cy - 7;
-    for (int r = 0; r < 9; r++) {                           /* dome widening downward */
-        int half = 2 + (r * 4) / 9;
-        ugfx_fill_a(cx - half, top + r, half * 2, 1, col);
-    }
-    ugfx_fill_a(cx - 7, cy + 2, 14, 2, col);                /* rim     */
-    ugfx_fill_a(cx - 1, cy + 4, 3, 2, col);                 /* clapper */
-    if (badge) ugfx_rrect_a(cx + 3, top - 2, 6, 6, 3, g_accent);   /* unseen badge */
+static void draw_net_glyph(int x, int cy, uint32_t col) { draw_status_glyph(x, cy, col, STATUSICON_WIFI); }
+static void draw_vol_glyph(int x, int cy, uint32_t col) { draw_status_glyph(x, cy, col, STATUSICON_VOL); }
+static void draw_bat_glyph(int x, int cy, uint32_t col) { draw_status_glyph(x, cy, col, STATUSICON_BATT); }
+static void draw_bell_glyph(int x, int cy, uint32_t col, int badge) {
+    draw_status_glyph(x, cy, col, STATUSICON_BELL);
+    if (badge) ugfx_rrect_a(x + SB_BELL_W - 4, cy - STATUSICON_SZ / 2 - 1, 6, 6, 3, g_accent);  /* unseen badge */
 }
 
 /* Build the menu-bar clock from the registry: clock.format (24h|12h),
@@ -500,7 +482,7 @@ static void draw_tile(struct icon *ic) {
                 ugfx_rrect_a(x + pad + c * (cell + gap), y + pad + r * (cell + gap), cell, cell, 2,
                              ARGB(255, 150, 180, 232));
     }
-    else if (ic->img) ugfx_blit_argb(x, y, ic->iw, ic->ih, ic->img);   /* the bundle's own icon */
+    else if (ic->img) ugfx_blit_scaled(x, y, APPICON_SZ, APPICON_SZ, ic->img, ic->iw, ic->ih);  /* hi-res bundle icon -> tile */
     else              ugfx_blit_argb(x, y, APPICON_SZ, APPICON_SZ, appicons_argb[ICON_APP]);  /* generic fallback */
     int iy = y + APPICON_SZ + 3;                    /* running indicator under the tile */
     if (st & 2)        ugfx_rrect_a(ic->cx - 9, iy, 18, 3, 1, g_accent);   /* focused: accent bar */
@@ -1276,7 +1258,7 @@ static void draw_switcher(void) {
         int slot = sw_order[i]; if (slot < 0 || slot >= MAXW) continue;
         int cx = sw_tile_cx(i), ix = cx - APPICON_SZ / 2, iy = sw_py + SW_PAD;
         int ai = app_for_title(cw[slot].title);
-        if (ai >= 0 && apps[ai].img) ugfx_blit_argb(ix, iy, apps[ai].iw, apps[ai].ih, apps[ai].img);
+        if (ai >= 0 && apps[ai].img) ugfx_blit_scaled(ix, iy, APPICON_SZ, APPICON_SZ, apps[ai].img, apps[ai].iw, apps[ai].ih);
         else                         ugfx_blit_argb(ix, iy, APPICON_SZ, APPICON_SZ, appicons_argb[ICON_APP]);
         fit_text(buf, sizeof buf, cw[slot].title, SW_CELL - 10);
         int tw = ugfx_text_w(buf);

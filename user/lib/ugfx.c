@@ -142,19 +142,91 @@ void ugfx_blit_argb(int x, int y, int w, int h, const uint32_t *argb) {
         }
 }
 
-/* Nearest-neighbour scaled ARGB blit: draw a sw*sh source into a dw*dh dest box. */
+/* Smooth scaled ARGB blit: draw a sw*sh source into a dw*dh dest box. Down-scales
+ * with an area (box) average, up-scales (and 1:1) with bilinear sampling -- both in
+ * PREMULTIPLIED alpha so transparent icon edges don't bleed a dark halo. Replaces
+ * the old nearest-neighbour path, which left visible jaggies on the launchpad and
+ * the file-list icons. Sizes are tiny (icons), so the per-pixel cost is negligible. */
 void ugfx_blit_scaled(int dx, int dy, int dw, int dh, const uint32_t *src, int sw, int sh) {
     if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 || !src) return;
-    for (int j = 0; j < dh; j++) {
-        int sy = j * sh / dh;
+    if (dw >= sw && dh >= sh) {                  /* up-scale or 1:1 -> bilinear */
+        for (int j = 0; j < dh; j++) {
+            long fy = ((long)(2 * j + 1) * sh * 32768) / dh - 32768;   /* (j+.5)*sh/dh-.5 in 16.16 */
+            if (fy < 0) fy = 0;
+            int y0 = (int)(fy >> 16), y1 = y0 + 1, wy = (int)(fy & 0xffff) >> 8;
+            if (y0 >= sh) y0 = sh - 1;
+            if (y1 >= sh) y1 = sh - 1;
+            int py = dy + j;
+            for (int i = 0; i < dw; i++) {
+                long fx = ((long)(2 * i + 1) * sw * 32768) / dw - 32768;
+                if (fx < 0) fx = 0;
+                int x0 = (int)(fx >> 16), x1 = x0 + 1, wx = (int)(fx & 0xffff) >> 8;
+                if (x0 >= sw) x0 = sw - 1;
+                if (x1 >= sw) x1 = sw - 1;
+                uint32_t s00 = src[(long)y0 * sw + x0], s10 = src[(long)y0 * sw + x1];
+                uint32_t s01 = src[(long)y1 * sw + x0], s11 = src[(long)y1 * sw + x1];
+                int wx1 = wx, wx0 = 256 - wx, wy1 = wy, wy0 = 256 - wy;       /* 8-bit weights */
+                long w00 = (long)wx0 * wy0 * (s00 >> 24), w10 = (long)wx1 * wy0 * (s10 >> 24);
+                long w01 = (long)wx0 * wy1 * (s01 >> 24), w11 = (long)wx1 * wy1 * (s11 >> 24);
+                long aw = w00 + w10 + w01 + w11;                /* sum of weight*alpha */
+                if (!aw) continue;
+                long r = (w00 * ((s00 >> 16) & 0xff) + w10 * ((s10 >> 16) & 0xff)
+                        + w01 * ((s01 >> 16) & 0xff) + w11 * ((s11 >> 16) & 0xff)) / aw;
+                long g = (w00 * ((s00 >> 8) & 0xff) + w10 * ((s10 >> 8) & 0xff)
+                        + w01 * ((s01 >> 8) & 0xff) + w11 * ((s11 >> 8) & 0xff)) / aw;
+                long b = (w00 * (s00 & 0xff) + w10 * (s10 & 0xff)
+                        + w01 * (s01 & 0xff) + w11 * (s11 & 0xff)) / aw;
+                unsigned a = (unsigned)(aw / 65536);           /* weights sum to 65536 */
+                if (a > 255) a = 255;
+                uint32_t rgb = ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+                ugfx_pixel(dx + i, py, a >= 255 ? rgb : blend(ugfx_get(dx + i, py), rgb, a));
+            }
+        }
+        return;
+    }
+    for (int j = 0; j < dh; j++) {               /* down-scale -> area (box) average */
+        int sy0 = j * sh / dh, sy1 = (j + 1) * sh / dh;
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        if (sy1 > sh) sy1 = sh;
+        int py = dy + j;
         for (int i = 0; i < dw; i++) {
-            int sx = i * sw / dw;
-            uint32_t s = src[sy * sw + sx], a = s >> 24;
+            int sx0 = i * sw / dw, sx1 = (i + 1) * sw / dw;
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            if (sx1 > sw) sx1 = sw;
+            unsigned long sa = 0, sr = 0, sg = 0, sb = 0;
+            for (int yy = sy0; yy < sy1; yy++)
+                for (int xx = sx0; xx < sx1; xx++) {
+                    uint32_t s = src[(long)yy * sw + xx];
+                    unsigned a = s >> 24;
+                    sa += a;
+                    sr += ((s >> 16) & 0xff) * a;
+                    sg += ((s >> 8) & 0xff) * a;
+                    sb += (s & 0xff) * a;
+                }
+            int n = (sx1 - sx0) * (sy1 - sy0);
+            unsigned a = (unsigned)(sa / n);              /* coverage = mean alpha */
             if (!a) continue;
-            int px = dx + i, py = dy + j;
-            ugfx_pixel(px, py, a >= 255 ? (s & 0xffffff) : blend(ugfx_get(px, py), s & 0xffffff, a));
+            uint32_t rgb = (uint32_t)((sr / sa) << 16 | (sg / sa) << 8 | (sb / sa));  /* premul */
+            ugfx_pixel(dx + i, py, a >= 255 ? rgb : blend(ugfx_get(dx + i, py), rgb, a));
         }
     }
+}
+
+/* Blit a baked alpha mask (white ARGB; only the high alpha byte matters) recoloured
+ * to `tint` -- used for the monochrome menu-bar status glyphs so one set of icons
+ * tints to the theme ink or the accent. `tint`'s own alpha scales the coverage. */
+void ugfx_blit_tint(int x, int y, int w, int h, const uint32_t *mask, uint32_t tint) {
+    uint32_t rgb = tint & 0xffffff;
+    unsigned ta = tint >> 24; if (!ta) ta = 255;
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            unsigned ma = mask[j * w + i] >> 24;
+            if (!ma) continue;
+            unsigned a = ma * ta / 255;
+            if (!a) continue;
+            int px = x + i, py = y + j;
+            ugfx_pixel(px, py, a >= 255 ? rgb : blend(ugfx_get(px, py), rgb, a));
+        }
 }
 
 uint32_t ugfx_get(int x, int y) {
