@@ -114,6 +114,8 @@ struct notif { char title[NOTIF_TITLE]; char body[NOTIF_BODY]; };
 #define KEY_TERM_PASTE  0x96   /* app:    Ctrl+Shift+V                              */
 #define KEY_SUPER_SPACE 0x97   /* global: Spotlight search                          */
 #define KEY_LAUNCHPAD   0x98   /* global: Launchpad (Super tapped on its own)        */
+#define KEY_TERM_PGUP   0x99   /* app:    Shift+PgUp -- page scrollback up           */
+#define KEY_TERM_PGDN   0x9A   /* app:    Shift+PgDn -- page scrollback down         */
 
 /* Filled by SYS_FBINFO. On success the GOP framebuffer is mapped into the caller
  * at `vaddr` (32-bit XRGB pixels, `pitch` pixels per scanline) and present=1. On
@@ -213,6 +215,9 @@ struct wininfo {              /* SYS_WIN_CREATE: in = w,h,title,flags; out = id,
  * can tell a drag-extend from a fresh press (used for terminal/Files selection).
  * A pure pointer move (hover) arrives with the whole button field 0. */
 #define WEV_MOUSE_DRAG 0x40
+/* The compositor also ORs WEV_MOUSE_SHIFT into a PRESS's button field when Shift
+ * was held at the click, so a widget can shift-extend a selection (Shift+click). */
+#define WEV_MOUSE_SHIFT 0x80
 #define WEV_MOUSE_PACK(x, y, b) ((((unsigned)(x) & 0xfff) << 20) | (((unsigned)(y) & 0xfff) << 8) | ((unsigned)(b) & 0xff))
 #define WEV_MOUSE_X(a)   (((a) >> 20) & 0xfff)
 #define WEV_MOUSE_Y(a)   (((a) >> 8)  & 0xfff)

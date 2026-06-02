@@ -36,18 +36,32 @@ static spinlock_t frame_lock = SPINLOCK_INIT;
 #define USER_STACK_PAGES 16          /* 64 KiB stack, just below the data page    */
 
 /* The kernel identity-maps ALL of physical RAM (2 MiB huge pages) so it can reach
- * any frame it hands out; the frame pool is that whole span minus the kernel image
- * and the 2 MiB user-window slot (which is per-process, not identity). The RAM
- * size is read from QEMU's fw_cfg at init (`vmm_init`), so the pool scales to the
- * machine -- no fixed cap. `ident_top` is the top of mapped RAM (2 MiB-aligned),
- * `ident_pds` the number of page directories it spans (one per GiB), built into
- * every address space's low half. IDENT_MIN is a floor if fw_cfg is unavailable. */
+ * any frame it hands out; the frame pool is that span minus the kernel image and
+ * the 2 MiB user-window slot (which is per-process, not identity). The layout is
+ * read from the firmware e820 map at init (`vmm_init` -> `parse_e820`), so the
+ * pool spans EVERY RAM region the machine reports -- including RAM remapped ABOVE
+ * the 4 GiB PCI hole -- with no fixed cap. On a PC the sub-4 GiB RAM stops at the
+ * MMIO hole (~0xC0000000 on QEMU/i440fx) and the rest reappears at 0x100000000, so
+ * the map and the allocator are MULTI-REGION: they skip the hole. `ident_top` is
+ * the top of the highest RAM region (2 MiB-aligned), `ident_pds` the GiB-granular
+ * page directories the low map spans. IDENT_MIN is a floor if e820 is unavailable. */
 #define IDENT_MIN      0x2000000ULL  /* 32 MiB floor */
 #define WINDOW_LO      0x400000ULL   /* user window virtual slot (USER_VBASE) ... */
 #define WINDOW_HI      0x600000ULL   /* ... not identity-mapped, so skip in the pool */
 
-static uint64_t ident_top  = IDENT_MIN;   /* top of identity-mapped RAM (set in vmm_init) */
-static int      ident_pds  = 1;           /* page directories the low map spans (1/GiB)   */
+static uint64_t ident_top  = IDENT_MIN;   /* top of the highest RAM region (set in vmm_init) */
+static int      ident_pds  = 1;           /* GiB page directories the low map spans (1/GiB) */
+
+/* The physical RAM regions from e820, 2 MiB-aligned and sorted ascending (region 0
+ * is the sub-4 GiB block; later regions are RAM remapped above the hole). */
+#define MAXRAM 8
+static struct ramrgn { uint64_t base, top; } ram[MAXRAM] = { { 0, IDENT_MIN } };
+static int      ram_n     = 1;
+static uint64_t ram_total = IDENT_MIN;     /* sum of region sizes (real RAM, hole excluded) */
+static int frame_in_ram(uint64_t phys) {   /* is this physical frame inside a RAM region? */
+    for (int i = 0; i < ram_n; i++) if (phys >= ram[i].base && phys < ram[i].top) return 1;
+    return 0;
+}
 static int      fb_pdpt_slot = 1;         /* pdpt_low slot for the on-demand user FB map  */
 static uint64_t user_fb_vaddr = GiB;      /* = fb_pdpt_slot GiB; placed just above all RAM */
 
@@ -110,6 +124,7 @@ struct elf64_phdr {
  * rather than scribbling on the kernel when it runs dry. Reclaimed frames come
  * back via the free list. */
 static uint64_t next_frame = 0x100000;
+static int      cur_rgn   = 0;       /* RAM region the bump pointer is currently in */
 static uint64_t shared_pdpt_high;    /* physical addr, shared kernel mapping */
 static uint64_t free_list = 0;       /* phys addr of head, 0 if empty */
 
@@ -123,6 +138,23 @@ static uint64_t kernel_phys_end(void) {
     return (end + 0xfff) & ~0xfffULL;                 /* page-aligned */
 }
 
+/* Advance the bump pointer to the next allocatable RAM frame, stepping over the
+ * kernel image, the user-window slot, and inter-region gaps (the sub-4 GiB PCI
+ * hole), crossing into the next RAM region as needed. Returns 0 when the pool is
+ * exhausted. Caller holds frame_lock. */
+static uint64_t bump_next(void) {
+    for (;;) {
+        if (next_frame >= KERNEL_PHYS && next_frame < kernel_phys_end()) { next_frame = kernel_phys_end(); continue; }
+        if (next_frame >= WINDOW_LO   && next_frame < WINDOW_HI)         { next_frame = WINDOW_HI;        continue; }
+        if (next_frame <  ram[cur_rgn].base) { next_frame = ram[cur_rgn].base; continue; }
+        if (next_frame >= ram[cur_rgn].top) {            /* past this region -> next one (skip the hole) */
+            if (cur_rgn + 1 >= ram_n) return 0;
+            cur_rgn++; next_frame = ram[cur_rgn].base; continue;
+        }
+        return next_frame;
+    }
+}
+
 static uint64_t *frame_alloc(void) {
     uint64_t lf = spin_lock_irqsave(&frame_lock);
     uint64_t f;
@@ -130,14 +162,7 @@ static uint64_t *frame_alloc(void) {
         f = free_list;
         free_list = *(volatile uint64_t *)f;
     } else {
-        for (;;) {                                    /* step over reserved regions */
-            if (next_frame >= KERNEL_PHYS && next_frame < kernel_phys_end())
-                next_frame = kernel_phys_end();
-            else if (next_frame >= WINDOW_LO && next_frame < WINDOW_HI)
-                next_frame = WINDOW_HI;
-            else break;
-        }
-        if (next_frame >= ident_top) {
+        if (!bump_next()) {
             console_puts("[kernel] PANIC: out of physical frames\r\n");
             for (;;) __asm__ volatile("cli; hlt");
         }
@@ -166,11 +191,15 @@ static uint64_t frame_alloc_contig(int n) {
     uint64_t lf = spin_lock_irqsave(&frame_lock);
     uint64_t base;
     for (;;) {
+        if (!bump_next()) { spin_unlock_irqrestore(&frame_lock, lf); return 0; }
         uint64_t end;
         base = next_frame; end = base + need;
-        if (end > ident_top) { spin_unlock_irqrestore(&frame_lock, lf); return 0; }
         if (base < kernel_phys_end() && end > KERNEL_PHYS) { next_frame = kernel_phys_end(); continue; }
         if (base < WINDOW_HI && end > WINDOW_LO)           { next_frame = WINDOW_HI;        continue; }
+        if (end > ram[cur_rgn].top) {                      /* would span the region end/hole -> next region */
+            if (cur_rgn + 1 >= ram_n) { spin_unlock_irqrestore(&frame_lock, lf); return 0; }
+            cur_rgn++; next_frame = ram[cur_rgn].base; continue;
+        }
         next_frame = end;
         break;
     }
@@ -204,18 +233,77 @@ static uint64_t detect_ram(void) {
     return ram & ~0x1fffffULL;                                    /* 2 MiB-aligned */
 }
 
-/* Build a per-process low-half identity map covering [0, ident_top): `ident_pds`
- * page directories (one per GiB) of 2 MiB huge pages (kernel-only, US=0), linked
- * into pdpt_low[0..ident_pds-1] (US=1 so the user window inside pd[0] is
- * reachable). Returns the first PD, which carries the user-window slot at [2]. */
+/* --- QEMU fw_cfg e820 memory map -------------------------------------------
+ * FW_CFG_RAM_SIZE can't describe the sub-4 GiB PCI hole, so to map RAM ABOVE it
+ * we read the firmware's e820 table (fw_cfg file "etc/e820"), which QEMU fills
+ * with the real RAM regions (below-4G + above-4G) plus reserved holes. The
+ * fw_cfg DIRECTORY fields are big-endian; the file payload is guest LE. */
+#define FW_CFG_FILE_DIR  0x0019
+#define E820_RAM         1
+struct e820ent { uint64_t addr; uint64_t len; uint32_t type; } __attribute__((packed));
+static void fw_read(void *buf, int n) { uint8_t *p = (uint8_t *)buf; for (int i = 0; i < n; i++) p[i] = inb(FW_CFG_DATA); }
+/* Locate fw_cfg file "etc/e820": returns its select key, writes the entry count
+ * to *n, or returns 0 if the firmware exposes no such file. */
+static uint16_t e820_find(int *n) {
+    outw(FW_CFG_SELECT, FW_CFG_FILE_DIR);
+    uint32_t count; fw_read(&count, 4); count = __builtin_bswap32(count);
+    for (uint32_t i = 0; i < count; i++) {
+        struct { uint32_t size; uint16_t select; uint16_t res; char name[56]; } __attribute__((packed)) f;
+        fw_read(&f, sizeof f);
+        const char *want = "etc/e820"; int eq = 1;
+        for (int k = 0; k < 9; k++) if (f.name[k] != want[k]) { eq = 0; break; }
+        if (eq) { *n = (int)(__builtin_bswap32(f.size) / sizeof(struct e820ent)); return __builtin_bswap16(f.select); }
+    }
+    return 0;
+}
+/* Parse the firmware e820 into 2 MiB-aligned RAM regions (`ram[]`, sorted), and set
+ * `ram_total` (real RAM) + `ident_top` (top of the highest region). Falls back to a
+ * single [0, detect_ram()) region if the firmware exposes no e820 file. */
+static void parse_e820(void) {
+    int n = 0; uint16_t key = e820_find(&n);
+    int cnt = 0;
+    if (key && n > 0) {
+        outw(FW_CFG_SELECT, key);
+        for (int i = 0; i < n; i++) {
+            struct e820ent e; fw_read(&e, sizeof e);    /* must read every entry to keep the stream aligned */
+            if (e.type != E820_RAM || cnt >= MAXRAM) continue;
+            uint64_t b = (e.addr + 0x1fffffULL) & ~0x1fffffULL;   /* round base up   */
+            uint64_t t = (e.addr + e.len) & ~0x1fffffULL;         /* round top down  */
+            if (t <= b || b > 512ULL * GiB) continue;             /* skip empty / the ~1 TB reserved tail */
+            ram[cnt].base = b; ram[cnt].top = t; cnt++;
+        }
+    }
+    if (cnt == 0) { ram[0].base = 0; ram[0].top = detect_ram(); cnt = 1; }   /* fallback: contiguous */
+    for (int i = 1; i < cnt; i++)                       /* insertion-sort by base (tiny n) */
+        for (int j = i; j > 0 && ram[j].base < ram[j - 1].base; j--) {
+            struct ramrgn tmp = ram[j]; ram[j] = ram[j - 1]; ram[j - 1] = tmp;
+        }
+    ram_n = cnt;
+    ram_total = 0;
+    for (int i = 0; i < ram_n; i++) ram_total += ram[i].top - ram[i].base;
+    ident_top = ram[ram_n - 1].top;                    /* top of the highest RAM region */
+}
+
+/* Build a per-process low-half identity map spanning [0, ident_top): up to
+ * `ident_pds` page directories (one per GiB) of 2 MiB huge pages (kernel-only,
+ * US=0), linked into pdpt_low[0..ident_pds-1] (US=1 so the user window inside pd[0]
+ * is reachable). Only pages that fall inside a RAM region are mapped, so the PCI
+ * hole between regions stays absent; a GiB slot that holds NO RAM is skipped
+ * entirely (left absent). Returns the first PD, which carries the user-window slot
+ * at [2] (pd0 is always built -- the sub-4 GiB region always covers [0,1 GiB)). */
 static uint64_t *build_low_map(uint64_t *pdpt_low) {
     uint64_t *pd0 = 0;
-    uint64_t pdes = ident_top / 0x200000ULL;          /* total 2 MiB huge pages */
     for (int pd = 0; pd < ident_pds; pd++) {
+        uint64_t gib = (uint64_t)pd * GiB;
+        if (pd != 0) {                                /* skip a hole-only GiB slot (but never pd0) */
+            int any = 0;
+            for (int i = 0; i < 512; i++) if (frame_in_ram(gib + (uint64_t)i * 0x200000ULL)) { any = 1; break; }
+            if (!any) { pdpt_low[pd] = 0; continue; }
+        }
         uint64_t *pdt = frame_alloc();                /* zeroed: unused entries stay absent */
         for (int i = 0; i < 512; i++) {
-            uint64_t idx = (uint64_t)pd * 512 + i;
-            if (idx < pdes) pdt[i] = idx * 0x200000ULL | P | W | HUGE;
+            uint64_t phys = gib + (uint64_t)i * 0x200000ULL;
+            if (frame_in_ram(phys)) pdt[i] = phys | P | W | HUGE;
         }
         pdpt_low[pd] = (uint64_t)pdt | P | W | U;
         if (pd == 0) pd0 = pdt;
@@ -224,9 +312,9 @@ static uint64_t *build_low_map(uint64_t *pdpt_low) {
 }
 
 void vmm_init(struct boot_info *bi) {
-    ident_top = detect_ram();
-    ident_pds = (int)((ident_top + GiB - 1) / GiB);   /* one PD per GiB (>=1)      */
-    fb_pdpt_slot  = ident_pds;                        /* first PDPT slot past RAM  */
+    parse_e820();                                     /* fill ram[], ram_n, ram_total, ident_top */
+    ident_pds = (int)((ident_top + GiB - 1) / GiB);   /* GiB slots up to the highest region (>=1) */
+    fb_pdpt_slot  = ident_pds;                        /* first PDPT slot past ALL RAM */
     user_fb_vaddr = (uint64_t)fb_pdpt_slot * GiB;
     surf_pdpt_slot = ident_pds + 1;                   /* window surfaces go past the FB slot */
     surf_base      = (uint64_t)surf_pdpt_slot * GiB;
@@ -261,14 +349,18 @@ void vmm_init(struct boot_info *bi) {
 
     shared_pdpt_high = (uint64_t)pdpt_high;
 
-    uint64_t pool = (ident_top - 0x100000)
+    uint64_t pool = ram_total - 0x100000
                   - (kernel_phys_end() - KERNEL_PHYS)
                   - (WINDOW_HI - WINDOW_LO);
     console_puts("[kernel] frame pool: ");
     console_putdec(pool / 0x1000);
     console_puts(" frames (");
-    console_putdec(ident_top / (1024 * 1024));
-    console_puts(" MiB RAM identity-mapped)\r\n");
+    console_putdec(ram_total / (1024 * 1024));
+    console_puts(" MiB RAM");
+    if (ram_n > 1) {                                   /* multi-region: RAM spans the PCI hole */
+        console_puts(", "); console_putdec(ram_n); console_puts(" regions across the 4 GiB hole");
+    }
+    console_puts(")\r\n");
 }
 
 /* A bare kernel address space: the shared higher half plus the low-2-MiB
@@ -428,7 +520,7 @@ int vmm_map_user_fb(struct fbinfo *out) {
  * A surface is a run of contiguous frames. The same frames are mapped (US=1,
  * 4 KiB pages) into both the owner and the compositor at vmm_surface_vaddr(id),
  * so each draws/reads the same pixels through its own page tables. */
-uint64_t vmm_ram_bytes(void)            { return ident_top; }
+uint64_t vmm_ram_bytes(void)            { return ram_total; }   /* real RAM, the PCI hole excluded */
 void vmm_fb_size(uint32_t *w, uint32_t *h) { *w = fb_width; *h = fb_height; }
 uint64_t vmm_surface_vaddr(int id)      { return surf_base + (uint64_t)id * SURF_SLOT_BYTES; }
 uint64_t vmm_current_pml4(void) {

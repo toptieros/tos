@@ -78,11 +78,39 @@ Exit criteria: an untrusted app cannot read another user's files or delete the s
 
 ## Phase 4 — Connectivity & modern hardware *(talk to the world)*
 
-- **Networking** — a NIC driver (e.g. virtio-net / e1000), a TCP/IP stack, and a
-  sockets API. Unlocks downloads, an app store, remote anything.
-- **Modern storage** — AHCI/NVMe instead of legacy PIO.
-- **USB** — HID (keyboard/mouse) and mass storage.
-- **Real serial console** for input, and **LAPIC timer calibration**.
+tOS today drives **PCI enumeration, an ATA PIO disk, PS/2 input, and the firmware
+framebuffer (VBE/GOP)**. Reaching real hardware (and a real install target) means a
+batch of new drivers — but **fewer than it first looks**, because liveboot leans on
+firmware: UEFI/BIOS loads the kernel + an initial RAM image from the boot medium for
+you, so a RAM-resident live system needs **no** storage/USB driver to *run* — only to
+*install onto the target disk*. That splits the work into "boot the live env" (firmware
+does the I/O) and "write the install" (needs a real block driver).
+
+Prioritized, VM-first so the installer is testable in QEMU before metal:
+
+1. **virtio-blk** — small, fully-specified; the cheapest path to a DMA block device for
+   developing the installer under QEMU/KVM.
+2. **AHCI/SATA + DMA** — the realistic install-target disk on desktops; replaces PIO.
+3. **NVMe** — how modern laptops/desktops boot; effectively mandatory for real-hardware
+   install. The spec is public and the driver is comparatively clean (queues + PRPs).
+4. **GPT + ESP(FAT) writer** — the installer must lay down a bootable layout (see
+   [installation.md](installation.md)).
+5. **USB: xHCI + USB core + HID + mass-storage** — the big bare-metal tax (modern
+   machines have no PS/2; live-USB media). Large, multi-part, unavoidable beyond VMs.
+6. **ACPI** — at least RSDP/MADT (APIC topology) and clean shutdown/reboot; prefer a
+   permissively-licensed library (uACPI / LAI) over writing an AML interpreter.
+7. **Networking** — virtio-net / e1000 + a TCP/IP stack + sockets. Unlocks downloads, an
+   app store, remote anything. Needed once the installer / app-store fetches. Design:
+   [virtio-net.md](virtio-net.md).
+
+Also fold in a **real serial console** for input and **LAPIC timer calibration**.
+
+> **Drivers don't port from Linux.** Linux has no stable in-kernel ABI; its drivers are
+> welded to one kernel version's internals, and it's **GPLv2** — copying code makes tOS a
+> derivative work. Use the Linux tree (and NVIDIA's "open" GPU modules) as a *datasheet
+> you can grep*, then clean-room reimplement from the **public hardware specs** (PCIe,
+> AHCI, NVMe, xHCI are all freely downloadable), the **OSDev wiki**, and **BSD-licensed**
+> drivers you can actually borrow.
 
 Exit criteria: tOS can fetch a file over the network and boot on hardware that lacks
 PS/2 / legacy IDE.
@@ -101,7 +129,18 @@ PS/2 / legacy IDE.
 ## Phase 6 — The stretch goals *(self-hosting & beyond)*
 
 - A **self-hosting toolchain** — compile tOS *on* tOS.
-- **Audio**, multi-monitor, GPU acceleration, power management.
+- **Audio**, multi-monitor, power management.
+- **Graphics acceleration — VM-only, realistically.** On **bare metal**, tOS stays on
+  **software rendering** over the firmware framebuffer (VBE/GOP): real GPU drivers are
+  per-vendor, mostly undocumented (NVIDIA) or enormous (AMD/Intel), and the useful
+  userspace stacks (CUDA, GL/Vulkan) are closed — out of reach for a hobby OS. In a **VM**
+  it's tractable, because the "GPU" is one standardized, documented device: a
+  **virtio-gpu** driver gets host-side scanout, and with **virgl / Venus** the host
+  forwards GL/Vulkan to its real GPU — a modest driver yields real acceleration because
+  the host does the hard part (design: [virtio-gpu.md](virtio-gpu.md)). Software
+  rendering on metal is *not* a dead end for a 2D
+  compositor like tOS — it's memory-bandwidth bound, not compute, so damage tracking
+  (already done) + SIMD blits go a long way.
 
 ## How to use this
 

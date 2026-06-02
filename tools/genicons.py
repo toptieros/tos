@@ -137,7 +137,7 @@ def write_argb_bin(path, img):
 
 # app tile name -> the .app bundle label its icon.argb is written under
 APP_LABEL = {"TERMINAL": "Terminal", "FILES": "Files",
-             "NOTEPAD": "Notepad", "APP": "app"}
+             "NOTEPAD": "Notepad", "SETTINGS": "Settings", "APP": "app"}
 
 
 def main():
@@ -153,6 +153,7 @@ def main():
     app_specs = [("TERMINAL", (58, 64, 82),    (32, 36, 50),  g_terminal),
                  ("FILES",    (86, 150, 240),  (44, 96, 200), g_folder),
                  ("NOTEPAD",  (247, 207, 112), (224, 162, 58), g_note),
+                 ("SETTINGS", (132, 142, 162), (74, 82, 104), g_gear),
                  ("APP",      (96, 104, 124),  (60, 66, 82),  g_gear)]
     apps = [(nm, tile(ct, cb, gl, APP)) for nm, ct, cb, gl in app_specs]
     files = [("FOLDER",  doc("folder")),

@@ -59,15 +59,16 @@ QEMU :=                        # extra flags, e.g. QEMU="-display none -serial s
 # Hardware acceleration + RAM for the interactive run targets (the test harness
 # builds its own QEMU command and stays on software TCG for deterministic SMP
 # timing). accel=kvm:tcg uses KVM when /dev/kvm is present and falls back to TCG
-# otherwise. RAM is held at 3G for now: above ~3.5G a PC has a PCI hole below 4G
-# with the rest of RAM remapped above 4G, which the kernel's contiguous frame
-# pool can't span until it parses an e820 map. Override: make run-bios MEM=2G.
+# otherwise. The kernel now parses the firmware e820 map and builds a MULTI-REGION
+# frame pool that spans the sub-4G PCI hole (RAM remapped above 4G is used too), so
+# the old 3G safety cap is gone -- give the VM as much RAM as you like. Override:
+# make run-bios MEM=2G.   (`memtest` in the shell stress-checks the pool.)
 ACCEL := -machine accel=kvm:tcg
-MEM   := 3G
+MEM  ?= 8G
 
 # --- user programs (each its own app dir + ELF executable, stored on the FS) -
-UPROGS   := init shell ticker twm term fastfetch
-CXXPROGS := files notepad clipboard spotlight launchpad
+UPROGS   := init shell ticker twm term fastfetch memtest
+CXXPROGS := files notepad clipboard spotlight launchpad settings
 UELFS    := $(patsubst %,$(BUILD)/%.elf,$(UPROGS) $(CXXPROGS))
 ULIBOBJ  := $(BUILD)/$(UDIR)/lib/ulib.o $(BUILD)/$(UDIR)/lib/ugfx.o $(BUILD)/$(UDIR)/lib/libc.o $(BUILD)/$(UDIR)/lib/sys.o $(BUILD)/$(UDIR)/lib/registry.o
 CXXRT    := $(BUILD)/$(UDIR)/lib/crt.o
@@ -160,12 +161,13 @@ $(MKFS): tools/mkfs.c $(KDIR)/fs/tosfs.h
 # boot chain + shell-invoked tools stay in /System/bin.
 APP_BUNDLES := fs/apps/Terminal.app/manifest fs/apps/Terminal.app/icon.argb \
                fs/apps/Files.app/manifest    fs/apps/Files.app/icon.argb \
-               fs/apps/Notepad.app/manifest  fs/apps/Notepad.app/icon.argb
+               fs/apps/Notepad.app/manifest  fs/apps/Notepad.app/icon.argb \
+               fs/apps/Settings.app/manifest fs/apps/Settings.app/icon.argb
 $(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES)
 	$(MKFS) $@ \
 	    /System/bin/init=$(BUILD)/init.elf /System/bin/shell=$(BUILD)/shell.elf \
 	    /System/bin/ticker=$(BUILD)/ticker.elf /System/bin/twm=$(BUILD)/twm.elf \
-	    /System/bin/fastfetch=$(BUILD)/fastfetch.elf \
+	    /System/bin/fastfetch=$(BUILD)/fastfetch.elf /System/bin/memtest=$(BUILD)/memtest.elf \
 	    /System/bin/clipboard=$(BUILD)/clipboard.elf \
 	    /System/bin/spotlight=$(BUILD)/spotlight.elf \
 	    /System/bin/launchpad=$(BUILD)/launchpad.elf \
@@ -180,6 +182,9 @@ $(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES)
 	    /Apps/Notepad.app/manifest=fs/apps/Notepad.app/manifest \
 	    /Apps/Notepad.app/icon.argb=fs/apps/Notepad.app/icon.argb \
 	    /Apps/Notepad.app/bin/notepad=$(BUILD)/notepad.elf \
+	    /Apps/Settings.app/manifest=fs/apps/Settings.app/manifest \
+	    /Apps/Settings.app/icon.argb=fs/apps/Settings.app/icon.argb \
+	    /Apps/Settings.app/bin/settings=$(BUILD)/settings.elf \
 	    /Users/user/Documents /Users/user/Desktop /Users/user/Downloads /Users/user/Pictures /Users/user/.config
 
 # --- BIOS disk image: MBR+boot | kernel | ... | tosfs partition @ LBA 2048 --

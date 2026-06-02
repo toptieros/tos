@@ -327,7 +327,16 @@ void ugfx_rrect_a(int x, int y, int w, int h, int rad, uint32_t argb) {
     rrect_core(x, y, w, h, rad, argb & 0xffffff, (int)(argb >> 24));
 }
 
+/* Global drop-shadow kill switch. Soft shadows + damage-tracked compositing are an
+ * eternal source of "smear" bugs (every dirty rect must remember the halo, for the
+ * dock, windows, Control Center, bar, toast, ...). Every shadow in the whole system
+ * routes through ugfx_shadow(), so flipping this one flag off removes ALL of them at
+ * once -- no per-element whack-a-mole. twm sets it from the `ui.shadows` registry key
+ * at startup, so `reg set ui.shadows false` (then restart) nukes every shadow. */
+static int g_shadows = 1;
+void ugfx_set_shadows(int on) { g_shadows = on; }
 void ugfx_shadow(int x, int y, int w, int h, int rad, int spread, uint32_t color, int max_a) {
+    if (!g_shadows) return;
     if (spread <= 0) return;
     if (rad * 2 > w) rad = w / 2;
     if (rad * 2 > h) rad = h / 2;

@@ -109,6 +109,28 @@ icon coordinates, so layout changes are safe as long as those are still printed)
 5. **Widgets / notification center panel** — slide-over with clock + system stats.
 6. **Dock magnification + open/close polish** — eye-candy last.
 
+## Iconography — Lucide glyphs everywhere (guideline)
+
+Every glyph in the UI is a **Lucide (MIT) line icon** — the clean, minimal set that
+matches the macOS-ish chrome (NOT Material). Glyphs are fetched + rendered once by a
+generator and baked into a committed header as **white ARGB alpha masks** (only the
+alpha matters), then drawn recoloured to a theme token via `ugfx_blit_tint`. Two
+parallel sets:
+
+- **`tools/genstatus.py` → `user/lib/statusicons.h`** — the menu-bar status cluster
+  (wifi/volume/battery/bell, the Control Center `sliders-horizontal`, the notification
+  `chevron-down`/`up` + `x`). Drawn by twm via `draw_status_glyph`.
+- **`tools/genglyphs.py` → `user/lib/glyphs.h`** — the general toolkit app-glyph set any
+  `ui::` app can use (the Settings rows' leading icons, etc.). `ui::Button` takes an
+  optional `icon` (a `glyphs_argb[...]` mask) + `icon_tint`; with an icon (or a `value`)
+  it left-aligns its label for a settings-row look.
+
+**Guideline:** a new app/affordance that wants an icon uses a Lucide glyph from one of
+these headers — add the slug to the generator's list and regenerate (needs network +
+`rsvg-convert` + PIL; commit the header so the OS build needs none of them). Don't
+hand-draw glyphs or mix in another icon family. Tint to `TH_TEXT` (ink), `TH_MUTED`
+(secondary), or `TH_ACCENT` (interactive) so icons track the theme.
+
 ## Out of scope (for now)
 
 Multiple monitors, a real compositor effects pipeline (blur behind translucency is

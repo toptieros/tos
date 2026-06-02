@@ -91,6 +91,16 @@ public:
     void (*on_click)(void *) = nullptr;
     void  *ctx = nullptr;
     bool   enabled = true;
+    /* Optional leading glyph (a white alpha mask -- e.g. a baked Lucide icon from
+     * glyphs.h -- recoloured to icon_tint via ugfx_blit_tint) and a right-aligned
+     * `value` string. When either is set the button left-aligns its label for a
+     * settings-row look ([icon] label .......... value); with neither it stays a
+     * plain centred button, so existing callers are unaffected. */
+    const uint32_t *icon = nullptr;
+    int             icon_sz = 0;
+    Color           icon_tint;
+    const char     *value = nullptr;
+    Color           value_fg;
     Button();
     void draw() override;
     bool on_mouse(int x, int y, int btn) override;

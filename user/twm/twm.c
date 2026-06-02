@@ -181,12 +181,15 @@ static int sb_net_x, sb_vol_x, sb_bat_x, sb_bell_x;   /* glyph left edges       
 #define TOAST_LIFE  (TOAST_IN + TOAST_HOLD + TOAST_OUT)
 #define TOAST_MAXLINES 6             /* max body lines when a toast is expanded       */
 #define NC_SLIDE    8                /* frames to slide a new row into an open center */
+#define NC_MAXLINES 6                /* max body lines when a center row is expanded  */
 static struct notif notes[NOTE_KEEP];
+static unsigned char note_exp[NOTE_KEEP];        /* per-row expanded flag (ring-indexed) */
 static int notes_n, notes_head, notes_unseen;   /* ring of kept notifications        */
 static int nc_open, nc_x, nc_y, nc_h;            /* notification-center panel          */
 static int nc_slide;                             /* >0: animate the newest center row */
 static struct notif toast;                       /* the active toast                  */
 static int toast_live, toast_age;                /* toast_live=0 -> none; else age 0.. */
+static int toast_linger;                          /* frames to keep cleaning the footprint after it dies */
 static int toast_expanded;                       /* body expanded to full (wrapped)   */
 static int toast_paused;                         /* hover/click froze the auto-dismiss */
 static int toast_collapsible;                    /* body was truncated -> chevron      */
@@ -328,8 +331,22 @@ static int clampb(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 /* Render the desktop once: the vertical slate gradient, plus a soft cool glow in
  * the upper third and a gentle corner vignette for depth -- the "floating" look
  * without leaving our palette. Quadratic falloffs, integer only (no FPU). */
+/* Wallpaper presets: set the vertical-gradient endpoints from the desktop.wallpaper
+ * registry key (the Settings app cycles it). Unknown / "slate" / "gradient" keep the
+ * theme default. The glow + vignette in gen_wallpaper() ride on top of whatever this
+ * picks, so each preset stays in the "floating" house style. */
+static void set_wallpaper_palette(void) {
+    uint32_t top = TH_DESK_TOP, bot = TH_DESK_BOT;
+    const char *w = reg_get("desktop.wallpaper", "slate");
+    if      (streqz(w, "midnight")) { top = RGB(22, 26, 44); bot = RGB(7,  9,  18); }
+    else if (streqz(w, "forest"))   { top = RGB(26, 52, 44); bot = RGB(10, 24, 20); }
+    else if (streqz(w, "plum"))     { top = RGB(46, 28, 54); bot = RGB(20, 11, 28); }
+    else if (streqz(w, "graphite")) { top = RGB(50, 52, 58); bot = RGB(22, 23, 27); }
+    gtr = (top >> 16) & 0xff; gtg = (top >> 8) & 0xff; gtb = top & 0xff;
+    gbr = (bot >> 16) & 0xff; gbg = (bot >> 8) & 0xff; gbb = bot & 0xff;
+}
 static void gen_wallpaper(void) {
-    wall = (uint32_t *)mmap_((unsigned long)W * (unsigned long)H * 4);
+    if (!wall) wall = (uint32_t *)mmap_((unsigned long)W * (unsigned long)H * 4);   /* reuse on regen */
     if (!wall) return;
     int gx = W / 2, gy = (H * 9) / 25;                       /* glow centre (~upper third) */
     int gr = (H * 6) / 10; long gR2 = (long)gr * gr;         /* glow radius^2 */
@@ -348,6 +365,24 @@ static void gen_wallpaper(void) {
             wall[(long)py * W + px] = RGB(r, g, b);
         }
     }
+}
+
+/* The Settings app persists changes to the registry on disk; there's no change-bus
+ * yet, so re-read it once a second (off the clock tick) and apply anything that needs
+ * more than the live reg_bool() reads update_chrome()/build_clock() already do --
+ * shadows, accent, and the wallpaper gradient. Cheap: a tiny file, once a second. */
+static void apply_settings_live(void) {
+    static int      sh = -1; static uint32_t ac = 0; static char wp[24] = {0};
+    reg_load();
+    int      nsh = reg_bool("ui.shadows", 1);
+    uint32_t nac = reg_color("theme.accent", ARGB(235, 120, 170, 255));
+    const char *nw = reg_get("desktop.wallpaper", "slate");
+    int changed = 0;
+    if (nsh != sh) { sh = nsh; ugfx_set_shadows(nsh); changed = 1; }
+    if (nac != ac) { ac = nac; g_accent = nac; changed = 1; }
+    if (!streqz(nw, wp)) { int i = 0; for (; nw[i] && i < 23; i++) wp[i] = nw[i]; wp[i] = 0;
+                           set_wallpaper_palette(); gen_wallpaper(); changed = 1; }
+    if (changed) add_dirty(0, 0, W, H);                 /* repaint the whole desktop with the new look */
 }
 
 /* ------------------------------------------------------------------ top bar */
@@ -689,13 +724,10 @@ static void draw_cc(void) {
     cc_button(bx, cc_btn_yy, bw, bh, "Restart", ARGB(255, 60, 66, 84));
     cc_button(bx + bw + 10, cc_btn_yy, bw, bh, "Shut Down", ARGB(255, 200, 76, 70));
 }
-static void draw_cc_button(int y) {               /* the menu-bar status item (two toggle pills) */
+static void draw_cc_button(int y) {               /* the menu-bar status item (Lucide sliders) */
     int cy = y + bar_h / 2;
-    for (int i = 0; i < 2; i++) {
-        int py = cy - 5 + i * 7, on = i == 0;
-        ugfx_rrect_a(cc_btn_x, py, 18, 5, 2, cc_open ? g_accent : ARGB(150, 200, 210, 230));
-        ugfx_fill_a(on ? cc_btn_x + 11 : cc_btn_x + 2, py, 5, 5, RGB(235, 240, 248));
-    }
+    draw_status_glyph(cc_btn_x + (cc_btn_w - STATUSICON_SZ) / 2, cy,
+                      cc_open ? g_accent : SB_GLYPH, STATUSICON_CC);
 }
 static void cc_click(int mx, int my) {            /* a click inside the open panel */
     if (my >= cc_row1_y && my < cc_row1_y + 24) { cc_toggle("ui.dock.autohide"); return; }
@@ -748,11 +780,22 @@ static void toast_box(int *x, int *y, int *w, int *h) {
         off = travel * (toast_age - (TOAST_IN + TOAST_HOLD)) / TOAST_OUT;
     *x = base_x + off; *y = bar_h + 10;
 }
-static void dirty_toast(void) {                         /* the toast's full travel band + shadow */
+static void dirty_toast(void) {                         /* the toast's full travel band + shadow halo */
     int base_x = W - TOAST_W - 12, y = bar_h + 10;
     int hmax = TOAST_PAD * 2 + fh + 4 + TOAST_MAXLINES * fh;   /* worst-case expanded height */
-    add_dirty(base_x - 8, y - 4, (W - base_x) + 8, hmax + 24);
+    /* the drop-shadow (draw_toast: ugfx_shadow spread 18, dy +4) bleeds ~18px LEFT
+     * and ~14px ABOVE the card -- the old 8/4px margins left that strip uncleaned, so
+     * a hover smeared a shadow ghost that lingered after the toast was gone. Cover the
+     * full halo on every side (the band already runs to the right screen edge). */
+    int sp = 20;
+    add_dirty(base_x - sp, y - sp, (W - base_x) + sp, hmax + 2 * sp + 8);
 }
+/* Retire the toast, then keep re-cleaning its footprint for a few frames. The
+ * soft drop-shadow is the one thing that has repeatedly smeared (the halo bleeds
+ * past the card and any single dirty rect that misses it leaves a ghost); lingering
+ * the footprint in the dirty set for several frames after death makes residue
+ * impossible regardless of how the cursor was moving when it vanished. */
+static void toast_kill(void) { toast_live = 0; toast_linger = 4; dirty_toast(); }
 static void draw_toast(void) {
     if (!toast_live) return;
     int x, y, w, h; toast_box(&x, &y, &w, &h);
@@ -761,11 +804,15 @@ static void draw_toast(void) {
     ugfx_rrect_aa(x, y, w, h, TH_R_MD, TH_SURF_3);
     ugfx_rrect_border(x, y, w, h, TH_R_MD, 1, TH_BORDER);
     ugfx_rrect_a(x + TOAST_PAD, y + TOAST_PAD + 2, 5, fh - 2, 2, g_accent);   /* accent stripe */
-    int chev = toast_collapsible ? 16 : 0;
-    fit_text(buf, sizeof buf, toast.title, w - 2 * TOAST_PAD - 12 - chev);
+    int xbtn_x = x + w - TOAST_PAD - STATUSICON_SZ;         /* dismiss (X), top-right corner */
+    int chev_x = xbtn_x - STATUSICON_SZ - 4;                /* expand chevron, left of the X */
+    int btns = STATUSICON_SZ + 6 + (toast_collapsible ? STATUSICON_SZ + 4 : 0);
+    fit_text(buf, sizeof buf, toast.title, w - 2 * TOAST_PAD - 12 - btns);
     ugfx_text(x + TOAST_PAD + 12, y + TOAST_PAD, buf, TH_TEXT, UGFX_TRANSPARENT);
-    if (toast_collapsible)                                   /* expand/collapse affordance */
-        ugfx_text(x + w - TOAST_PAD - 10, y + TOAST_PAD, toast_expanded ? "^" : "v", TH_MUTED, UGFX_TRANSPARENT);
+    int gy = y + TOAST_PAD + fh / 2;
+    if (toast_collapsible)                                  /* baked Lucide expand/collapse chevron */
+        draw_status_glyph(chev_x, gy, TH_MUTED, toast_expanded ? STATUSICON_CHEVRON_UP : STATUSICON_CHEVRON_DOWN);
+    draw_status_glyph(xbtn_x, gy, TH_MUTED, STATUSICON_X);  /* dismiss button -- instant close */
     int by = y + TOAST_PAD + fh + 4;
     if (toast_expanded) {
         toast_wrap(toast.body, w - 2 * TOAST_PAD, x + TOAST_PAD, by, TH_MUTED, 1);
@@ -774,9 +821,22 @@ static void draw_toast(void) {
         ugfx_text(x + TOAST_PAD, by, buf, TH_MUTED, UGFX_TRANSPARENT);
     }
 }
+/* A center row is "collapsible" when its body is too wide to fit one line, so it
+ * earns a chevron; expanding it wraps the body and grows the row (and the panel). */
+static int nc_collapsible(int idx) { return ugfx_text_w(notes[idx].body) > NC_W - 2 * NC_PAD - 4; }
+static int nc_row_h(int idx) {
+    if (note_exp[idx] && nc_collapsible(idx)) {
+        int n = tu_wrap(notes[idx].body, NC_W - 2 * NC_PAD, NC_MAXLINES, ugfx_text_w, 0, 0);
+        return NC_ROW + (n - 1) * fh;                   /* extra wrapped body lines */
+    }
+    return NC_ROW;
+}
 static void nc_layout(void) {
-    int rows = notes_n ? notes_n : 1;
-    nc_h = NC_PAD + fh + 10 + rows * NC_ROW + NC_PAD;
+    int rows_h = 0;
+    for (int k = 0; k < notes_n; k++)
+        rows_h += nc_row_h((notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP);
+    if (!notes_n) rows_h = NC_ROW;                       /* "No notifications" reserves one row */
+    nc_h = NC_PAD + fh + 10 + rows_h + NC_PAD;
 }
 #define dirty_nc() do { nc_layout(); struct rect _r = shadow_box(nc_x, nc_y, NC_W, nc_h, NC_SHADOW_SP, NC_SHADOW_DY); \
                         add_dirty(_r.x, _r.y, _r.w, _r.h); } while (0)
@@ -800,15 +860,45 @@ static void draw_nc(void) {
     for (int k = 0; k < notes_n; k++) {                 /* newest first */
         int idx = (notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP;
         struct notif *nn = &notes[idx];
+        int rh = nc_row_h(idx), coll = nc_collapsible(idx), exp = note_exp[idx] && coll;
         int sx = (k == 0 && nc_slide > 0) ? (NC_W - 2 * NC_PAD) * nc_slide / NC_SLIDE : 0;  /* slide newest in */
-        ugfx_rrect_a(nc_x + NC_PAD - 4 + sx, y - 3, NC_W - 2 * NC_PAD + 8, NC_ROW - 6, TH_R_SM, ARGB(40, 60, 68, 90));
+        ugfx_rrect_a(nc_x + NC_PAD - 4 + sx, y - 3, NC_W - 2 * NC_PAD + 8, rh - 6, TH_R_SM, ARGB(40, 60, 68, 90));
         ugfx_rrect_a(nc_x + NC_PAD + 2 + sx, y + 2, 4, fh - 2, 2, g_accent);
-        fit_text(buf, sizeof buf, nn->title, NC_W - 2 * NC_PAD - 14);
+        fit_text(buf, sizeof buf, nn->title, NC_W - 2 * NC_PAD - 14 - (coll ? STATUSICON_SZ + 4 : 0));
         ugfx_text(nc_x + NC_PAD + 12 + sx, y, buf, TH_TEXT, UGFX_TRANSPARENT);
-        fit_text(buf, sizeof buf, nn->body, NC_W - 2 * NC_PAD - 4);
-        ugfx_text(nc_x + NC_PAD + sx, y + fh + 2, buf, TH_MUTED, UGFX_TRANSPARENT);
-        y += NC_ROW;
+        if (coll)                                       /* per-row expand chevron */
+            draw_status_glyph(nc_x + NC_W - NC_PAD - STATUSICON_SZ + sx, y + fh / 2,
+                              TH_MUTED, exp ? STATUSICON_CHEVRON_UP : STATUSICON_CHEVRON_DOWN);
+        if (exp) {                                       /* wrapped full body */
+            struct toast_emit_ctx ec = { nc_x + NC_PAD + sx, y + fh + 2, TH_MUTED };
+            tu_wrap(nn->body, NC_W - 2 * NC_PAD, NC_MAXLINES, ugfx_text_w, toast_emit, &ec);
+        } else {
+            fit_text(buf, sizeof buf, nn->body, NC_W - 2 * NC_PAD - 4);
+            ugfx_text(nc_x + NC_PAD + sx, y + fh + 2, buf, TH_MUTED, UGFX_TRANSPARENT);
+        }
+        y += rh;
     }
+}
+/* A click inside the open center: toggle a row's expand if its chevron was hit.
+ * Returns 1 if a chevron toggled (caller keeps the center open), else 0. */
+static int nc_click_row(int mx, int my) {
+    int y = nc_y + NC_PAD + fh + 10;
+    for (int k = 0; k < notes_n; k++) {
+        int idx = (notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP;
+        int rh = nc_row_h(idx);
+        if (nc_collapsible(idx)) {
+            int cxr = nc_x + NC_W - NC_PAD, cxl = cxr - STATUSICON_SZ - 6;
+            if (mx >= cxl && mx < cxr + 2 && my >= y - 2 && my < y + fh + 4) {
+                dirty_nc();                             /* OLD panel + halo before the height changes */
+                note_exp[idx] = !note_exp[idx];
+                dirty_nc();                             /* then the NEW (taller/shorter) panel */
+                print("[twm] nc row expand "); printu((unsigned)note_exp[idx]); print("\r\n");
+                return 1;
+            }
+        }
+        y += rh;
+    }
+    return 0;
 }
 /* Drain the kernel notification queue: ring-buffer each for the center and start
  * a toast for the newest. Returns 1 if anything arrived (so the loop can repaint). */
@@ -816,6 +906,7 @@ static int poll_notifications(void) {
     struct notif nn; int got = 0;
     while (wm_poll_notify(&nn)) {
         notes[notes_head] = nn;
+        note_exp[notes_head] = 0;                       /* a fresh note starts collapsed */
         notes_head = (notes_head + 1) % NOTE_KEEP;
         if (notes_n < NOTE_KEEP) notes_n++;
         print("[twm] notify "); print(nn.title); print("\r\n");   /* harness hook */
@@ -1318,17 +1409,16 @@ void _ustart(void) {
     if (ugfx_init() < 0) { print("[twm] no framebuffer\r\n"); exec("shell"); proc_exit(); }
     W = ugfx_width(); H = ugfx_height(); fh = ugfx_font_h();
     bar_h = fh + 14; TH = fh + 12;
-    gtr = (TH_DESK_TOP >> 16) & 0xff; gtg = (TH_DESK_TOP >> 8) & 0xff; gtb = TH_DESK_TOP & 0xff;
-    gbr = (TH_DESK_BOT >> 16) & 0xff; gbg = (TH_DESK_BOT >> 8) & 0xff; gbb = TH_DESK_BOT & 0xff;
-
     bb = (uint32_t *)mmap_((unsigned long)W * (unsigned long)H * 4);
     if (!bb) { print("[twm] back buffer alloc failed\r\n"); exec("shell"); proc_exit(); }
     ugfx_set_target(bb, W, H, W);
-    gen_wallpaper();                                    /* precompute the desktop once */
 
     wm_register();
-    reg_load();                                         /* system + per-user settings */
+    reg_load();                                         /* settings BEFORE we paint the desktop */
+    ugfx_set_shadows(reg_bool("ui.shadows", 1));         /* `reg set ui.shadows false` kills ALL drop shadows */
     g_accent = reg_color("theme.accent", ARGB(235, 120, 170, 255));
+    set_wallpaper_palette();                             /* gradient endpoints from desktop.wallpaper */
+    gen_wallpaper();                                    /* precompute the desktop once */
     load_apps();
     rebuild_dock();
     layout_dock();
@@ -1506,8 +1596,9 @@ void _ustart(void) {
             add_dirty(cur_x - 12, cur_y - 12, CURSOR_W + 24, CURSOR_H + 24);
         }
         update_chrome(ms.x, ms.y);                       /* fullscreen / edge-reveal auto-hide */
-        if (cc_open && moved) add_dirty(cc_x, cc_y, cc_w, cc_h);   /* repaint CC hover states fully */
+        if (cc_open && moved) dirty_cc();                          /* repaint CC hover states + shadow halo (no smear) */
         if (nc_open && moved) dirty_nc();                          /* notification center, ditto    */
+        if (toast_live && moved) dirty_toast();                    /* live toast: keep its drop-shadow halo clean as the cursor sweeps it */
         if (menu_kind && moved) dirty_menu();                      /* dropdown row hover            */
         {   /* menu-bar tile hover: repaint the bar only when the hovered tile changes */
             int bh = 0;
@@ -1585,9 +1676,13 @@ void _ustart(void) {
                 int clx = nc_x + NC_W - NC_PAD - cwid, cly = nc_y + NC_PAD;
                 if (notes_n && ms.x >= clx - 4 && ms.x < clx + cwid + 4 &&
                     ms.y >= cly - 2 && ms.y < cly + fh + 2) {     /* Clear: empty the ring, stay open */
+                    dirty_nc();                                   /* invalidate the OLD (tall) panel + halo BEFORE the height shrinks */
                     notes_n = 0; notes_head = 0; notes_unseen = 0; nc_slide = 0;
-                    dirty_nc(); add_dirty(0, 0, W, bar_h);
+                    for (int i = 0; i < NOTE_KEEP; i++) note_exp[i] = 0;
+                    dirty_nc(); add_dirty(0, 0, W, bar_h);        /* then the NEW (short) empty panel -- union repaints the ghost rows */
                     print("[twm] notifcenter clear\r\n");
+                } else if (nc_click_row(ms.x, ms.y)) {            /* a row chevron: expand/collapse, stay open */
+                    add_dirty(0, 0, W, bar_h);
                 } else {                                          /* any other click dismisses it */
                     nc_open = 0;
                     dirty_nc(); add_dirty(0, 0, W, bar_h);
@@ -1596,18 +1691,29 @@ void _ustart(void) {
                 nc_open = 1; handled = 1; notes_unseen = 0;
                 if (cc_open) { cc_open = 0; dirty_cc(); }
                 if (menu_kind) menu_close();
-                if (toast_live) { toast_live = 0; dirty_toast(); }  /* center supersedes the toast */
+                if (toast_live) toast_kill();                       /* center supersedes the toast */
                 dirty_nc(); add_dirty(0, 0, W, bar_h);
                 print("[twm] notifcenter open "); printu((unsigned)notes_n);
                 print(" "); printu((unsigned)nc_x); print(" "); printu((unsigned)nc_y); print("\r\n");
             }
-            /* The live toast: clicking a collapsible toast expands/collapses its body. */
+            /* The live toast: a click anywhere on it is consumed (macOS-style, never
+             * leaks to a window behind), but only the chevron button toggles expand. */
             if (toast_live && !handled) {
                 int tx, ty, tw, th2; toast_box(&tx, &ty, &tw, &th2);
-                if (toast_collapsible && ms.x >= tx && ms.x < tx + tw && ms.y >= ty && ms.y < ty + th2) {
-                    handled = 1; toast_expanded = !toast_expanded; toast_paused = 1;
-                    dirty_toast();
-                    print("[twm] toast expand "); printu((unsigned)toast_expanded); print("\r\n");
+                if (ms.x >= tx && ms.x < tx + tw && ms.y >= ty && ms.y < ty + th2) {
+                    handled = 1;
+                    int xbtn = tx + tw - TOAST_PAD - STATUSICON_SZ;  /* dismiss (X) left edge   */
+                    int chev = xbtn - STATUSICON_SZ - 4;             /* chevron left edge        */
+                    int rt = ty + TOAST_PAD - 4, rb = ty + TOAST_PAD + fh + 6;
+                    if (ms.y >= rt && ms.y < rb && ms.x >= xbtn - 3) {           /* X: dismiss instantly */
+                        toast_kill();
+                        print("[twm] toast dismiss\r\n");
+                    } else if (toast_collapsible && ms.y >= rt && ms.y < rb &&
+                               ms.x >= chev - 3 && ms.x < xbtn - 3) {            /* chevron: expand/collapse */
+                        toast_expanded = !toast_expanded; toast_paused = 1;
+                        dirty_toast();
+                        print("[twm] toast expand "); printu((unsigned)toast_expanded); print("\r\n");
+                    }
                 }
             }
             /* The dock is a top-most overlay, so it must get the click before any
@@ -1651,7 +1757,8 @@ void _ustart(void) {
                     add_dirty(0, 0, W, bar_h);
                 }
                 if (c->popup) {                         /* no chrome: the whole surface is client */
-                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - c->wy, ms.buttons & 1));
+                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - c->wy,
+                            (ms.buttons & 1) | (kbd_mods() & KMOD_SHIFT ? WEV_MOUSE_SHIFT : 0)));
                     cdrag = c->id;                      /* allow drag-select inside the overlay */
                     handled = 1;
                     continue;
@@ -1676,7 +1783,8 @@ void _ustart(void) {
                 } else if (ms.y < c->wy + TH) {                            /* title bar -> drag */
                     if (!c->maxed) { drag = c->id; drag_dx = ms.x - c->wx; drag_dy = ms.y - c->wy; }
                 } else {                                                   /* client -> forward */
-                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - (c->wy + TH), ms.buttons & 1));
+                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - (c->wy + TH),
+                            (ms.buttons & 1) | (kbd_mods() & KMOD_SHIFT ? WEV_MOUSE_SHIFT : 0)));
                     cdrag = c->id;                                         /* enable drag-select forwarding */
                 }
                 handled = 1;
@@ -1815,7 +1923,8 @@ void _ustart(void) {
 
         rtc_time(&t);                                   /* clock ticks once a second */
         if (t.sec != last_sec) { last_sec = t.sec;     /* repaint the whole status cluster */
-            int cx = cc_btn_x - 8; add_dirty(cx, 0, W - cx, bar_h); }
+            int cx = cc_btn_x - 8; add_dirty(cx, 0, W - cx, bar_h);
+            apply_settings_live(); }                    /* pick up Settings-app changes from disk */
 
         poll_notifications();                           /* drain notify() posts -> toast + center */
         if (sw_overlay) {                               /* Alt-Tab card: commit + slide animation */
@@ -1840,8 +1949,10 @@ void _ustart(void) {
             } else {
                 toast_paused = 0;
                 dirty_toast();
-                if (++toast_age >= TOAST_LIFE) { toast_live = 0; dirty_toast(); }
+                if (++toast_age >= TOAST_LIFE) toast_kill();
             }
+        } else if (toast_linger > 0) {                  /* belt-and-suspenders: scrub any shadow ghost */
+            toast_linger--; dirty_toast();
         }
 
         /* repaint the dock when the running/focus/minimized set changes, so its

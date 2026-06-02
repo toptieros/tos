@@ -338,6 +338,12 @@ void _ustart(void) {
                 int k = (int)(ev.a & 0xff);
                 if (k == KEY_TERM_PASTE)      { term_paste(pty); }
                 else if (k == KEY_TERM_COPY || k == KEY_TERM_CUT) { term_copy(); clear_sel(); }
+                else if (k == KEY_TERM_PGUP || k == KEY_TERM_PGDN) {   /* Shift+PgUp/PgDn: page scrollback */
+                    int page = rows > 1 ? rows - 1 : 1;               /* keep one line of overlap, like less */
+                    int nv = view_off + (k == KEY_TERM_PGUP ? page : -page);
+                    if (nv < 0) nv = 0; if (nv > sb_count) nv = sb_count;
+                    if (nv != view_off) { view_off = nv; hide_cursor(); invalidate(); dirty = 1; }
+                }
                 else { char c = (char)k; pty_write(pty, &c, 1); clear_sel(); blink_on = 1; blink_ctr = 0; }
             }
             else if (ev.type == WEV_MOUSE) {             /* click-drag selects grid text */

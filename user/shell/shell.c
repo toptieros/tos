@@ -528,6 +528,8 @@ void _ustart(void) {
             else { int rp = wait_child();
                    print("[shell] child pid "); printu((unsigned)rp);
                    print(" crashed; shell and OS still alive\r\n"); }
+        } else if (streq(line, "memtest")) {
+            run_prog("memtest");             /* stress the multi-region frame pool (RAM across the 4 GiB hole) */
         } else {
             print("unknown command: "); print(line); print("\r\n");
         }

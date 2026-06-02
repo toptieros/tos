@@ -105,6 +105,14 @@ static void emit_nav(const char *lead, char final) {
     emit_str(seq);
 }
 
+/* PgUp/PgDn: plain keys forward the xterm page CSI to the app (the shell), but
+ * Shift+PgUp/PgDn is an app-level intent the terminal emulator consumes to page
+ * its own scrollback (like xterm) -- so emit a distinct byte the term intercepts. */
+static void key_page(int up) {
+    if (shift()) { emit((char)(up ? KEY_TERM_PGUP : KEY_TERM_PGDN)); return; }
+    emit_str(up ? "\x1b[5~" : "\x1b[6~");
+}
+
 /* A main-block key was pressed: translate with the current modifiers. */
 static void key_main(uint8_t sc) {
     char c = base[sc];
@@ -213,8 +221,8 @@ static void handle_extended(uint8_t code, int release) {
     case 0x4B: emit_nav("", 'D'); break;         /* Left  (Ctrl: word jump; Shift: extend) */
     case 0x47: emit_nav("", 'H'); break;         /* Home  (+Shift: extend selection) */
     case 0x4F: emit_nav("", 'F'); break;         /* End   (+Shift: extend selection) */
-    case 0x49: emit_str("\x1b[5~"); break;       /* PgUp  */
-    case 0x51: emit_str("\x1b[6~"); break;       /* PgDn  */
+    case 0x49: key_page(1); break;               /* PgUp  (+Shift: term scrollback) */
+    case 0x51: key_page(0); break;               /* PgDn  (+Shift: term scrollback) */
     case 0x52: emit_str("\x1b[2~"); break;       /* Insert */
     case 0x53: emit_nav("3", '~'); break;        /* Delete (Ctrl: delete word) */
     case 0x1C: emit('\n'); break;                /* keypad Enter */

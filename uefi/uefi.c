@@ -64,19 +64,15 @@ typedef struct {
 static EFI_GUID GOP_GUID =
     { 0x9042a9de, 0x23dc, 0x4a38, { 0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a } };
 
-#define AllocateAddress 2
-#define EfiLoaderData   2
+#define AllocateAnyPages 0
+#define AllocateAddress  2
+#define EfiLoaderData    2
 
 #define POOL_PHYS    0x100000
 #define KERNEL_PHYS  0x200000
 #define KERNEL_VMA   0xFFFFFFFF80000000ULL
-
-#define LT_PML4    0x1F0000
-#define LT_PDPT_LO 0x1F1000
-#define LT_PD0     0x1F2000          /* PD0..PD3 -> 0..4 GiB identity */
-#define LT_PDPT_HI 0x1F6000
-#define LT_PD_HIGH 0x1F7000          /* higher-half kernel */
-#define LT_PD_FB   0x1F8000          /* framebuffer window */
+#define GIB          0x40000000ULL
+#define MAX_RAM      (512ULL * GIB)   /* matches the kernel's e820 cap (vmm.c) */
 
 #define COM1 0x3f8
 static inline void outb(uint16_t p, uint8_t v){__asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p));}
@@ -86,6 +82,7 @@ static void serial_init(void){
     outb(COM1+1,0); outb(COM1+3,3); outb(COM1+2,0xc7); outb(COM1+4,0x0b);
 }
 static void sputs(const char *s){ for(;*s;++s){ while((inb(COM1+5)&0x20)==0){} outb(COM1,(uint8_t)*s);} }
+static void putu(uint64_t v){ char b[21]; int i=20; b[20]=0; if(!v){sputs("0");return;} while(v){b[--i]=(char)('0'+v%10); v/=10;} sputs(b+i); }
 
 static void copy(uint64_t dst, const unsigned char *src, uint64_t n){
     volatile uint8_t *d=(volatile uint8_t*)dst;
@@ -96,28 +93,82 @@ static void zero(uint64_t t){ for(int i=0;i<512;i++) ((volatile uint64_t*)t)[i]=
 
 static struct boot_info boot_info;
 
-static void build_tables(void){
-    zero(LT_PML4); zero(LT_PDPT_LO); zero(LT_PDPT_HI); zero(LT_PD_HIGH); zero(LT_PD_FB);
-    for(int g=0; g<4; g++) zero(LT_PD0 + (uint64_t)g*0x1000);
+/* EFI memory-map descriptor (only the fields we read). */
+typedef struct {
+    uint32_t Type;
+    uint32_t Pad;
+    uint64_t PhysicalStart;
+    uint64_t VirtualStart;
+    uint64_t NumberOfPages;
+    uint64_t Attribute;
+} EFI_MEMORY_DESCRIPTOR;
 
-    put(LT_PML4, 0,   LT_PDPT_LO | 0x3);
-    put(LT_PML4, 511, LT_PDPT_HI | 0x3);
+/* Highest physical RAM address the firmware reports, rounded up to a whole GiB.
+ * OVMF loads this EFI app -- its code, its stack and the boot_info struct -- high
+ * in RAM, ABOVE the 4 GiB PCI hole on big-memory machines (e.g. ~5 GiB at -m 8G).
+ * The transition page tables must therefore identity-map ALL of RAM, not just the
+ * low 4 GiB, or the very first instruction fetch after the CR3 switch (still at the
+ * loader's high RIP) #PFs -- and the kernel's `*bi` read would too. Scales with the
+ * machine; no fixed cap. Mirrors the kernel's own e820 map (kernel/mm/vmm.c). */
+static uint64_t ram_top(EFI_BOOT_SERVICES *bs){
+    static uint8_t mm[65536];
+    uint64_t msize = sizeof(mm), mkey, dsize = 0; uint32_t dver;
+    uint64_t top = 4 * GIB;                          /* always map at least the low 4 GiB */
+    if (bs->GetMemoryMap(&msize, mm, &mkey, &dsize, &dver) == 0 && dsize){
+        for (uint64_t off = 0; off + dsize <= msize; off += dsize){
+            EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)(mm + off);
+            uint32_t t = d->Type;                    /* usable-RAM types the app can live in */
+            if (!(t==1||t==2||t==3||t==4||t==5||t==6||t==7||t==9||t==10||t==14)) continue;
+            if (d->PhysicalStart >= MAX_RAM) continue;
+            uint64_t end = d->PhysicalStart + d->NumberOfPages * 0x1000ULL;
+            if (end > top) top = end;
+        }
+    }
+    if (top > MAX_RAM) top = MAX_RAM;
+    return (top + GIB - 1) & ~(GIB - 1);             /* round up to a whole GiB */
+}
 
-    for(int g=0; g<4; g++){                                  /* 0..4 GiB identity */
-        uint64_t pd = LT_PD0 + (uint64_t)g*0x1000;
-        put(LT_PDPT_LO, g, pd | 0x3);
-        for(int j=0;j<512;j++)
-            put(pd, j, ((uint64_t)g*0x40000000 + (uint64_t)j*0x200000) | 0x83);
+/* Bump allocator over a contiguous arena of (zeroed) page-table frames. */
+static uint64_t arena_next;
+static uint64_t pt_alloc(void){ uint64_t p = arena_next; arena_next += 0x1000; zero(p); return p; }
+
+static uint64_t g_cr3;          /* PML4 physical address handed to the kernel */
+
+/* Identity-map [0, top) with 2 MiB huge pages (one page directory per GiB), plus
+ * the higher-half kernel at KERNEL_VMA and the framebuffer window at FB_VBASE. The
+ * page tables come from a single contiguous AllocatePages arena (the MMU walks them
+ * by physical address, so the arena can live anywhere in RAM). */
+static void build_tables(EFI_BOOT_SERVICES *bs, uint64_t top){
+    int npd = (int)(top / GIB);                       /* top is GiB-aligned */
+    if (npd < 4)   npd = 4;
+    if (npd > 512) npd = 512;                         /* one PDPT page == 512 GiB */
+
+    uint64_t base = 0;
+    bs->AllocatePages(AllocateAnyPages, EfiLoaderData, 5 + (uint64_t)npd, &base);
+    arena_next = base;
+
+    uint64_t pml4 = pt_alloc(), pdpt_lo = pt_alloc(), pdpt_hi = pt_alloc();
+    put(pml4, 0,   pdpt_lo | 0x3);
+    put(pml4, 511, pdpt_hi | 0x3);
+
+    for (int g = 0; g < npd; g++){                    /* 0..top identity (covers the app + boot_info) */
+        uint64_t pd = pt_alloc();
+        put(pdpt_lo, g, pd | 0x3);
+        for (int j = 0; j < 512; j++)
+            put(pd, j, ((uint64_t)g * GIB + (uint64_t)j * 0x200000ULL) | 0x83);
     }
 
-    put(LT_PDPT_HI, 510, LT_PD_HIGH | 0x3);                  /* 0xFF..80000000 -> kernel */
-    put(LT_PD_HIGH, 0, KERNEL_PHYS | 0x83);
+    uint64_t pd_high = pt_alloc();                    /* 0xFF..80000000 -> kernel */
+    put(pdpt_hi, 510, pd_high | 0x3);
+    put(pd_high, 0, KERNEL_PHYS | 0x83);
 
-    if (boot_info.console == BOOT_CONSOLE_FB){               /* FB_VBASE -> framebuffer */
+    if (boot_info.console == BOOT_CONSOLE_FB){         /* FB_VBASE -> framebuffer */
         uint64_t fb = boot_info.fb_phys & ~0x1fffffULL;
-        put(LT_PDPT_HI, 511, LT_PD_FB | 0x3);
-        for(int i=0;i<8;i++) put(LT_PD_FB, i, (fb + (uint64_t)i*0x200000) | 0x83);
+        uint64_t pd_fb = pt_alloc();
+        put(pdpt_hi, 511, pd_fb | 0x3);
+        for (int i = 0; i < 8; i++) put(pd_fb, i, (fb + (uint64_t)i * 0x200000ULL) | 0x83);
     }
+    g_cr3 = pml4;
 }
 
 EFI_STATUS efi_main(EFI_HANDLE img, EFI_SYSTEM_TABLE *st){
@@ -144,10 +195,12 @@ EFI_STATUS efi_main(EFI_HANDLE img, EFI_SYSTEM_TABLE *st){
         sputs("[uefi] GOP framebuffer found\r\n");
     }
 
-    build_tables();
+    uint64_t top = ram_top(bs);
+    sputs("[uefi] identity-mapping "); putu(top / GIB); sputs(" GiB of RAM\r\n");
+    build_tables(bs, top);
     sputs("[uefi] exiting boot services\r\n");
 
-    static uint8_t mmap[32768];
+    static uint8_t mmap[65536];
     uint64_t msize, mkey, dsize; uint32_t dver;
     for(int t=0; t<16; t++){
         msize = sizeof(mmap);
@@ -155,7 +208,7 @@ EFI_STATUS efi_main(EFI_HANDLE img, EFI_SYSTEM_TABLE *st){
         if (bs->ExitBootServices(img, mkey) == 0) break;
     }
 
-    uint64_t cr3 = LT_PML4, bi = (uint64_t)&boot_info, entry = KERNEL_VMA;
+    uint64_t cr3 = g_cr3, bi = (uint64_t)&boot_info, entry = KERNEL_VMA;
     __asm__ volatile(
         "cli\n\t"
         "mov %0, %%cr3\n\t"

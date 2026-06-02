@@ -307,16 +307,26 @@ def t_many_files(uefi):
 
 
 def t_ram_scales(uefi):
-    # The frame pool is sized from actual RAM (fw_cfg), not a fixed cap: booting
-    # with more memory must yield a proportionally larger pool.
+    # The frame pool is sized from the firmware e820 map, not a fixed cap: more RAM
+    # yields a proportionally larger pool. The 6G case also pushes RAM ABOVE the 4 GiB
+    # PCI hole, exercising the multi-region kernel map -- AND, on the UEFI path, the
+    # loader's all-RAM transition map: OVMF loads the EFI app high (~5 GiB), so without
+    # a full identity map the CR3 switch #PFs before the kernel ever runs. Regression
+    # guard for the >4 GiB UEFI boot fix (uefi/uefi.c ram_top/build_tables).
     def pool(mem):
         with Tos(uefi=uefi, mem=mem) as t:
             assert t.boot_ok(), f"did not boot with -m {mem}"
-            m = re.search(r"frame pool: (\d+) frames", t.serial())
-            assert m, "no frame pool report"
-            return int(m.group(1))
-    small, big = pool("64M"), pool("256M")
+            s = t.serial()
+            m = re.search(r"frame pool: (\d+) frames", s)
+            assert m, f"no frame pool report with -m {mem}"
+            return int(m.group(1)), s
+    small, _ = pool("64M")
+    big, _   = pool("256M")
     assert big > small * 3, f"pool did not scale with RAM ({small} @64M vs {big} @256M)"
+    huge, s = pool("6G")            # 6G straddles the 4 GiB hole -> RAM remapped high
+    assert huge > big * 3, f"pool did not scale to 6G ({big} @256M vs {huge} @6G)"
+    assert "regions across the 4 GiB hole" in s, \
+        "6G boot did not report RAM across the 4 GiB hole (above-4G RAM unused?)"
 
 
 def t_app_crash(uefi):
@@ -449,8 +459,10 @@ BIOS_TESTS = [
     t_mouse, t_ram_scales, t_drivers,
 ]
 # A representative subset on UEFI to confirm both boot paths reach the same OS.
+# t_ram_scales runs here too: its 6G case is the regression guard for the UEFI
+# loader's >4 GiB transition map (the kernel-only path can't catch that bug).
 UEFI_TESTS = [t_boot_and_ls, t_partition, t_fs_crud, t_fork, t_app_crash, t_smp,
-              t_gui, t_window_mgmt, t_mouse, t_many_files]
+              t_gui, t_window_mgmt, t_mouse, t_many_files, t_ram_scales]
 
 
 def run(label, tests, uefi):

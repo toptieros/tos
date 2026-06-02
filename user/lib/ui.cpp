@@ -19,7 +19,7 @@ void Label::draw() {
 }
 
 /* ------------------------------------------------------------------- Button */
-Button::Button() {}
+Button::Button() { icon_tint = TH_TEXT; value_fg = TH_MUTED; }
 void Button::draw() {
     if (!visible) return;
     int rad = TH_R_SM;
@@ -27,8 +27,22 @@ void Button::draw() {
     if (enabled && hovered) ugfx_state_layer(r.x, r.y, r.w, r.h, rad, TH_HOVER_A);  /* hover lift */
     ugfx_rrect_border(r.x, r.y, r.w, r.h, rad, 1, TH_BORDER);                       /* crisp edge */
     ugfx_fill_a(r.x + rad, r.y + 1, r.w - 2 * rad, 1, ARGB(48, 255, 255, 255));     /* top sheen  */
-    int tx = r.x + (r.w - ugfx_text_w(text)) / 2;
-    ugfx_text(tx, text_cy(r), text, enabled ? TH_TEXT : TH_MUTED, UGFX_TRANSPARENT);
+    uint32_t fg = enabled ? TH_TEXT : TH_MUTED;
+    if (icon || value) {                          /* settings-row: [icon] label .... value */
+        int pad = 12, lx = r.x + pad;
+        if (icon && icon_sz) {
+            ugfx_blit_tint(lx, r.y + (r.h - icon_sz) / 2, icon_sz, icon_sz, icon, enabled ? icon_tint : TH_MUTED);
+            lx += icon_sz + 12;
+        }
+        ugfx_text(lx, text_cy(r), text, fg, UGFX_TRANSPARENT);
+        if (value) {
+            int vx = r.x + r.w - pad - ugfx_text_w(value);
+            ugfx_text(vx, text_cy(r), value, enabled ? value_fg : TH_MUTED, UGFX_TRANSPARENT);
+        }
+    } else {
+        int tx = r.x + (r.w - ugfx_text_w(text)) / 2;
+        ugfx_text(tx, text_cy(r), text, fg, UGFX_TRANSPARENT);
+    }
 }
 bool Button::on_mouse(int x, int y, int btn) {
     (void)x; (void)y; (void)btn;
@@ -232,11 +246,14 @@ int TextField::index_at(int px, int py) {
     return len;
 }
 bool TextField::on_mouse(int x, int y, int btn) {
-    (void)btn;
     if (multiline && sb.hit(x)) { sb.dragging = true; sb_set_top_from_y(y); return true; }  /* press on the scroll track */
     int idx = index_at(x, y);
     unsigned now = win ? win->ticks : 0;
-    if (last_click_i >= 0 && (now - last_click_t) < TF_DBLCLICK &&
+    if (btn & WEV_MOUSE_SHIFT) {           /* Shift+click: extend the selection to the click */
+        if (anchor < 0) anchor = caret;    /* seed the anchor from the existing caret */
+        caret = idx;
+        printf("[ui] shsel %d %d\r\n", anchor < caret ? anchor : caret, anchor < caret ? caret : anchor);
+    } else if (last_click_i >= 0 && (now - last_click_t) < TF_DBLCLICK &&
         idx >= last_click_i - 1 && idx <= last_click_i + 1) {
         select_word(idx);                 /* a quick second press near the first: select the word */
     } else {

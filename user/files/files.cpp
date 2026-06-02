@@ -347,6 +347,8 @@ struct FilesApp : ui::Window {
     int           menu_mode = 0;                 /* 0 = context actions, 1 = open-with */
     char          ow_path[256] = {0};            /* file the open-with chooser targets */
     char          ow_ext[16] = {0};
+    char          cut_src[256] = {0};            /* full path of a cut file, pending a paste-move */
+    bool          have_cut = false;              /* the active clipboard file came from a Cut (Ctrl+X) */
 
     int at_root()  const { return path[0] == '/' && path[1] == 0; }
     int has_up()   const { return at_root() ? 0 : 1; }
@@ -496,6 +498,49 @@ struct FilesApp : ui::Window {
         char child[256]; join(child, sizeof child, path, e->name);
         rmrf(child); load_dir();
     }
+    /* Ctrl+C / Ctrl+X: stash the selected file on the clipboard ring; Cut also
+     * remembers the source so a later Paste moves it. Files only for now -- copying a
+     * whole directory needs a recursive walk we don't do yet. */
+    void copy_sel(bool cut) {
+        int hu = has_up();
+        if (list.sel < 0 || (hu && list.sel == 0)) return;
+        struct dirent *e = &ents[list.sel - hu];
+        if (e->type != FT_FILE) return;
+        char full[256]; join(full, sizeof full, path, e->name);
+        int n = 0; char *b = sys_slurp(full, &n);
+        if (!b) return;
+        clip_put(CLIP_FILE, e->name, b, n);
+        free(b);
+        have_cut = cut;
+        if (cut) { strncpy(cut_src, full, sizeof cut_src - 1); cut_src[sizeof cut_src - 1] = 0; }
+        else cut_src[0] = 0;
+        print(cut ? "[files] cut " : "[files] copy "); print(e->name); print("\r\n");
+    }
+    /* Ctrl+V: drop the active clipboard file into the current directory. Dedupes the
+     * name ("copy of X") rather than clobbering; a pending Cut deletes the source. */
+    void paste() {
+        if (clip_count() <= 0) return;
+        int idx = clip_active(-1);
+        struct clipinfo ci;
+        if (idx < 0 || clip_info(idx, &ci) != 0 || ci.type != CLIP_FILE || ci.len == 0) return;
+        char name[40]; strncpy(name, ci.name, sizeof name - 1); name[sizeof name - 1] = 0;
+        char dst[256]; join(dst, sizeof dst, path, name);
+        if (have_cut && cut_src[0] && eqn(dst, cut_src)) {     /* cut+paste in the same dir: no-op */
+            have_cut = false; cut_src[0] = 0; return;
+        }
+        if (sys_exists(dst, 0)) {                              /* don't clobber an existing file */
+            char alt[80]; snprintf(alt, sizeof alt, "copy of %s", name);
+            join(dst, sizeof dst, path, alt);
+        }
+        char *buf = (char *)malloc(ci.len);
+        if (!buf) return;
+        int n = clip_get(idx, buf, ci.len);
+        if (n > 0) sys_spit(dst, buf, n);
+        free(buf);
+        if (n > 0 && have_cut && cut_src[0]) { rmrf(cut_src); have_cut = false; cut_src[0] = 0; }
+        print("[files] paste "); print(dst); print("\r\n");
+        load_dir(); invalidate();
+    }
     void make_folder() {
         char name[40], child[256];
         for (int k = 0; k < 1000; k++) {
@@ -625,18 +670,9 @@ struct FilesApp : ui::Window {
         case 3: do_delete(); break;
         case 4: make_folder(); break;
         case 5: load_dir(); break;
-        case 6: {                                         /* Copy a file's bytes to the clipboard */
-            int hu = has_up();
-            if (list.sel >= 0 && !(hu && list.sel == 0)) {
-                struct dirent *e = &ents[list.sel - hu];
-                if (e->type == FT_FILE) {
-                    char full[256]; join(full, sizeof full, path, e->name);
-                    int n = 0; char *b = sys_slurp(full, &n);
-                    if (b) { clip_put(CLIP_FILE, e->name, b, n); free(b); }
-                }
-            }
-            break;
-        }
+        case 6: copy_sel(false); break;                   /* Copy a file's bytes to the clipboard */
+        case 7: copy_sel(true);  break;                   /* Cut: copy + mark the source for a move */
+        case 8: paste();         break;                   /* Paste the clipboard file here */
         }
         invalidate();
     }
@@ -654,10 +690,13 @@ struct FilesApp : ui::Window {
             struct dirent *e = &ents[real];
             if (e->type == FT_DIR || is_app_dir(e->type, e->name)) menu.add("Open", PK_ACTION, 1, 0, 0, 0);
             else { menu.add("Open", PK_ACTION, 1, 0, 0, 0); menu.add("Open With...", PK_ACTION, 2, 0, 0, 0);
-                   menu.add("Copy", PK_ACTION, 6, 0, 0, 0); }
+                   menu.add("Copy", PK_ACTION, 6, 0, 0, 0); menu.add("Cut", PK_ACTION, 7, 0, 0, 0); }
             menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
             menu.add("", PK_SEP, 0, 0, 0, 0);
         }
+        if (clip_count() > 0) { struct clipinfo ci;             /* offer Paste when a file is on the clipboard */
+            if (clip_info(clip_active(-1), &ci) == 0 && ci.type == CLIP_FILE)
+                menu.add("Paste", PK_ACTION, 8, 0, 0, 0); }
         menu.add("New Folder", PK_ACTION, 4, 0, 0, 0);
         menu.add("Refresh",    PK_ACTION, 5, 0, 0, 0);
         menu.show(x, y);
@@ -667,6 +706,9 @@ struct FilesApp : ui::Window {
     void on_key(int key) override {
         if (menu.open) { if (key == ui::UK_ESC) { menu.dismiss(); invalidate(); } return; }
         if (key == ui::UK_BACK) go_up();
+        else if (key == 0x03) copy_sel(false);   /* Ctrl+C */
+        else if (key == 0x18) copy_sel(true);    /* Ctrl+X */
+        else if (key == 0x16) paste();           /* Ctrl+V */
         else if (key == 'r') load_dir();
     }
     void on_nav(int dir) override { if (dir == 0) go_back(); else go_fwd(); }

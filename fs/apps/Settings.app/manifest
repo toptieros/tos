@@ -1,0 +1,6 @@
+name      = Settings
+exec      = bin/settings
+icon      = icon.argb
+version   = 1.0
+category  = utility
+pinned    = false

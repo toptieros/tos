@@ -89,6 +89,9 @@ void ugfx_elevation_extent(int level, int *spread, int *dy);
  * of `color` at peak alpha `max_a`, drawn OUTSIDE the shape (the window covers
  * the inside). Draw it before the window. */
 void ugfx_shadow(int x, int y, int w, int h, int rad, int spread, uint32_t color, int max_a);
+/* Global drop-shadow kill switch (default on). Every shadow routes through
+ * ugfx_shadow(), so ugfx_set_shadows(0) removes them all at once. */
+void ugfx_set_shadows(int on);
 /* Blit a surface with rounded BOTTOM corners (top stays square -- it meets the
  * title bar). Corners are AA-blended against whatever is already in the target. */
 void ugfx_blit_round_bottom(int x, int y, const uint32_t *src, int sw, int sh, int spitch, int rad);
