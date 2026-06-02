@@ -414,6 +414,37 @@ def t_system_ownership(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_app_menu(uefi):
+    # An app declares its own menu bar (SYS_WIN_SETMENU); the compositor shows the
+    # File/Edit tiles next to the app name, and choosing an item delivers WEV_MENU
+    # back to the app. Here Notepad's File > Save saves the document. (NEXT_STEPS:
+    # app menus #6; design/ui.md.)
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06); t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
+        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        m = None
+        for _ in range(50):                            # the bar reports the app's File tile once it's fetched
+            m = re.search(r"\[twm\] appmenu 0 File (\d+) (\d+)", t.serial())
+            if m:
+                break
+            time.sleep(0.1)
+        assert m, "Notepad's declared File menu tile was not shown in the bar"
+        fx, fw = int(m.group(1)), int(m.group(2))
+        t.click(fx + fw // 2, 12)                       # open the File menu (bar row)
+        assert t.wait_for("[twm] menu app File", 6), "the File menu did not open"
+        g = re.search(r"\[twm\] menu app File y (\d+) row (\d+) x (\d+)", t.serial())
+        assert g, "File menu geometry not reported"
+        ry, row, mx = int(g.group(1)), int(g.group(2)), int(g.group(3))
+        t.click(mx + 30, ry + row + row // 2)           # choose "Save" (item index 1)
+        assert t.wait_for("[notepad] menu 0 1", 6), "menu selection not delivered to the app (WEV_MENU)"
+        assert t.wait_for("[notepad] saved", 8), "File > Save did not save the document"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_fullscreen(uefi):
     # Fullscreen (Super+F) fills the whole screen and auto-hides BOTH the menu bar
     # and the window's own title bar; a top-edge hover reveals them together as one
@@ -535,7 +566,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_alt_tab, t_notepad_edit_save, t_spotlight,
+    t_app_menu, t_alt_tab, t_notepad_edit_save, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]

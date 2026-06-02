@@ -132,6 +132,7 @@ struct window {
     int      old_nf;
     uint32_t flags;                       /* WIN_* the app created the window with */
     char     title[32];
+    struct winmenu menu;                  /* app-declared menu bar (nmenus==0 = none) */
     volatile int eh, et;                  /* input event ring (compositor -> app) */
     struct winevent ev[WEVQ];
 };
@@ -165,6 +166,7 @@ int win_create(struct wininfo *wi) {
     win->comp_nf = 0; win->old_phys = 0; win->old_nf = 0;
     win->eh = win->et = 0;
     win->flags = wi->flags;
+    win->menu.nmenus = 0;                 /* no app menu until SYS_WIN_SETMENU */
     copy_title(win->title, wi->title);
     uint64_t v = vmm_map_surface(vmm_current_pml4(), id, phys, nframes);   /* into the app */
     vmm_flush_self();
@@ -304,6 +306,33 @@ int wm_post_event(int id, int type, unsigned a) {
     return 0;
 }
 int wm_send_key(int id, int byte) { return wm_post_event(id, WEV_KEY, (unsigned)byte); }
+
+/* App: declare the menu bar for one of its own windows (SYS_WIN_SETMENU). */
+int win_set_menu(int id, const struct winmenu *m) {
+    if (id < 0 || id >= MAX_WINDOWS || !m) return -1;
+    uint64_t f = spin_lock_irqsave(&ipc_lock);
+    int r = -1;
+    if (wins[id].state == W_ALIVE && wins[id].owner == sched_current()) {
+        wins[id].menu = *m;
+        if (wins[id].menu.nmenus > WINMENU_MAX) wins[id].menu.nmenus = WINMENU_MAX;
+        r = 0;
+    }
+    spin_unlock_irqrestore(&ipc_lock, f);
+    return r;
+}
+
+/* Compositor: read a window's declared menu bar (SYS_WM_GETMENU). Returns 1 if the
+ * window has a menu (nmenus>0), else 0; `out` is always filled (zeroed if none). */
+int wm_get_menu(int id, struct winmenu *out) {
+    if (!out) return 0;
+    out->nmenus = 0;
+    if (sched_current() != compositor || id < 0 || id >= MAX_WINDOWS) return 0;
+    uint64_t f = spin_lock_irqsave(&ipc_lock);
+    int got = 0;
+    if (wins[id].state == W_ALIVE) { *out = wins[id].menu; got = wins[id].menu.nmenus > 0; }
+    spin_unlock_irqrestore(&ipc_lock, f);
+    return got;
+}
 
 /* Compositor-only: force-kill the process that owns window `id` (Super+Shift+Q).
  * We look up the owning task and ask the scheduler to terminate it asynchronously;

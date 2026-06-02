@@ -78,6 +78,8 @@
 #define SYS_KBD_MODS    61 /* ()                 -> live keyboard modifier bitmask (KMOD_*)   */
 #define SYS_SETUID      62 /* (uid)              -> set/drop the caller's owner uid; 0/-1     */
 #define SYS_GETUID      63 /* ()                 -> the caller's owner uid (TOS_UID_*)         */
+#define SYS_WIN_SETMENU 64 /* (id, struct winmenu*) -> app declares its menu bar; 0/-1        */
+#define SYS_WM_GETMENU  65 /* (id, struct winmenu*) -> compositor reads a window's menu; 1/0   */
 
 /* Keyboard modifier bitmask (SYS_KBD_MODS, and packed into WEV_KEY -- see below). */
 #define KMOD_SHIFT 1
@@ -209,6 +211,10 @@ struct wininfo {              /* SYS_WIN_CREATE: in = w,h,title,flags; out = id,
 #define WEV_NAV    5          /* a navigation gesture: a = 0 back, 1 forward (mouse side buttons) */
 #define WEV_SCROLL 6          /* scroll wheel over the client: a = WEV_MOUSE_PACK(x,y,delta&0xff), delta signed (+ up) */
 #define WEV_KEYUP  7          /* a modifier key was released; a = the new KMOD_* mask still held */
+#define WEV_MENU   8          /* an app menu item was chosen; a = WEV_MENU_PACK(menu, item)     */
+#define WEV_MENU_PACK(m, i) ((((unsigned)(m) & 0xff) << 8) | ((unsigned)(i) & 0xff))
+#define WEV_MENU_M(a) (((a) >> 8) & 0xff)
+#define WEV_MENU_I(a) ((a) & 0xff)
 #define WEV_KEY_PACK(byte, mods) (((unsigned)(byte) & 0xff) | (((unsigned)(mods) & 0xf) << 8))
 #define WEV_KEY_BYTE(a) ((a) & 0xff)
 #define WEV_KEY_MODS(a) (((a) >> 8) & 0xf)
@@ -239,6 +245,23 @@ struct wmwin {                /* SYS_WM_WINDOWS snapshot entry (compositor side)
     uint32_t seq;             /* present sequence; changes when the app draws      */
     char     title[32];
     uint32_t flags;           /* WIN_* the app created the window with              */
+};
+
+/* An app's menu bar (SYS_WIN_SETMENU): a handful of top-level menus (File / Edit /
+ * View / Help) each with a few items. The compositor reads it for the focused
+ * window (SYS_WM_GETMENU), draws a tile per menu in the bar, and posts WEV_MENU
+ * (packed menu+item index) back to the app when an item is chosen. nmenus==0 ⇒ the
+ * app has no menu (the bar shows only the universal About/Quit). */
+#define WINMENU_MAX   5       /* top-level menus                                   */
+#define WINMENU_ITEMS 8       /* items per menu                                    */
+#define WINMENU_LBL   18      /* label length (incl. NUL)                          */
+struct winmenu {
+    uint32_t nmenus;
+    struct {
+        char     title[WINMENU_LBL];
+        uint32_t nitems;
+        char     items[WINMENU_ITEMS][WINMENU_LBL];
+    } m[WINMENU_MAX];
 };
 
 struct sysinfo {              /* SYS_SYSINFO: machine facts for fastfetch */

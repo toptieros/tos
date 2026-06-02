@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **33/33** (22 e2e journeys: BIOS 22 + a UEFI subset 11) + **46 host
+**Status:** `make test` **35/35** (24 e2e journeys: BIOS 24 + a UEFI subset 11) + **46 host
 unit tests** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -15,18 +15,17 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
 ## Open — the road ahead
 
 ### Toolkit & desktop UI
-- [ ] **Maximize hides both bars + hover-reveal.** Fullscreen must hide **both** the menu bar
-  **and** the window's own title bar (client goes full-height; today it's `W×(H−TH)`, leaving
-  the app bar visible). Top-edge hover reveals both together; they retract only when the cursor
-  leaves the title-bar band **downward** into content. → [`ui.md`](design/ui.md)
 - [ ] **Files + Desktop suite (#10).** A shared `ui::FileView` powering both the Files window
   and a new bottom-pinned `WIN_DESKTOP` layer over `~/Desktop`: **multi-select** (Ctrl/Shift-click
   + rubber-band marquee — single-select today), **folder/multi-item copy-cut-paste** (today's
   `CLIP_FILE`-of-bytes can't hold a directory → path-reference clipboard + recursive `cp_r`),
   **rename**, context menus, and **drag-to-move** (needs DnD). → [`files-and-desktop.md`](design/files-and-desktop.md)
-- [ ] **App menus (#6).** An app→WM protocol so apps declare their own File/Edit/Help tiles
-  (`SYS_WIN_SETMENU` + a `WEV_MENU` event + a `ui::Window` menu API). The menu-bar machinery +
-  the app tile (About/Quit) are already done. → [`ui.md`](design/ui.md)
+- [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
+  of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
+  `menu_begin/menu_add/menu_item/menu_commit` + `on_menu()` API; twm draws a bar tile per menu
+  (kind-3 dropdown) and routes a pick back to the app. Notepad ships File [New, Save] / Edit
+  [Select All]. **Left:** keyboard accelerators (⌘/Ctrl shortcuts shown + handled), checkmarks/
+  disabled items, submenus, and porting more apps. → [`ui.md`](design/ui.md)
 - [ ] **Grow the toolkit + port apps.** A layout system + menus, then port `term` / `fastfetch`
   (and new apps) onto the toolkit.
 - [ ] **Live resize preview + reflow.** A live outline while dragging the grip, and reflowing
@@ -87,6 +86,20 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select.
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **App menus #6 (2026-06-02).** App→WM menu protocol: `struct winmenu` (≤5 menus × ≤8 items) set
+  via `SYS_WIN_SETMENU`, read by the compositor via `SYS_WM_GETMENU`, with `WEV_MENU` delivering a
+  pick back to the app. `ui::Window` gained `menu_begin/menu_add/menu_item/menu_commit` + an
+  `on_menu(menu,item)` hook; twm fetches the focused window's menu each frame, draws a tile per
+  top-level menu after the app name (a kind-3 dropdown), and posts `WEV_MENU` on a pick. Notepad
+  declares File [New, Save] / Edit [Select All]. `[twm] appmenu`/`menu app` traces; `t_app_menu`.
+- **Maximize hides both bars + hover-reveal (2026-06-02).** Fullscreen (green button /
+  double-click title / new **Super+F**) now makes the client fill the **whole** screen (`W×H`,
+  was `W×(H−TH)`); the window's own title bar becomes a sliding overlay that hides **with** the
+  menu bar as one "top group". A top-edge hover reveals both together and HOLDS while the cursor
+  stays in the revealed band (so you can reach the traffic lights); diving into the content
+  retracts them. Centralized window geometry in `is_fs`/`client_rect`/`outer_rect`/`in_client`
+  helpers + `fs_titlebar_y`; rewired every compositor input path. `[twm] fullscreen <t> 0|1` and
+  `[twm] topbar shown|hidden` traces; `t_fullscreen`. 34/34 + 46 unit.
 - **System ownership #1 (2026-06-02).** tosfs bumped to **v3**: every entry carries an `owner`
   uid (+ a reserved `mode` byte); `mkfs` stamps `/Users` + `/tmp` = user, the rest = system
   (shared rule in `kernel/fs/perm.h`, unit-tested). Tasks carry a `uid` (inherited on fork); init

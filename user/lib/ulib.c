@@ -71,6 +71,8 @@ void notify(const char *title, const char *body) { notify_to(title, body, ""); }
 int wm_poll_notify(struct notif *out) { return (int)sc(SYS_WM_NOTIFY, (uint64_t)out); }
 int setuid(int uid)            { return (int)sc(SYS_SETUID, (uint64_t)(int64_t)uid); }
 int getuid(void)               { return (int)sc(SYS_GETUID, 0); }
+int win_setmenu(int id, const struct winmenu *m) { return (int)sc3(SYS_WIN_SETMENU, (uint64_t)id, (uint64_t)m, 0); }
+int wm_getmenu(int id, struct winmenu *out)      { return (int)sc3(SYS_WM_GETMENU, (uint64_t)id, (uint64_t)out, 0); }
 unsigned kbd_mods(void)        { return (unsigned)sc(SYS_KBD_MODS, 0); }
 
 /* system clipboard */

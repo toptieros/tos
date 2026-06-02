@@ -505,6 +505,27 @@ void Window::feed_key(int b) {
     if (!handled) on_key(key);                       /* unconsumed keys -> app-level */
     dirty = true;
 }
+/* --- app menu bar builder (design/ui.md #6) ------------------------------- */
+static void menu_cpy(char *dst, const char *src, int cap) {
+    int i = 0; for (; i < cap - 1 && src && src[i]; i++) dst[i] = src[i]; dst[i] = 0;
+}
+void Window::menu_begin() { menu_spec.nmenus = 0; }
+int Window::menu_add(const char *title) {
+    if (menu_spec.nmenus >= WINMENU_MAX) return -1;
+    int i = (int)menu_spec.nmenus++;
+    menu_cpy(menu_spec.m[i].title, title, WINMENU_LBL);
+    menu_spec.m[i].nitems = 0;
+    return i;
+}
+void Window::menu_item(int menu, const char *label) {
+    if (menu < 0 || menu >= (int)menu_spec.nmenus) return;
+    unsigned n = menu_spec.m[menu].nitems;
+    if (n >= WINMENU_ITEMS) return;
+    menu_cpy(menu_spec.m[menu].items[n], label, WINMENU_LBL);
+    menu_spec.m[menu].nitems = n + 1;
+}
+void Window::menu_commit() { if (id >= 0) win_setmenu(id, &menu_spec); }
+
 int Window::run() {
     redraw(); dirty = false;
     while (running) {
@@ -539,6 +560,7 @@ int Window::run() {
                 break;
             }
             case WEV_NAV:   on_nav((int)ev.a); dirty = true; break;
+            case WEV_MENU:  on_menu((int)WEV_MENU_M(ev.a), (int)WEV_MENU_I(ev.a)); dirty = true; break;
             case WEV_CLOSE: running = false; break;
             }
         }

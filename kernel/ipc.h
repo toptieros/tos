@@ -34,6 +34,8 @@ void wm_register(void);                           /* caller becomes the composit
 int  wm_windows(struct wmwin *buf, int max);      /* snapshot live windows         */
 int  wm_send_key(int id, int byte);               /* deliver an input byte         */
 int  wm_post_event(int id, int type, unsigned a); /* deliver a window event        */
+int  win_set_menu(int id, const struct winmenu *m); /* app: declare a window's menu  */
+int  wm_get_menu(int id, struct winmenu *out);    /* compositor: read it; 1 if any  */
 int  wm_kill_window(int id);                      /* compositor: kill a window's owner */
 int  notify_post(const struct notif *n);          /* any app: post a notification  */
 int  wm_poll_notify(struct notif *out);           /* compositor: dequeue one; 1/0  */

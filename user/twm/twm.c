@@ -199,18 +199,22 @@ static int toast_collapsible;                    /* body was truncated -> chevro
  * that open a dropdown. Today the menus are compositor-owned (the logo's system
  * menu + the app tile's universal About/Quit); an app->WM protocol for apps to add
  * their own File/Edit/Help tiles is the remaining half of #6. */
-#define MENU_MAXI 5                  /* max items in a dropdown            */
+#define MENU_MAXI 8                  /* max items in a dropdown (>= WINMENU_ITEMS) */
 #define MENU_ROW  (fh + 12)          /* dropdown row height                */
 #define MENU_PAD  8
 #define MENU_SHADOW_SP 22
 #define MENU_SHADOW_DY 6
-static int menu_kind;                /* 0 none, 1 logo (system), 2 app     */
+static int menu_kind;                /* 0 none, 1 logo (system), 2 app (About/Quit), 3 app-declared */
 static int menu_x, menu_y, menu_w, menu_h;
 static const char *menu_items[MENU_MAXI];
 static int menu_nitems;
 static char menu_about[40];          /* dynamic "About <app>" label        */
 static int logo_hit_w;               /* logo click region width (set in draw_bar) */
 static int app_hit_x, app_hit_w;     /* focused-app name click region (set in draw_bar) */
+static struct winmenu cur_menu;      /* the focused window's declared menu bar (#6) */
+static unsigned cur_menu_sig;        /* signature so the bar repaints when it changes */
+static int appmenu_x[WINMENU_MAX], appmenu_w[WINMENU_MAX];  /* per-menu tile hit regions (set in draw_bar) */
+static int menu_app_idx;             /* which cur_menu.m[] the kind-3 dropdown shows */
 
 /* ------------------------------------------------------------------ helpers */
 static int streqz(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
@@ -487,6 +491,26 @@ static void draw_bar(void) {
         ugfx_rrect_a(app_hit_x, y + 3, app_hit_w, bar_h - 6, TH_R_SM,
                      menu_kind == 2 ? ARGB(40, 120, 170, 255) : ARGB(28, 255, 255, 255));
     ugfx_text(14 + LOGO_W + 12, y + (bar_h - fh) / 2, app, TH_TEXT, UGFX_TRANSPARENT);
+    /* app-declared menu tiles (File / Edit / ... ) to the right of the app name (#6) */
+    int mtx = app_hit_x + app_hit_w + 4;
+    for (int i = 0; i < (int)cur_menu.nmenus && i < WINMENU_MAX; i++) {
+        const char *mt = cur_menu.m[i].title;
+        int mw = ugfx_text_w(mt) + 16;
+        appmenu_x[i] = mtx; appmenu_w[i] = mw;
+        int active = (menu_kind == 3 && menu_app_idx == i);
+        int hot = cur_y >= y && cur_y < y + bar_h && cur_x >= mtx && cur_x < mtx + mw;
+        if (active || hot)
+            ugfx_rrect_a(mtx, y + 3, mw, bar_h - 6, TH_R_SM, active ? ARGB(40, 120, 170, 255) : ARGB(28, 255, 255, 255));
+        ugfx_text(mtx + 8, y + (bar_h - fh) / 2, mt, TH_TEXT, UGFX_TRANSPARENT);
+        mtx += mw + 2;
+    }
+    { static unsigned last_amsig = 0;                   /* report tile geometry for the harness, on change */
+      unsigned s = (unsigned)cur_menu.nmenus;
+      for (int i = 0; i < (int)cur_menu.nmenus && i < WINMENU_MAX; i++) s = s * 131u + (unsigned)appmenu_x[i] * 7u + (unsigned)appmenu_w[i];
+      if (s != last_amsig) { last_amsig = s;
+          for (int i = 0; i < (int)cur_menu.nmenus && i < WINMENU_MAX; i++) {
+              print("[twm] appmenu "); printu((unsigned)i); printc(' '); print(cur_menu.m[i].title);
+              printc(' '); printu((unsigned)appmenu_x[i]); printc(' '); printu((unsigned)appmenu_w[i]); print("\r\n"); } } }
     int cy = y + bar_h / 2;                             /* status cluster: glyphs + clock */
     draw_net_glyph(sb_net_x, cy, SB_GLYPH);
     draw_vol_glyph(sb_vol_x, cy, SB_GLYPH);
@@ -1010,6 +1034,11 @@ static void menu_open_kind(int kind, int tile_x) {
         menu_items[menu_nitems++] = "Preferences...";
         menu_items[menu_nitems++] = "Restart";
         menu_items[menu_nitems++] = "Shut Down";
+    } else if (kind == 3) {                          /* an app-declared menu (File/Edit/...) */
+        if (menu_app_idx < 0 || menu_app_idx >= (int)cur_menu.nmenus) { menu_kind = 0; return; }
+        app = cur_menu.m[menu_app_idx].title;
+        for (unsigned k = 0; k < cur_menu.m[menu_app_idx].nitems && menu_nitems < MENU_MAXI; k++)
+            menu_items[menu_nitems++] = cur_menu.m[menu_app_idx].items[k];
     } else {                                         /* app: universal About / Quit */
         int f = focus_slot();
         app = (f >= 0) ? cw[f].title : "tOS";
@@ -1060,10 +1089,13 @@ static void menu_click(int idx) {
         else if (idx == 1) notify("Preferences", "Settings live in Control Center for now");
         else if (idx == 2) reboot();
         else if (idx == 3) shutdown();
-    } else if (kind == 2) {                          /* app menu */
+    } else if (kind == 2) {                          /* app menu: universal About / Quit */
         int f = focus_slot();
         if (idx == 0 && f >= 0) notify(cw[f].title, "A tOS application");
         else if (idx == 1 && f >= 0) wm_post(cw[f].id, WEV_CLOSE, 0);   /* Quit */
+    } else if (kind == 3) {                          /* app-declared menu -> WEV_MENU back to the app */
+        int f = focus_slot();
+        if (f >= 0) wm_post(cw[f].id, WEV_MENU, WEV_MENU_PACK(menu_app_idx, idx));
     }
 }
 
@@ -1456,6 +1488,32 @@ static void draw_switcher(void) {
  * leaves (HIDE_LINGER). Each animates an offset (bar_y, dock_y) and dirties its
  * band so the compositor repaints only the moving strip. Default (no fullscreen,
  * autohide off) keeps both permanently shown -- no behaviour change. */
+/* A cheap signature of a menu spec, so the bar repaints only when the focused
+ * app's declared menu actually changes (it is fetched every frame). */
+static unsigned menu_sig(const struct winmenu *m) {
+    unsigned h = 2166136261u ^ m->nmenus;
+    for (unsigned i = 0; i < m->nmenus && i < WINMENU_MAX; i++) {
+        for (const char *p = m->m[i].title; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+        h = (h ^ m->m[i].nitems) * 16777619u;
+        for (unsigned k = 0; k < m->m[i].nitems && k < WINMENU_ITEMS; k++)
+            for (const char *p = m->m[i].items[k]; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+    }
+    return h;
+}
+/* Fetch the focused window's declared menu bar (#6) into cur_menu; repaint the bar
+ * (and drop an open app dropdown) when it changes. Called once per frame. */
+static void refresh_app_menu(void) {
+    int fwin = focus_slot();
+    struct winmenu nm; nm.nmenus = 0;
+    if (fwin >= 0 && !cw[fwin].popup) wm_getmenu(cw[fwin].id, &nm);
+    unsigned sig = menu_sig(&nm);
+    if (sig != cur_menu_sig) {
+        cur_menu = nm; cur_menu_sig = sig;
+        if (menu_kind == 3) menu_close();
+        add_dirty(0, 0, W, bar_h);
+    }
+}
+
 static void update_chrome(int mx, int my) {
     int fs = any_fullscreen();
     int auto_bar  = fs || reg_bool("ui.bar.autohide", 0);
@@ -1707,6 +1765,7 @@ void _ustart(void) {
             add_dirty(cur_x - 12, cur_y - 12, CURSOR_W + 24, CURSOR_H + 24);
         }
         update_chrome(ms.x, ms.y);                       /* fullscreen / edge-reveal auto-hide */
+        refresh_app_menu();                              /* pick up the focused app's declared menu (#6) */
         if (cc_open && moved) dirty_cc();                          /* repaint CC hover states + shadow halo (no smear) */
         if (nc_open && moved) dirty_nc();                          /* notification center, ditto    */
         if (toast_live && moved) dirty_toast();                    /* live toast: keep its drop-shadow halo clean as the cursor sweeps it */
@@ -1754,14 +1813,21 @@ void _ustart(void) {
             int on_logo = bar_y > -bar_h && ms.y >= 0 && ms.y < bar_h && ms.x >= 8 && ms.x < 8 + logo_hit_w;
             int on_appm = bar_y > -bar_h && ms.y >= 0 && ms.y < bar_h && focus_slot() >= 0 &&
                           ms.x >= app_hit_x && ms.x < app_hit_x + app_hit_w;
+            int on_amenu = -1;                          /* an app-declared menu tile (#6) */
+            if (bar_y > -bar_h && ms.y >= 0 && ms.y < bar_h)
+                for (int i = 0; i < (int)cur_menu.nmenus && i < WINMENU_MAX; i++)
+                    if (ms.x >= appmenu_x[i] && ms.x < appmenu_x[i] + appmenu_w[i]) { on_amenu = i; break; }
             if (menu_kind && !handled) {
                 handled = 1;
                 if (ms.x >= menu_x && ms.x < menu_x + menu_w && ms.y >= menu_y && ms.y < menu_y + menu_h) {
                     int idx = (ms.y - (menu_y + MENU_PAD)) / MENU_ROW;
                     if (idx >= 0 && idx < menu_nitems) menu_click(idx); else menu_close();
+                } else if (on_amenu >= 0) {             /* clicked another tile -> switch menus */
+                    menu_close(); menu_app_idx = on_amenu; menu_open_kind(3, appmenu_x[on_amenu]);
                 } else menu_close();
             } else if (!handled && on_logo) { menu_open_kind(1, 8);          handled = 1; }
               else if (!handled && on_appm) { menu_open_kind(2, app_hit_x);  handled = 1; }
+              else if (!handled && on_amenu >= 0) { menu_app_idx = on_amenu; menu_open_kind(3, appmenu_x[on_amenu]); handled = 1; }
             /* Control Center: the bar status item toggles it; while open, a click
              * inside acts on a row, a click anywhere else dismisses it. */
             int on_ccbtn = bar_y > -bar_h && ms.y >= 0 && ms.y < bar_h &&

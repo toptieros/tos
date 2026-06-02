@@ -282,8 +282,17 @@ public:
      * selection (Files) override this. */
     virtual void on_drag(int x, int y, int btn) { (void)x; (void)y; (void)btn; }
     virtual void on_scroll(int delta) { (void)delta; }   /* wheel not over any scrollable widget */
+    /* App menu bar (design/ui.md #6): declare top-level menus the compositor shows
+     * as bar tiles; on_menu() fires when the user picks an item. Build with
+     * menu_begin / menu_add / menu_item, then menu_commit(). */
+    void menu_begin();                           /* start a fresh menu spec            */
+    int  menu_add(const char *title);            /* add a top-level menu -> its index  */
+    void menu_item(int menu, const char *label); /* add an item to menu `menu`         */
+    void menu_commit();                          /* publish to the compositor          */
+    virtual void on_menu(int menu, int item) { (void)menu; (void)item; }  /* item chosen */
 
 protected:
+    struct winmenu menu_spec;                    /* built by menu_*(), sent by menu_commit() */
     void redraw();
     void dispatch_mouse(int x, int y, int btn);
     void dispatch_hover(int x, int y);          /* pointer move (btn==0) from the compositor */

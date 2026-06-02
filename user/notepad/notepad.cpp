@@ -61,9 +61,19 @@ struct Notepad : ui::Window {
             print("[notepad] save failed: "); print(path); print("\r\n");
         }
     }
+    void new_note() {
+        name.set_text("untitled.txt"); editor.set_text(""); editor.caret = 0;
+        focus = &editor; set_status("New note"); invalidate();
+    }
     /* Ctrl+S anywhere in the window saves (the editor doesn't consume ^S, so it
      * bubbles up to here). */
     void on_key(int key) override { if (key == 0x13) save(); }
+    /* Menu-bar selections (#6): File [New, Save], Edit [Select All]. */
+    void on_menu(int menu, int item) override {
+        print("[notepad] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
+        if (menu == 0) { if (item == 0) new_note(); else if (item == 1) save(); }
+        else if (menu == 1) { if (item == 0 && focus) { focus->on_key(0x01); invalidate(); } }  /* Select All */
+    }
 
     bool build(const char *path) {
         struct sysinfo si; sysinfo(&si);
@@ -96,6 +106,11 @@ struct Notepad : ui::Window {
         layout();
         add(&bar); add(&name); add(&status); add(&savebtn); add(&editor);
         focus = &editor;
+
+        menu_begin();                                 /* declare a menu bar (#6) */
+        int mf = menu_add("File"); menu_item(mf, "New");        menu_item(mf, "Save");
+        int me = menu_add("Edit"); menu_item(me, "Select All");
+        menu_commit();
         return true;
     }
 };
