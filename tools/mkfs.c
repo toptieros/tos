@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "../kernel/fs/tosfs.h"
+#include "../kernel/fs/perm.h"
 
 #define SECTOR 512
 
@@ -29,6 +30,17 @@ static long file_size(FILE *f) {
     return n;
 }
 
+/* Rebuild the absolute path of slot `s` from its parent chain into `out`. */
+static void full_path(int s, char *out) {
+    char tmp[1024]; tmp[0] = 0;
+    int chain[64], d = 0;
+    for (int cur = s; cur >= 0 && d < 64; cur = super.ents[cur].parent) chain[d++] = cur;
+    char *p = tmp;
+    for (int i = d - 1; i >= 0; i--) { *p++ = '/'; const char *nm = super.ents[chain[i]].name; while (*nm) *p++ = *nm++; }
+    *p = 0;
+    strcpy(out, tmp[0] ? tmp : "/");
+}
+
 static int new_slot(unsigned type, const char *name, int parent) {
     if (nslots >= (int)TOSFS_MAX_FILES) { fprintf(stderr, "mkfs: directory full (max %u)\n", TOSFS_MAX_FILES); exit(1); }
     if (strlen(name) >= TOSFS_NAME_MAX) { fprintf(stderr, "mkfs: name too long: %s\n", name); exit(1); }
@@ -37,6 +49,8 @@ static int new_slot(unsigned type, const char *name, int parent) {
     strncpy(super.ents[s].name, name, TOSFS_NAME_MAX - 1);
     super.ents[s].type   = type;
     super.ents[s].parent = parent;
+    char path[1024]; full_path(s, path);
+    super.ents[s].owner = (uint8_t)tos_owner_for(path);   /* /Users + /tmp -> user; rest -> system */
     return s;
 }
 

@@ -336,8 +336,9 @@ int notify_post(const struct notif *n) {
     uint64_t f = spin_lock_irqsave(&ipc_lock);
     int next = (notif_h + 1) % NOTIFQ;
     if (next == notif_t) notif_t = (notif_t + 1) % NOTIFQ;   /* full: drop the oldest */
-    ncopy(notif_ring[notif_h].title, n->title, NOTIF_TITLE);
-    ncopy(notif_ring[notif_h].body,  n->body,  NOTIF_BODY);
+    ncopy(notif_ring[notif_h].title,  n->title,  NOTIF_TITLE);
+    ncopy(notif_ring[notif_h].body,   n->body,   NOTIF_BODY);
+    ncopy(notif_ring[notif_h].target, n->target, NOTIF_TARGET);
     notif_h = next;
     spin_unlock_irqrestore(&ipc_lock, f);
     return 0;

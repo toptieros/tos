@@ -24,6 +24,7 @@
  * saved frame for the assembly tail to restore.
  */
 #include "sched.h"
+#include "fs/perm.h"      /* TOS_UID_* identities for per-task ownership */
 #include "vmm.h"
 #include "gdt.h"
 #include "console.h"
@@ -88,6 +89,7 @@ struct task {
     int      id;            /* slot index                                       */
     int      pid;           /* monotonic process id (init = 1)                  */
     int      parent;        /* slot of the creator; reaped by it via wait()     */
+    int      uid;           /* owner identity for fs writes (TOS_UID_* in perm.h) */
     int      home;          /* CPU whose queue holds it / last ran it           */
     int      tty;           /* pty channel bound to stdio, or -1 = console/keyboard */
     uint64_t anon_brk;      /* top of this task's anonymous mmap region (0 = none yet) */
@@ -251,6 +253,7 @@ int sched_spawn(const char *prog) {
     tasks[idx].id         = idx;
     tasks[idx].pid        = next_pid++;
     tasks[idx].parent     = cur_task();
+    tasks[idx].uid        = TOS_UID_SYSTEM;           /* the kernel-spawned boot task (init) is system */
     tasks[idx].tty        = -1;                       /* spawned tasks use the console/keyboard */
     tasks[idx].anon_brk   = 0;                        /* fresh address space: no mmap region yet */
     frame_init(idx, entry, USER_STACK_TOP, UCODE_RPL3, UDATA_RPL3);
@@ -458,6 +461,20 @@ struct regs *sched_reap_killed(struct regs *r) {
 
 int sched_pid(int slot) { return (slot > 0 && slot < MAX_TASKS) ? tasks[slot].pid : -1; }
 
+/* The owner identity of the running task -- consulted by the fs syscalls. */
+int sched_uid(void) { return tasks[cur_task()].uid; }
+
+/* SYS_SETUID: a uid-0 (system) task may set any uid; everyone else may only drop
+ * privilege (raise the numeric uid, never lower it). Returns 0 or -1. The boot
+ * chain (init) uses this once to launch the desktop session as the user. */
+int sched_setuid(int uid) {
+    if (uid < 0) return -1;
+    int me = cur_task();
+    if (tasks[me].uid != TOS_UID_SYSTEM && uid < tasks[me].uid) return -1;  /* no privilege gain */
+    tasks[me].uid = uid;
+    return 0;
+}
+
 struct regs *sched_wait(struct regs *r) {
     uint64_t f = spin_lock_irqsave(&sched_lock);
     int me = cpus[this_cpu()].current;
@@ -522,6 +539,7 @@ struct regs *sched_fork(struct regs *r) {
     tasks[idx].id         = idx;
     tasks[idx].pid        = next_pid++;
     tasks[idx].parent     = cpus[this_cpu()].current;
+    tasks[idx].uid        = tasks[cpus[this_cpu()].current].uid;   /* child inherits the caller's identity */
     tasks[idx].tty        = tasks[cpus[this_cpu()].current].tty;   /* inherit stdio binding */
     tasks[idx].anon_brk   = 0;       /* anon mmap region is NOT inherited (like the fb/surf slots) */
     fs_fork(cpus[this_cpu()].current, idx);                        /* inherit the working dir */

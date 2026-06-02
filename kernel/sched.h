@@ -22,6 +22,8 @@ uint64_t sched_kernel_cr3(void);            /* the shared kernel/idle address sp
 void sched_ap_enter(int cpu) __attribute__((noreturn));  /* an AP joins scheduling */
 int  sched_spawn(const char *role);         /* new child task -> its pid (or -1) */
 int  sched_current(void);                   /* slot id of the task running here  */
+int  sched_uid(void);                       /* owner identity of the running task (perm.h) */
+int  sched_setuid(int uid);                 /* SYS_SETUID: set/drop the caller's uid; 0/-1 */
 struct regs *sched_fork(struct regs *r);    /* clone caller -> child pid / 0   */
 struct regs *sched_exec(struct regs *r, const char *prog);  /* replace image   */
 void sched_start(void) __attribute__((noreturn));   /* BSP runs the first user task */

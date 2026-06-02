@@ -16,9 +16,10 @@
 #include "fs.h"
 #include "ata.h"
 #include "console.h"
-#include "sched.h"        /* MAX_TASKS, sched_current() -> per-task fd tables + cwd */
+#include "sched.h"        /* MAX_TASKS, sched_current()/sched_uid() -> fd tables, cwd, identity */
 #include "syscall.h"      /* O_CREATE / O_TRUNC / O_RDONLY, struct dirent / fstat */
 #include "spinlock.h"
+#include "perm.h"         /* tos_may_write() ownership check */
 
 #define NOFILE 16
 
@@ -205,6 +206,12 @@ static int resolve_parent(const char *path, int from, char *leaf) {
 
 static int is_dir(int slot) { return slot == TOSFS_ROOT || (slot >= 0 && super.ents[slot].type == TOSFS_DIR); }
 
+/* The owner uid of a slot; the root directory (no entry) is system-owned, so a
+ * user can't create top-level entries. */
+static int owner_of(int slot) { return slot == TOSFS_ROOT ? TOS_UID_SYSTEM : super.ents[slot].owner; }
+/* May the running task write (create in / delete / modify) the entry at `slot`? */
+static int can_write(int slot) { return tos_may_write(sched_uid(), owner_of(slot)); }
+
 static const struct tosfs_ent *find_ent(const char *name) {
     if (!mounted) return 0;
     /* Resolve from root: an absolute path (e.g. an app bundle's "/Apps/X.app/bin/x")
@@ -261,6 +268,7 @@ static int mkdir_l(const char *path) {
     char leaf[TOSFS_NAME_MAX];
     int parent = resolve_parent(path, cwd[sched_current()], leaf);
     if (parent == R_NONE || !is_dir(parent)) return -1;
+    if (!can_write(parent)) return -1;                    /* may not create in a system dir */
     if (names_equal(leaf, ".") || names_equal(leaf, "..")) return -1;
     if (child_named(parent, leaf) != R_NONE) return -1;   /* already exists */
     int s = alloc_slot();
@@ -270,6 +278,8 @@ static int mkdir_l(const char *path) {
     super.ents[s].size      = 0;
     super.ents[s].parent    = parent;
     super.ents[s].type      = TOSFS_DIR;
+    super.ents[s].owner     = (uint8_t)sched_uid();       /* a new entry is owned by its creator */
+    super.ents[s].mode      = 0;
     return flush_super();
 }
 
@@ -290,6 +300,7 @@ static int rmdir_l(const char *path) {
     if (!mounted) return -1;
     int s = resolve(path, cwd[sched_current()]);
     if (s < 0 || super.ents[s].type != TOSFS_DIR) return -1;   /* not a dir / root */
+    if (!can_write(s)) return -1;                              /* may not remove a system dir */
     if (has_children(s)) return -1;                            /* not empty */
     /* if any task's cwd sits on it, refuse so it can't dangle */
     for (int t = 0; t < MAX_TASKS; t++) if (cwd[t] == s) return -1;
@@ -354,9 +365,11 @@ static int rename_l(const char *oldp, const char *newp) {
     if (!mounted) return -1;
     int s = resolve(oldp, cwd[sched_current()]);
     if (s < 0) return -1;                               /* can't move the root */
+    if (!can_write(s)) return -1;                       /* may not move a system entry */
     char leaf[TOSFS_NAME_MAX];
     int parent = resolve_parent(newp, cwd[sched_current()], leaf);
     if (parent == R_NONE || !is_dir(parent)) return -1;
+    if (!can_write(parent)) return -1;                  /* may not drop it into a system dir */
     if (names_equal(leaf, ".") || names_equal(leaf, "..")) return -1;
     if (child_named(parent, leaf) != R_NONE) return -1; /* destination exists */
     if (super.ents[s].type == TOSFS_DIR && is_within(parent, s)) return -1; /* cycle */
@@ -376,9 +389,10 @@ static int stat_l(const char *path, struct fstat *st) {
     if (!mounted) return -1;
     int s = resolve(path, cwd[sched_current()]);
     if (s == R_NONE) return -1;
-    if (s == TOSFS_ROOT) { st->type = TOSFS_DIR; st->size = 0; return 0; }
-    st->type = super.ents[s].type;
-    st->size = super.ents[s].size;
+    if (s == TOSFS_ROOT) { st->type = TOSFS_DIR; st->size = 0; st->owner = TOS_UID_SYSTEM; return 0; }
+    st->type  = super.ents[s].type;
+    st->size  = super.ents[s].size;
+    st->owner = super.ents[s].owner;
     return 0;
 }
 
@@ -451,6 +465,7 @@ static int unlink_l(const char *path) {
     if (!mounted) return -1;
     int s = resolve(path, cwd[sched_current()]);
     if (s < 0 || super.ents[s].type != TOSFS_FILE) return -1;   /* not a file */
+    if (!can_write(s)) return -1;                               /* may not delete a system file */
     return unlink_slot(s);
 }
 
@@ -469,10 +484,12 @@ static int open_l(const char *name, int flags) {
         char leaf[TOSFS_NAME_MAX];
         int parent = resolve_parent(name, cwd[sched_current()], leaf);
         if (parent == R_NONE || !is_dir(parent)) return -1;
+        if (!can_write(parent)) return -1;        /* may not create in a system dir */
         if (leaf[0] == 0 || names_equal(leaf, ".") || names_equal(leaf, "..")) return -1;
         int ex = child_named(parent, leaf);
         if (ex != R_NONE) {                       /* name already in use */
             if (super.ents[ex].type != TOSFS_FILE) return -1;   /* it's a directory */
+            if (!can_write(ex)) return -1;         /* may not overwrite a system file */
             if (!(flags & O_TRUNC)) return -1;     /* no overwrite without O_TRUNC */
             if (unlink_slot(ex) < 0) return -1;    /* in-place rewrite = delete + recreate */
         }
@@ -584,6 +601,8 @@ static int close_l(int fd) {
                 super.ents[s].size      = f->pos;
                 super.ents[s].parent    = f->parent;
                 super.ents[s].type      = TOSFS_FILE;
+                super.ents[s].owner     = (uint8_t)sched_uid();   /* owned by the writer */
+                super.ents[s].mode      = 0;
                 if (flush_super() < 0) return -1;        /* persist superblock */
             } else {
                 for (uint32_t k = 0; k < f->nsect; k++) bit_clr(f->base_lba + k);

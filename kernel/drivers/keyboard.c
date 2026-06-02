@@ -124,6 +124,7 @@ static void key_main(uint8_t sc) {
     if (gui()) {
         if (raw == 'q') { emit((char)(shift() ? KEY_SUPER_KILL : KEY_SUPER_Q)); return; }
         if (raw == 'v') { emit((char)KEY_SUPER_V);     return; }
+        if (raw == 'f') { emit((char)KEY_SUPER_F);     return; }
         if (raw == ' ') { emit((char)KEY_SUPER_SPACE); return; }
     }
     if (alt() && raw == '\t') { emit((char)KEY_ALT_TAB); return; }  /* MRU window switcher */

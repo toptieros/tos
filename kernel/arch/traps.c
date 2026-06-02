@@ -227,6 +227,12 @@ static struct regs *syscall_dispatch(struct regs *r) {
     case SYS_KBD_MODS:
         r->rax = (uint64_t)kbd_mods();
         return r;
+    case SYS_SETUID:
+        r->rax = (uint64_t)(int64_t)sched_setuid((int)arg);
+        return r;
+    case SYS_GETUID:
+        r->rax = (uint64_t)(int64_t)sched_uid();
+        return r;
     case SYS_PTY_OPEN:
         r->rax = (uint64_t)(int64_t)pty_open();
         return r;

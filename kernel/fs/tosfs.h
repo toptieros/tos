@@ -15,7 +15,7 @@
 #pragma once
 #include <stdint.h>
 
-#define TOSFS_MAGIC     0x32534F54u   /* "TOS2" little-endian (v2 = directories) */
+#define TOSFS_MAGIC     0x33534F54u   /* "TOS3" little-endian (v3 = per-entry owner) */
 #define TOSFS_NAME_MAX  32
 
 #define TOSFS_DISK_SECTORS 4096u       /* image is padded to 2 MiB so files (now incl. hi-res
@@ -40,19 +40,26 @@ struct tosfs_ent {
     uint32_t size;                     /* file: bytes; dir/free: 0               */
     int32_t  parent;                   /* slot index of parent dir, or TOSFS_ROOT */
     uint32_t type;                     /* TOSFS_FREE / TOSFS_FILE / TOSFS_DIR    */
-};                                     /* == 48 bytes */
+    uint8_t  owner;                    /* owning uid (TOS_UID_SYSTEM / _USER -- perm.h) */
+    uint8_t  mode;                     /* reserved for future mode bits (0 today)  */
+    uint16_t _entrsv;                  /* pad to a 4-byte boundary                 */
+};                                     /* == 52 bytes */
 
-/* Size the directory so the disk runs out of *data* sectors before it runs out
- * of slots: D sectors hold (D*512 - 8)/48 entries; data sectors = DISK - D; want
- *   (D*512 - 8)/48 >= DISK - D  <=>  D*560 >= 48*DISK + 8.
- * (Grow the disk and the directory grows with it.) D stays well under 255 so a
- * single ATA command can read/write the whole directory. */
-#define TOSFS_DIR_SECTORS  ((48u * TOSFS_DISK_SECTORS + 8u + 559u) / 560u)
-#define TOSFS_MAX_FILES    ((TOSFS_DIR_SECTORS * 512u - 8u) / 48u)
+/* Entry size drives the table geometry below; sizing off sizeof keeps the three
+ * derived constants correct if the entry ever changes again. */
+#define TOSFS_ENT_SZ       ((uint32_t)sizeof(struct tosfs_ent))
+
+/* Size the directory so the disk runs out of *data* sectors before it runs out of
+ * slots: D sectors hold (D*512 - 8)/E entries (E = entry size); data sectors =
+ * DISK - D; want (D*512 - 8)/E >= DISK - D  <=>  D*(512+E) >= E*DISK + 8.
+ * (Grow the disk and the directory grows with it.) D can exceed 255; fs_sread/
+ * fs_swrite chunk the table into <=128-sector ATA transfers. */
+#define TOSFS_DIR_SECTORS  ((TOSFS_ENT_SZ * TOSFS_DISK_SECTORS + 8u + (512u + TOSFS_ENT_SZ) - 1u) / (512u + TOSFS_ENT_SZ))
+#define TOSFS_MAX_FILES    ((TOSFS_DIR_SECTORS * 512u - 8u) / TOSFS_ENT_SZ)
 
 struct tosfs_super {
     uint32_t magic;
     uint32_t reserved;                 /* keeps the 8-byte header the entries assume */
     struct tosfs_ent ents[TOSFS_MAX_FILES];
-    uint8_t  _pad[TOSFS_DIR_SECTORS * 512u - 8u - TOSFS_MAX_FILES * 48u];
+    uint8_t  _pad[TOSFS_DIR_SECTORS * 512u - 8u - TOSFS_MAX_FILES * TOSFS_ENT_SZ];
 };                                     /* exactly TOSFS_DIR_SECTORS sectors */

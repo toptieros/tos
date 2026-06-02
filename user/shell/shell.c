@@ -178,7 +178,14 @@ static void cmd_rm(const char *arg) {
         print("removed "); print(p); print("\r\n");
         return;
     }
-    if (funlink(arg) < 0) { print("rm: cannot remove "); print(arg); print(" (use rm -r for directories)\r\n"); return; }
+    if (funlink(arg) < 0) {
+        struct fstat st;
+        if (stat_(arg, &st) == 0 && st.owner == 0 && getuid() != 0)   /* still there + system-owned */
+            { print("rm: permission denied (system file): "); print(arg); print("\r\n"); }
+        else
+            { print("rm: cannot remove "); print(arg); print(" (use rm -r for directories)\r\n"); }
+        return;
+    }
     print("removed "); print(arg); print("\r\n");
 }
 
@@ -443,8 +450,19 @@ void _ustart(void) {
             cmd_sleep(line + 6);
         } else if (starts(line, "echo ")) {
             print(line + 5); print("\r\n");
+        } else if (streq(line, "id")) {
+            print("uid="); printu((unsigned)getuid()); print("\r\n");
+        } else if (starts(line, "id ")) {
+            struct fstat st;
+            if (stat_(line + 3, &st) < 0) print("id: no such path\r\n");
+            else { print("owner="); printu(st.owner); print("\r\n"); }
         } else if (starts(line, "notify ")) {
-            notify("Terminal", line + 7);            /* post a desktop notification (toast) */
+            const char *rest = line + 7;             /* "notify <app> <body>": click routes to <app> */
+            char app[24]; int an = 0;
+            while (rest[an] && rest[an] != ' ' && an < 23) { app[an] = rest[an]; an++; }
+            app[an] = 0;
+            const char *body = rest[an] == ' ' ? rest + an + 1 : rest;  /* body defaults to the app name */
+            notify_to(app, body, app);               /* post a desktop notification (toast), routed on click */
             print("notification sent\r\n");
         } else if (starts(line, "copy ")) {
             const char *t = line + 5; int n = 0; while (t[n]) n++;

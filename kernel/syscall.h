@@ -76,6 +76,8 @@
 #define SYS_NOTIFY      59 /* (struct notif*)    -> post a notification to the WM; 0/-1       */
 #define SYS_WM_NOTIFY   60 /* (struct notif*)    -> compositor: dequeue one; 1 if got, else 0 */
 #define SYS_KBD_MODS    61 /* ()                 -> live keyboard modifier bitmask (KMOD_*)   */
+#define SYS_SETUID      62 /* (uid)              -> set/drop the caller's owner uid; 0/-1     */
+#define SYS_GETUID      63 /* ()                 -> the caller's owner uid (TOS_UID_*)         */
 
 /* Keyboard modifier bitmask (SYS_KBD_MODS, and packed into WEV_KEY -- see below). */
 #define KMOD_SHIFT 1
@@ -90,9 +92,10 @@ struct clipinfo { uint32_t type; uint32_t len; uint32_t active; char name[32]; }
 /* A desktop notification: a short title + body an app posts with notify(); the
  * compositor shows the newest as a top-right toast and keeps a ring for the
  * notification center (design/ui.md). Fixed-size so it copies by value. */
-#define NOTIF_TITLE 48
-#define NOTIF_BODY  128
-struct notif { char title[NOTIF_TITLE]; char body[NOTIF_BODY]; };
+#define NOTIF_TITLE  48
+#define NOTIF_BODY   128
+#define NOTIF_TARGET 24   /* app label to focus/launch when the notification is clicked; "" = no routing */
+struct notif { char title[NOTIF_TITLE]; char body[NOTIF_BODY]; char target[NOTIF_TARGET]; };
 
 #define TIMER_HZ  100 /* PIT preemption/sleep ticks per second (see timer.c)        */
 
@@ -116,6 +119,7 @@ struct notif { char title[NOTIF_TITLE]; char body[NOTIF_BODY]; };
 #define KEY_LAUNCHPAD   0x98   /* global: Launchpad (Super tapped on its own)        */
 #define KEY_TERM_PGUP   0x99   /* app:    Shift+PgUp -- page scrollback up           */
 #define KEY_TERM_PGDN   0x9A   /* app:    Shift+PgDn -- page scrollback down         */
+#define KEY_SUPER_F     0x9B   /* global: toggle fullscreen on the focused window     */
 
 /* Filled by SYS_FBINFO. On success the GOP framebuffer is mapped into the caller
  * at `vaddr` (32-bit XRGB pixels, `pitch` pixels per scanline) and present=1. On
@@ -165,6 +169,7 @@ struct dirent {
 struct fstat {
     uint32_t type;        /* FT_FILE / FT_DIR */
     uint32_t size;
+    uint32_t owner;       /* owning uid (TOS_UID_* -- fs/perm.h); for lock badges + messages */
 };
 
 /* Per-task layout: each task's address space maps a private data page here.

@@ -54,7 +54,10 @@ int  pty_write(int id, const void *buf, int len); /* SYS_PTY_WRITE: feed the sla
 void pty_close(int id);                     /* SYS_PTY_CLOSE                                      */
 void sysinfo(struct sysinfo *si);           /* SYS_SYSINFO                                        */
 void notify(const char *title, const char *body); /* SYS_NOTIFY: post a desktop notification     */
+void notify_to(const char *title, const char *body, const char *target); /* ...routed to `target` app on click */
 int  wm_poll_notify(struct notif *out);     /* SYS_WM_NOTIFY: compositor dequeues one; 1 if got   */
+int  setuid(int uid);                       /* SYS_SETUID: set/drop the caller's owner uid; 0/-1  */
+int  getuid(void);                          /* SYS_GETUID: the caller's owner uid (0=system,1=user) */
 unsigned kbd_mods(void);                    /* SYS_KBD_MODS: live keyboard modifier bitmask (KMOD_*) */
 int  isatty(void);                          /* SYS_ISATTY: 1 if stdio is a pty                    */
 

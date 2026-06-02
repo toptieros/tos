@@ -69,6 +69,7 @@ static int napps;
 struct icon { char label[24], exec[120]; uint32_t *img; int iw, ih; int cx, cy; uint32_t tint; int special; };
 static struct icon icons[MAXICON];
 static int nicons;
+static int dock_runsep = -1;     /* tile index of the first running-unpinned app (the pinned|running boundary); -1 when no running-unpinned app exists, so no divider is drawn */
 static unsigned dock_sig;        /* signature of the running set; the dock rebuilds when it changes */
 static int dock_x, dock_y, dock_w, dock_h;
 static int dock_y0;              /* dock's shown (base) y; dock_y is the current (animated) y */
@@ -216,6 +217,32 @@ static int streqz(const char *a, const char *b) { while (*a && *a == *b) { a++; 
 static int wth(struct cwin *c) { return c->popup ? 0 : TH; }   /* title-bar height (popups have none) */
 static int owf(struct cwin *c) { return (int)c->w; }
 static int ohf(struct cwin *c) { return wth(c) + (int)c->h; }
+/* A fullscreen window: client fills the whole screen and its title bar becomes a
+ * sliding overlay (see fs_titlebar_y) -- distinct from a floating/maximized-to-work-area
+ * window whose title bar sits at wy. Popups are never fullscreen. */
+static int is_fs(struct cwin *c) { return c->maxed && !c->popup; }
+/* The on-screen client rectangle (where the surface is blitted). Fullscreen owns
+ * the whole screen at (0,0); a normal window's client sits just below its title. */
+static void client_rect(struct cwin *c, int *x, int *y, int *w, int *h) {
+    *w = (int)c->w; *h = (int)c->h;
+    if (is_fs(c)) { *x = 0; *y = 0; }
+    else          { *x = c->wx; *y = c->wy + wth(c); }
+}
+/* The outer rectangle for z-order hit-testing (which window is under the cursor).
+ * Fullscreen: the whole screen (its title bar overlays the client, not above it). */
+static void outer_rect(struct cwin *c, int *x, int *y, int *w, int *h) {
+    if (is_fs(c)) { *x = 0; *y = 0; *w = (int)c->w; *h = (int)c->h; }
+    else          { *x = c->wx; *y = c->wy; *w = owf(c); *h = ohf(c); }
+}
+static int in_client(struct cwin *c, int px, int py) {
+    int x, y, w, h; client_rect(c, &x, &y, &w, &h);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+/* The y of a fullscreen window's sliding title bar, coupled to the menu bar reveal
+ * (bar_y): fully hidden (bar_y=-bar_h) -> -TH (just off the top edge); fully shown
+ * (bar_y=0) -> bar_h (docked right under the menu bar). The menu bar + this title
+ * bar reveal/retract together as one "top group" (design/ui.md). */
+static int fs_titlebar_y(void) { return -TH + (bar_y + bar_h) * (bar_h + TH) / bar_h; }
 static int find(int id) { for (int i = 0; i < MAXW; i++) if (cw[i].used && cw[i].id == id) return i; return -1; }
 static int wslot(void)  { for (int i = 0; i < MAXW; i++) if (!cw[i].used) return i; return -1; }
 static int find_snap(struct wmwin *s, int n, int id) { for (int i = 0; i < n; i++) if (s[i].id == id) return i; return -1; }
@@ -528,6 +555,10 @@ static void draw_dock(void) {
     ugfx_frost(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, TH_DOCK_FROST);  /* frosted-glass panel      */
     ugfx_rrect_border(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, 1, TH_BORDER_DIM);  /* crisp edge     */
     ugfx_fill_a(dock_x + TH_DOCK_RAD, dock_y, dock_w - 2 * TH_DOCK_RAD, 1, TH_DOCK_HI_A);  /* top sheen   */
+    if (dock_runsep >= 1 && dock_runsep < nicons) {  /* faint pinned | running separator in the gap before the first running tile */
+        int sx = (icons[dock_runsep - 1].cx + icons[dock_runsep].cx) / 2;
+        ugfx_fill_a(sx, dock_y + DOCK_PAD + 6, 1, TH_TILE - 12, TH_BORDER);
+    }
     for (int i = 0; i < nicons; i++) draw_tile(&icons[i]);
 }
 
@@ -547,6 +578,23 @@ static void draw_window(int slot) {
         ugfx_shadow(wx, wy + 6, ow, oh, TH_RADIUS, TH_SHADOW_SP, TH_SHADOW, TH_SHADOW_A);
         ugfx_blit_round(wx, wy, (const uint32_t *)c->vaddr, (int)c->w, (int)c->h, (int)c->w, TH_RADIUS);
         ugfx_rrect_border(wx, wy, ow, oh, TH_RADIUS, 1, TH_BORDER);
+        return;
+    }
+    if (is_fs(c)) {                                     /* fullscreen: client fills the screen, title bar slides */
+        ugfx_blit(0, 0, (const uint32_t *)c->vaddr, (int)c->w, (int)c->h, (int)c->w);
+        int ty = fs_titlebar_y();
+        if (ty + TH > 0) {                             /* the sliding title-bar overlay (with traffic lights) */
+            ugfx_fill(0, ty, W, TH, TH_CHROME);
+            ugfx_fill_a(0, ty + TH - 1, W, 1, ARGB(70, 0, 0, 0));
+            int ly = ty + TH / 2, cxc = W - 18, cxx = cxc - 22, cxm = cxx - 22;
+            blit_btn(cxm, ly, foc ? WB_MIN   : WB_INACTIVE);
+            blit_btn(cxx, ly, foc ? WB_MAX   : WB_INACTIVE);
+            blit_btn(cxc, ly, foc ? WB_CLOSE : WB_INACTIVE);
+            int tw = ugfx_text_w(c->title), tx = (W - tw) / 2;
+            if (tx + tw > cxm - WINBTN_W / 2 - 10) tx = cxm - WINBTN_W / 2 - 10 - tw;
+            if (tx < 14) tx = 14;
+            ugfx_text(tx, ty + (TH - fh) / 2, c->title, foc ? TH_TEXT : TH_MUTED, UGFX_TRANSPARENT);
+        }
         return;
     }
     ugfx_shadow(wx, wy + 5, ow, oh, TH_RADIUS, TH_SHADOW_SP, TH_SHADOW, foc ? TH_SHADOW_A : TH_SHADOW_A2);
@@ -587,15 +635,17 @@ static void toggle_max(int slot) {
     if (!c->maxed) {
         c->sx = c->wx; c->sy = c->wy; c->sw = c->w; c->sh = c->h;   /* remember the floating geometry */
         c->maxed = 1;
-        c->wx = 0; c->wy = 0;                           /* fullscreen: fill the screen */
-        int nw = W, nh = H - TH;                        /* client below the window's own title bar */
-        wm_post(c->id, WEV_RESIZE, ((unsigned)nw << 16) | (unsigned)nh);
+        c->wx = 0; c->wy = 0;                           /* fullscreen: client fills the WHOLE screen */
+        wm_post(c->id, WEV_RESIZE, ((unsigned)W << 16) | (unsigned)H);  /* full height; title bar auto-hides */
+        add_dirty(0, 0, W, H);                          /* the bar + dock + whole desktop give way */
     } else {
         c->maxed = 0;
         c->wx = c->sx; c->wy = c->sy;
         wm_post(c->id, WEV_RESIZE, ((unsigned)c->sw << 16) | (unsigned)c->sh);
+        add_dirty(0, 0, W, H);                          /* repaint the desktop/bar/dock around the restored window */
     }
     dirty_win(c);
+    print("[twm] fullscreen "); print(c->title); print(c->maxed ? " 1\r\n" : " 0\r\n");
 }
 
 /* ------------------------------------------------------------ animation */
@@ -900,6 +950,19 @@ static int nc_click_row(int mx, int my) {
     }
     return 0;
 }
+/* The note index under a click in the open center body, or -1. Used to route a
+ * row click to its sender (the row background spans the panel width). */
+static int nc_row_at(int mx, int my) {
+    if (mx < nc_x + NC_PAD - 4 || mx >= nc_x + NC_W - NC_PAD + 4) return -1;
+    int y = nc_y + NC_PAD + fh + 10;
+    for (int k = 0; k < notes_n; k++) {
+        int idx = (notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP;
+        int rh = nc_row_h(idx);
+        if (my >= y - 3 && my < y - 3 + rh - 6) return idx;
+        y += rh;
+    }
+    return -1;
+}
 /* Drain the kernel notification queue: ring-buffer each for the center and start
  * a toast for the newest. Returns 1 if anything arrived (so the loop can repaint). */
 static int poll_notifications(void) {
@@ -1143,6 +1206,7 @@ static void rebuild_dock(void) {
         j = 0;       for (; (ic->exec[j]  = apps[i].exec[j]);  j++) ;
         ic->img = apps[i].img; ic->iw = apps[i].iw; ic->ih = apps[i].ih; ic->special = 0;
     }
+    int pin_end = nicons;                                  /* boundary: tiles [1..pin_end) are pinned, [pin_end..) run */
     for (int w = 0; w < MAXW && nicons < MAXICON; w++) {   /* running, not-yet-shown apps */
         if (!cw[w].used || cw[w].popup) continue;
         int dup = 0;
@@ -1158,6 +1222,7 @@ static void rebuild_dock(void) {
         ic->ih  = ai >= 0 ? apps[ai].ih  : APPICON_SZ;
         ic->special = 0;
     }
+    dock_runsep = (nicons > pin_end) ? pin_end : -1;       /* divider only when >=1 running-unpinned tile exists */
 }
 /* A cheap hash of the running non-popup window set (by id); the dock rebuilds +
  * re-lays-out only when this changes, so layout_dock's serial trace and the
@@ -1192,6 +1257,8 @@ static void layout_dock(void) {
         printc(' '); printu((unsigned)icons[i].cx); printc(' '); printu((unsigned)icons[i].cy);
         print("\r\n");
     }
+    if (dock_runsep >= 1)                            /* the pinned|running boundary, when a running-unpinned app exists */
+        { print("[twm] docksep "); printu((unsigned)dock_runsep); print("\r\n"); }
 }
 
 static void launch(const char *prog) {
@@ -1227,6 +1294,21 @@ static void restore_window(int slot) {
     anim_start(AN_RESTORE, slot, from, to, 12);
 }
 
+/* The three transient launchers (Spotlight, Launchpad, Clipboard) are a
+ * single-instance group: only one may be up at a time, so summoning any one
+ * first closes the others -- you can never have Spotlight floating over the
+ * Launchpad. `except` is the launcher being summoned (left untouched); the rest
+ * get a WEV_CLOSE if they're currently mapped. Called at the top of every
+ * launcher summon path (the three Super hotkeys + the dock Launchpad button). */
+static void dismiss_launchers(const char *except) {
+    static const char *const launchers[] = { "Spotlight", "Launchpad", "Clipboard" };
+    for (int i = 0; i < 3; i++) {
+        if (title_is(except, launchers[i])) continue;
+        int s = find_app_window(launchers[i]);
+        if (s >= 0) wm_post(cw[s].id, WEV_CLOSE, 0);
+    }
+}
+
 /* Single-instance launch: if a window of this app already exists, raise/restore
  * it; otherwise fork+exec the program. A short pending guard keyed on the title
  * stops a second summon (e.g. Super+V pressed twice) from forking a duplicate in
@@ -1243,6 +1325,17 @@ static void summon(const char *title, const char *prog, int frame) {
     launch(prog);
     int i = 0; for (; title[i] && i < 31; i++) pending_title[i] = title[i]; pending_title[i] = 0;
     pending_until = frame + 120;              /* ~1.5s to let the window map */
+}
+
+/* Route a notification click to its sender (design/ui.md): if the target app has
+ * a window, focus it (restoring a minimized one); otherwise launch it from the
+ * app catalog. An empty target is a no-op (notify() with no declared target). */
+static void notif_activate(const char *target, int frame) {
+    if (!target || !target[0]) return;
+    int ws = find_app_window(target);
+    if (ws >= 0) { if (cw[ws].min) restore_window(ws); else focus_window(ws); return; }
+    int ai = app_for_title(target);
+    if (ai >= 0) summon(apps[ai].label, apps[ai].exec, frame);
 }
 
 /* getkey() with a one-byte pushback, so the input loop can peek the byte after an
@@ -1368,20 +1461,34 @@ static void update_chrome(int mx, int my) {
     int auto_bar  = fs || reg_bool("ui.bar.autohide", 0);
     int auto_dock = fs || reg_bool("ui.dock.autohide", 0);
 
+    /* The "top group" = the menu bar, plus (in fullscreen) the focused window's own
+     * title bar sliding right beneath it. They reveal/retract as one band. */
+    int top_band = fs ? bar_h + TH : bar_h;
     int want_bar;
     if (!auto_bar) want_bar = 1;
     else {
-        /* Peek only while the cursor is at the very top edge (then linger briefly).
-         * We deliberately do NOT hold it open while the cursor sits just below the
-         * edge, so a fullscreen window's own title-bar controls (just under the
-         * bar) stay clickable. */
+        /* Top-edge peek arms the reveal; once shown, HOLD it while the cursor stays
+         * anywhere in the revealed band (so you can travel down onto the title bar's
+         * traffic lights). It retracts only when the cursor dives below the band into
+         * the content, after a short linger. */
         if (my < EDGE) bar_linger = HIDE_LINGER;
+        else if (bar_y > -bar_h && my < top_band) bar_linger = HIDE_LINGER;
         else if (bar_linger > 0) bar_linger--;
         want_bar = bar_linger > 0;
     }
     int bt = want_bar ? 0 : -bar_h;
-    if (bar_y < bt)      { bar_y += SLIDE; if (bar_y > bt) bar_y = bt; add_dirty(0, 0, W, bar_h); }
-    else if (bar_y > bt) { bar_y -= SLIDE; if (bar_y < bt) bar_y = bt; add_dirty(0, 0, W, bar_h); }
+    if (bar_y != bt) {
+        if (bar_y < bt) { bar_y += SLIDE; if (bar_y > bt) bar_y = bt; }
+        else            { bar_y -= SLIDE; if (bar_y < bt) bar_y = bt; }
+        add_dirty(0, 0, W, top_band);   /* repaint the moving menu bar + the sliding fullscreen title bar */
+    }
+    {   /* telemetry: the top group reached a rest state while a window is fullscreen */
+        static int last_top = -2;
+        int st = bar_y == 0 ? 1 : (bar_y == -bar_h ? 0 : -1);
+        if (fs) { if (st >= 0 && st != last_top) { last_top = st;
+                    print(st ? "[twm] topbar shown\r\n" : "[twm] topbar hidden\r\n"); } }
+        else last_top = -2;
+    }
 
     int want_dock;
     if (!auto_dock) want_dock = 1;
@@ -1434,11 +1541,13 @@ void _ustart(void) {
     unsigned last_kmods = 0;         /* modifier mask last frame, to detect key-UP transitions */
     int bar_hover = 0;               /* 0 none / 1 logo / 2 app: repaint the bar on hover changes */
     int last_focus = -1;
+    int last_focus_id = -1;          /* focus tracked by id too: a freed slot reused by a new window in the same frame keeps the index but changes id */
     int overlay_on = 0;              /* Launchpad-overlay presence; a full repaint on each edge paints/clears the scrim */
     int drag = -1, drag_dx = 0, drag_dy = 0;
     int rsz = -1, rsz_ox = 0, rsz_oy = 0;
     int cdrag = -1;                  /* a button-held drag inside a window's client area */
     int last_click_icon = -1, last_click_frame = -1000;
+    int last_click_win = -1, last_click_wframe = -1000;   /* double-click a title bar -> toggle fullscreen */
     int hover_id = -1;               /* window currently receiving hover-move events */
     unsigned last_dock_sig = 0;
     struct wmwin snap[MAXW];
@@ -1454,6 +1563,7 @@ void _ustart(void) {
         for (int i = 0; i < MAXW; i++) {                /* windows that went away */
             if (!cw[i].used) continue;
             if (find_snap(snap, n, cw[i].id) < 0) {
+                print("[twm] unmap "); print(cw[i].title); print("\r\n");  /* telemetry: a window went away */
                 dirty_win(&cw[i]);
                 zo_remove(i);
                 cw[i].used = 0;
@@ -1529,12 +1639,12 @@ void _ustart(void) {
         if (pending_until && frame >= pending_until) pending_until = 0;   /* in-flight launch gave up */
         int key, f = focus_slot();
         while ((key = twm_getkey()) >= 0) {
-            if (key == KEY_SUPER_V)     { summon("Clipboard", "clipboard", frame); continue; }  /* clipboard manager */
-            if (key == KEY_SUPER_SPACE) { summon("Spotlight", "spotlight", frame); continue; }  /* Spotlight search  */
+            if (key == KEY_SUPER_V)     { dismiss_launchers("Clipboard"); summon("Clipboard", "clipboard", frame); continue; }  /* clipboard manager */
+            if (key == KEY_SUPER_SPACE) { dismiss_launchers("Spotlight"); summon("Spotlight", "spotlight", frame); continue; }  /* Spotlight search  */
             if (key == KEY_LAUNCHPAD) {                 /* Launchpad: toggle -- a second Super tap dismisses it */
                 int lp = find_app_window("Launchpad");
                 if (lp >= 0) wm_post(cw[lp].id, WEV_CLOSE, 0);
-                else         summon("Launchpad", "launchpad", frame);
+                else { dismiss_launchers("Launchpad"); summon("Launchpad", "launchpad", frame); }
                 continue;
             }
             if (key == KEY_ALT_TAB)     { window_switch(frame, kbd_mods() & KMOD_SHIFT); continue; }  /* switcher */
@@ -1555,6 +1665,7 @@ void _ustart(void) {
             f = focus_slot();                                            /* a chord above may have changed focus */
             if (key == KEY_SUPER_Q)   { if (f >= 0) wm_post(cw[f].id, WEV_CLOSE, 0); continue; }  /* close focused */
             if (key == KEY_SUPER_KILL){ if (f >= 0) wm_kill(cw[f].id);              continue; }  /* force-kill focused process */
+            if (key == KEY_SUPER_F)   { if (f >= 0 && !cw[f].popup) toggle_max(f);  continue; }  /* toggle fullscreen */
             if (key == 27) {
                 /* ESC is ambiguous: a lone Esc dismisses a popup, but it also
                  * leads every CSI/SS3 nav-key sequence (arrows = ESC [ A..D),
@@ -1613,9 +1724,10 @@ void _ustart(void) {
             for (int zi = nz - 1; zi >= 0; zi--) {
                 struct cwin *c = &cw[zo[zi]];
                 if (c->min) continue;
-                int ow = owf(c), oh = ohf(c);
-                if (ms.x < c->wx || ms.x >= c->wx + ow || ms.y < c->wy || ms.y >= c->wy + oh) continue;
-                int rx = ms.x - c->wx, ry = ms.y - c->wy - wth(c); if (ry < 0) ry = 0;
+                int ox, oy, ow, oh; outer_rect(c, &ox, &oy, &ow, &oh);
+                if (ms.x < ox || ms.x >= ox + ow || ms.y < oy || ms.y >= oy + oh) continue;
+                int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                int rx = ms.x - cx, ry = ms.y - cy; if (ry < 0) ry = 0;
                 wm_post(c->id, WEV_SCROLL, WEV_MOUSE_PACK(rx, ry, (unsigned)(ms.wheel & 0xff)));
                 break;
             }
@@ -1683,7 +1795,12 @@ void _ustart(void) {
                     print("[twm] notifcenter clear\r\n");
                 } else if (nc_click_row(ms.x, ms.y)) {            /* a row chevron: expand/collapse, stay open */
                     add_dirty(0, 0, W, bar_h);
-                } else {                                          /* any other click dismisses it */
+                } else {                                          /* any other click closes the center... */
+                    int ri = nc_row_at(ms.x, ms.y);               /* ...routing a row click to its sender first */
+                    if (ri >= 0 && notes[ri].target[0]) {
+                        print("[twm] notif open "); print(notes[ri].target); print("\r\n");
+                        notif_activate(notes[ri].target, frame);
+                    }
                     nc_open = 0;
                     dirty_nc(); add_dirty(0, 0, W, bar_h);
                 }
@@ -1713,6 +1830,10 @@ void _ustart(void) {
                         toast_expanded = !toast_expanded; toast_paused = 1;
                         dirty_toast();
                         print("[twm] toast expand "); printu((unsigned)toast_expanded); print("\r\n");
+                    } else if (toast.target[0]) {                               /* body: open the sender, then dismiss */
+                        print("[twm] notif open "); print(toast.target); print("\r\n");
+                        notif_activate(toast.target, frame);
+                        toast_kill();
                     }
                 }
             }
@@ -1726,7 +1847,7 @@ void _ustart(void) {
                 for (int i = 0; i < nicons; i++) {
                     int x = icons[i].cx - TH_TILE / 2, y = icons[i].cy - TH_TILE / 2;
                     if (ms.x < x || ms.x >= x + TH_TILE || ms.y < y || ms.y >= y + TH_TILE) continue;
-                    if (icons[i].special) { summon("Launchpad", "launchpad", frame); break; }  /* single click */
+                    if (icons[i].special) { dismiss_launchers("Launchpad"); summon("Launchpad", "launchpad", frame); break; }  /* single click */
                     int ws = find_app_window(icons[i].label);
                     if (ws >= 0 && cw[ws].min) {        /* restore a minimized window (animate) */
                         struct rect to   = { cw[ws].wx, cw[ws].wy, owf(&cw[ws]), ohf(&cw[ws]) };
@@ -1747,8 +1868,9 @@ void _ustart(void) {
             }
             for (int zi = nz - 1; zi >= 0 && !handled; zi--) {
                 int slot = zo[zi]; struct cwin *c = &cw[slot];
-                int ow = owf(c), oh = ohf(c);
-                if (ms.x < c->wx || ms.x >= c->wx + ow || ms.y < c->wy || ms.y >= c->wy + oh) continue;
+                int ox, oy, ow, oh; outer_rect(c, &ox, &oy, &ow, &oh);
+                if (ms.x < ox || ms.x >= ox + ow || ms.y < oy || ms.y >= oy + oh) continue;
+                int shiftbit = (kbd_mods() & KMOD_SHIFT) ? WEV_MOUSE_SHIFT : 0;
                 if (focus_slot() != slot) {             /* raise + refocus */
                     int prev = focus_slot();
                     zo_raise(slot);
@@ -1757,9 +1879,36 @@ void _ustart(void) {
                     add_dirty(0, 0, W, bar_h);
                 }
                 if (c->popup) {                         /* no chrome: the whole surface is client */
-                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - c->wy,
-                            (ms.buttons & 1) | (kbd_mods() & KMOD_SHIFT ? WEV_MOUSE_SHIFT : 0)));
+                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - c->wy, (ms.buttons & 1) | shiftbit));
                     cdrag = c->id;                      /* allow drag-select inside the overlay */
+                    handled = 1;
+                    continue;
+                }
+                if (is_fs(c)) {                         /* fullscreen: client fills the screen, title bar slides */
+                    int ty = fs_titlebar_y();
+                    if (ty + TH > 0 && ms.y >= ty && ms.y < ty + TH) {     /* on the revealed title bar */
+                        int ly = ty + TH / 2, dy = ms.y - ly, hit = 9 * 9;
+                        int cxc = W - 18, cxx = cxc - 22, cxm = cxx - 22;
+                        if ((ms.x - cxc) * (ms.x - cxc) + dy * dy <= hit)      wm_post(c->id, WEV_CLOSE, 0);
+                        else if ((ms.x - cxx) * (ms.x - cxx) + dy * dy <= hit) toggle_max(slot);   /* green: restore */
+                        else if ((ms.x - cxm) * (ms.x - cxm) + dy * dy <= hit) {                   /* minimize -> dock */
+                            int ti = dock_tile_for(c->title);
+                            struct rect from = { 0, ty, W, TH };
+                            struct rect to = (ti >= 0)
+                                ? (struct rect){ icons[ti].cx - 18, icons[ti].cy - 14, 36, 28 }
+                                : (struct rect){ dock_x + dock_w / 2 - 18, dock_y, 36, 28 };
+                            dirty_win(c); c->min = 1; zo_remove(slot);
+                            anim_start(AN_MIN, slot, from, to, 12);
+                            add_dirty(0, 0, W, H);
+                        } else {                                                  /* double-click title: restore */
+                            if (last_click_win == slot && frame - last_click_wframe <= DBL_FRAMES)
+                                { toggle_max(slot); last_click_win = -1; }
+                            else { last_click_win = slot; last_click_wframe = frame; }
+                        }
+                    } else {                            /* the full-screen client area */
+                        wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x, ms.y, (ms.buttons & 1) | shiftbit));
+                        cdrag = c->id;
+                    }
                     handled = 1;
                     continue;
                 }
@@ -1778,13 +1927,15 @@ void _ustart(void) {
                     dirty_win(c); c->min = 1; zo_remove(slot);
                     anim_start(AN_MIN, slot, from, to, 12);
                     add_dirty(0, 0, W, bar_h);
-                } else if (!c->maxed && ms.x >= c->wx + ow - GRIP && ms.y >= c->wy + oh - GRIP) {
-                    rsz = c->id; rsz_ox = c->wx; rsz_oy = c->wy;           /* resize grip (off when maxed) */
-                } else if (ms.y < c->wy + TH) {                            /* title bar -> drag */
-                    if (!c->maxed) { drag = c->id; drag_dx = ms.x - c->wx; drag_dy = ms.y - c->wy; }
+                } else if (ms.x >= c->wx + ow - GRIP && ms.y >= c->wy + oh - GRIP) {
+                    rsz = c->id; rsz_ox = c->wx; rsz_oy = c->wy;           /* resize grip */
+                } else if (ms.y < c->wy + TH) {                            /* title bar -> drag, or double-click to fullscreen */
+                    if (last_click_win == slot && frame - last_click_wframe <= DBL_FRAMES)
+                        { toggle_max(slot); last_click_win = -1; }
+                    else { last_click_win = slot; last_click_wframe = frame;
+                           drag = c->id; drag_dx = ms.x - c->wx; drag_dy = ms.y - c->wy; }
                 } else {                                                   /* client -> forward */
-                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - (c->wy + TH),
-                            (ms.buttons & 1) | (kbd_mods() & KMOD_SHIFT ? WEV_MOUSE_SHIFT : 0)));
+                    wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - (c->wy + TH), (ms.buttons & 1) | shiftbit));
                     cdrag = c->id;                                         /* enable drag-select forwarding */
                 }
                 handled = 1;
@@ -1809,10 +1960,10 @@ void _ustart(void) {
             int k = find(cdrag);
             if (k >= 0) {
                 struct cwin *c = &cw[k];
-                int ow = owf(c);
-                int rx = ms.x - c->wx, ry = ms.y - (c->wy + wth(c));
-                if (rx < 0) rx = 0; if (rx >= ow) rx = ow - 1;
-                if (ry < 0) ry = 0; if (ry >= (int)c->h) ry = (int)c->h - 1;
+                int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                int rx = ms.x - cx, ry = ms.y - cy;
+                if (rx < 0) rx = 0; if (rx >= cwd) rx = cwd - 1;
+                if (ry < 0) ry = 0; if (ry >= chd) ry = chd - 1;
                 wm_post(cdrag, WEV_MOUSE, WEV_MOUSE_PACK(rx, ry, (ms.buttons & 1) | WEV_MOUSE_DRAG));
             }
         }
@@ -1861,10 +2012,11 @@ void _ustart(void) {
                 if (!over_dock && !over_bar)
                     for (int zi = nz - 1; zi >= 0; zi--) {       /* topmost window under the pointer */
                         struct cwin *c = &cw[zo[zi]];
-                        int ow = owf(c), oh = ohf(c);
-                        if (ms.x < c->wx || ms.x >= c->wx + ow || ms.y < c->wy || ms.y >= c->wy + oh) continue;
-                        if (!c->min && ms.y >= c->wy + wth(c)) { /* over its client area (below any title) */
-                            hov = c->id; hx = ms.x - c->wx; hy = ms.y - (c->wy + wth(c));
+                        int ox, oy, ow, oh; outer_rect(c, &ox, &oy, &ow, &oh);
+                        if (ms.x < ox || ms.x >= ox + ow || ms.y < oy || ms.y >= oy + oh) continue;
+                        if (!c->min && in_client(c, ms.x, ms.y)) {  /* over its client area (below any title) */
+                            int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                            hov = c->id; hx = ms.x - cx; hy = ms.y - cy;
                         }
                         break;
                     }
@@ -1885,10 +2037,12 @@ void _ustart(void) {
             if (rb && !last_rb) {
                 for (int zi = nz - 1; zi >= 0; zi--) {
                     struct cwin *c = &cw[zo[zi]];
-                    int ow = owf(c), oh = ohf(c);
-                    if (ms.x < c->wx || ms.x >= c->wx + ow || ms.y < c->wy || ms.y >= c->wy + oh) continue;
-                    if (ms.y >= c->wy + wth(c))
-                        wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - c->wx, ms.y - (c->wy + wth(c)), 2));
+                    int ox, oy, ow, oh; outer_rect(c, &ox, &oy, &ow, &oh);
+                    if (ms.x < ox || ms.x >= ox + ow || ms.y < oy || ms.y >= oy + oh) continue;
+                    if (!c->min && in_client(c, ms.x, ms.y)) {
+                        int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                        wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - cx, ms.y - cy, 2));
+                    }
                     break;
                 }
             }
@@ -1910,11 +2064,13 @@ void _ustart(void) {
          * until the cursor's per-move damage paints them in piecemeal. */
         {
             int curf = focus_slot();
-            if (curf != last_focus) {
+            int curid = curf >= 0 ? cw[curf].id : -1;
+            if (curf != last_focus || curid != last_focus_id) {
                 if (last_focus >= 0 && cw[last_focus].used) dirty_win(&cw[last_focus]);
                 if (curf >= 0 && cw[curf].used) dirty_win(&cw[curf]);
                 add_dirty(0, 0, W, bar_h);
                 last_focus = curf;
+                last_focus_id = curid;
                 print("[twm] focus ");                  /* the harness watches this to assert focus moves */
                 print(curf >= 0 ? cw[curf].title : "desktop");
                 print("\r\n");

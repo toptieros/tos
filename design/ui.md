@@ -30,9 +30,20 @@
   Edit / View) — the macOS app-menu model. Right: **status items** (battery/■,
   volume, network later), a **clock**, and a **notifications** bell that opens a
   notification center. The bar is the single source of global actions.
-- **Dock.** Cleaner: pinned apps, a thin separator, then running-but-unpinned
-  apps, with a focus underline and a minimized dot (already partly there). Rounded
-  translucent panel, subtle magnification on hover (optional, later).
+- **Dock.** macOS layout: **Launchpad, then the pinned apps on the left**, then a
+  **thin vertical separator**, then the **running-but-unpinned apps to its right**, with a
+  focus underline and a minimized dot (already partly there). The separator appears **only
+  when ≥1 running-unpinned app exists** (no trailing divider on an all-pinned dock).
+  `rebuild_dock()` already emits the clusters in this order — it just needs to record the
+  boundary (index after the last pinned tile) and the renderer draws a 1px divider there when
+  the running cluster is non-empty. Rounded translucent panel, subtle magnification on hover
+  (optional, later).
+- **Launchers are a single-instance group.** Spotlight (Super+Space), Launchpad (Super tap)
+  and the Clipboard manager (Super+V) are transient, modal-lite launchers — **only one is up
+  at a time.** Summoning any of them first dismisses the others (a `dismiss_launchers(except)`
+  helper at the top of each `summon()`), so you can never have Spotlight floating over
+  Launchpad. Summoning the one that's already open still toggles it closed (current Launchpad
+  behaviour), generalised to all three.
 - **Notifications + widgets.** Apps post a notification (title + body + optional
   icon); twm shows a **toast** top-right that auto-dismisses, and stacks recent
   ones in a **notification center** panel toggled from the bell. Widgets (clock,
@@ -47,29 +58,50 @@ Today "maximize" fills the *work area* (between the bar and dock). The new
 behaviour, macOS-style:
 
 - **Fullscreen** (green button / double-click title): the window takes the **whole
-  screen** — the top bar and dock are **hidden**. Toggle off restores the floating
-  geometry (as today).
-- **Edge reveal.** While anything is fullscreen (or if the user enables global
-  dock/bar auto-hide), the bar and dock auto-hide and **reveal on a screen-edge
-  hover**: cursor within `EDGE` px of the **top** slides the bar down; within
-  `EDGE` px of the **bottom** slides the dock up. They retract when the cursor
-  leaves the revealed strip (after a short `LINGER`). A slide animation, not a
-  pop.
+  screen** — the top bar, the dock, **and the window's own title bar (its close/max/min
+  traffic lights)** are all **hidden**, so the app content fills the entire display. Toggle
+  off restores the floating geometry (as today).
+  - *Today's gap:* `toggle_max()` resizes the maxed client to `W × (H − TH)`, leaving the
+    app's own title bar permanently on-screen in fullscreen — which reads as "strange." The
+    fix: a maxed window's client is **full height (`W × H`)** and its title bar joins the
+    auto-hidden set (it slides up off-screen with the menu bar, not drawn in the work area).
+- **Top reveal = both bars together.** While anything is fullscreen (or global bar
+  auto-hide is on), the menu bar **and** the focused fullscreen window's title bar are one
+  reveal group: a cursor within `EDGE` px of the **top** slides **both** down together (menu
+  bar above, app title bar just below it); the dock reveals independently on a **bottom**
+  edge hover. A slide animation, not a pop.
+- **Hide when leaving the title bar downward.** The top group does **not** retract on any
+  small move — it retracts only when the cursor crosses **out of the title-bar band into the
+  app content** (moving down past the bottom of the app's title bar), after a short `LINGER`.
+  So you can travel from "hover top → menu bar → app title bar → press a traffic light" and
+  the chrome stays; the moment you dive into the content it slides away. (The dock keeps the
+  simple bottom-edge reveal/leave behaviour.)
 
-### State machine (per chrome element: bar, dock)
+### State machine (two reveal groups: the TOP group and the dock)
+
+The **top group** = the menu bar **+** the focused fullscreen window's own title bar (they
+reveal/hide as one). The **dock** is independent.
 
 ```
-HIDDEN  --cursor in edge zone-->  REVEALING --(anim done)--> SHOWN
-SHOWN   --cursor leaves + LINGER ticks--> HIDING --(anim done)--> HIDDEN
+HIDDEN  --cursor in reveal zone-->  REVEALING --(anim done)--> SHOWN
+SHOWN   --cursor leaves hold zone + LINGER ticks--> HIDING --(anim done)--> HIDDEN
 ```
 
-- `auto_hide = fullscreen_active || reg_bool("ui.bar.autohide") (resp. dock)`.
-  When `auto_hide` is false the element is permanently `SHOWN` (current behaviour).
-- `reveal_zone(bar)` = `y < EDGE`; `reveal_zone(dock)` = `y >= H - EDGE`.
-- An element that is `SHOWN` also counts the strip it occupies as its hover zone,
-  so it doesn't retract while the pointer is on it.
-- Animation: lerp an offset (bar slides in `-bar_h..0`, dock slides in
-  `+dock_h..0`) over ~8 frames; the damage rects already drive compositing.
+- `auto_hide(top)  = any_fullscreen() || reg_bool("ui.bar.autohide")`.
+  `auto_hide(dock) = any_fullscreen() || reg_bool("ui.dock.autohide")`.
+  When false the element is permanently `SHOWN` (current behaviour — no regression).
+- **Reveal zone.** top group: `y < EDGE`; dock: `y >= H - EDGE`.
+- **Hold zone** (where `SHOWN` does *not* retract):
+  - top group = the **whole revealed band** it occupies — the menu-bar strip **plus** the
+    app's title-bar strip below it. The cursor leaving *downward into content* (`y` past the
+    bottom of the app title bar) is what starts `HIDING`; horizontal moves within the band
+    keep it shown, so you can reach the traffic lights.
+  - dock = the strip the dock occupies (bottom-edge leave starts `HIDING`).
+- Animation: lerp an offset — the menu bar slides `-bar_h..0`, the app title bar slides with
+  it (its top tracks `bar_bottom`), the dock slides `+dock_h..0` — over ~8 frames; the damage
+  rects already drive compositing. (`bar_linger`/`dock_linger` + `SLIDE`/`HIDE_LINGER` in
+  `twm.c` are the existing knobs; add a `topbar_linger` shared by the menu bar + app title
+  bar, keyed off "cursor below the app title bar.")
 
 ### Compositor changes
 

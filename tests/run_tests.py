@@ -138,6 +138,8 @@ def t_notepad_edit_save(uefi):
         assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
         # a running unpinned app appears as a transient dock tile (issue #3)
         assert t.icon_xy("Notepad"), "running Notepad did not appear in the dock"
+        # ...and the dock draws a pinned|running divider once an unpinned app runs
+        assert t.wait_for("[twm] docksep", 6), "dock did not record a pinned|running divider"
         t.type("notepadworks", delay=0.06)            # into the focused editor
         t.key("ctrl-s", delay=0.1)                    # save
         assert t.wait_for("[notepad] saved /Users/user/untitled.txt (12 bytes)", 8), \
@@ -392,6 +394,46 @@ def t_fs_crud(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_system_ownership(uefi):
+    # tosfs carries a per-entry owner and the desktop session runs as the user
+    # (uid 1), so the system-owned tree can't be modified: the shell's rm reports a
+    # permission denial and the file survives, while a user-owned file still deletes
+    # (we didn't over-lock). (NEXT_STEPS: system ownership #1; design/system-ownership.md.)
+    with Tos(uefi=uefi) as t:
+        assert t.boot_ok(), "shell did not come up"
+        # deleting a system file is refused...
+        t.line("rm /System/etc/motd")
+        assert t.wait_for("permission denied (system file)", 6), "rm of a system file was not refused"
+        # ...and the file is still there
+        t.line("ls /System/etc")
+        assert t.wait_for("motd", 6), "the system file did not survive the refused delete"
+        # a user-owned file in the home dir still creates and deletes normally
+        assert t.line_for("write own.txt", "enter a line"), "write prompt missing"
+        t.line("mineonly"); assert t.wait_for("saved own.txt", 6), "user file did not save"
+        t.line("rm own.txt"); assert t.wait_for("removed own.txt", 6), "a user-owned file failed to delete"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_fullscreen(uefi):
+    # Fullscreen (Super+F) fills the whole screen and auto-hides BOTH the menu bar
+    # and the window's own title bar; a top-edge hover reveals them together as one
+    # group, and diving into the content retracts them. Super+F again restores the
+    # floating window. (NEXT_STEPS: maximize hides both bars + hover-reveal; design/ui.md.)
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        t.key("meta_l-f", delay=0.1)                   # Super+F -> fullscreen
+        assert t.wait_for("[twm] fullscreen Terminal 1", 6), "Super+F did not fullscreen"
+        assert t.wait_for("[twm] topbar hidden", 6), "the top group did not auto-hide in fullscreen"
+        t.mouse_to(400, 1)                             # top-edge hover -> reveal both bars together
+        assert t.wait_for("[twm] topbar shown", 6), "top-edge hover did not reveal the top group"
+        t.mouse_to(400, 320)                           # dive into the content -> retract
+        assert _count_at_least(t, "[twm] topbar hidden", 2, 6), "the top group did not retract on dive into content"
+        t.key("meta_l-f", delay=0.1)                   # Super+F again -> restore
+        assert t.wait_for("[twm] fullscreen Terminal 0", 6), "Super+F did not restore the window"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_window_mgmt(uefi):
     # Compositor window management in one journey: launch a second app from the dock,
     # the clipboard popup opens with Super+V and is single-instance (a second Super+V
@@ -419,6 +461,43 @@ def t_window_mgmt(uefi):
         before = t.serial().count("[twm] focus Terminal")
         t.key("meta_l-q", delay=0.1)
         assert _count_at_least(t, "[twm] focus Terminal", before + 1, 8), "Super+Q did not close the focused window"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_launchers_exclusive(uefi):
+    # The transient launchers (Spotlight / Launchpad / Clipboard) are a single-
+    # instance group: summoning one dismisses the others, so you can never stack
+    # Spotlight over the clipboard. (NEXT_STEPS: launchers mutually exclusive.)
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        t.key("meta_l-v", delay=0.1)                  # Super+V -> Clipboard
+        assert t.wait_for("[clipboard] up", 8), "Super+V did not open the clipboard"
+        assert t.wait_for("[twm] focus Clipboard", 6), "clipboard popup did not focus"
+        t.key("meta_l-spc", delay=0.1)               # Super+Space -> Spotlight
+        assert t.wait_for("[spotlight] up", 8), "Super+Space did not open Spotlight"
+        # summoning Spotlight closed the still-open clipboard (mutual exclusivity)
+        assert t.wait_for("[twm] unmap Clipboard", 6), "Spotlight did not dismiss the open clipboard"
+        assert t.wait_for("[twm] focus Spotlight", 6), "Spotlight did not take focus"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_notif_click_routing(uefi):
+    # A notification declares a target app (notify_to); clicking the toast opens or
+    # focuses that app. Here the shell posts a notification routed to the not-yet-
+    # running Files app; clicking the toast launches it. (NEXT_STEPS: notification
+    # click routing.)
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        t.line("notify Files open the file manager")   # toast titled "Files", routed to Files
+        assert t.wait_for("[twm] toast at", 8), "notify did not raise a toast"
+        m = re.search(r"\[twm\] toast at (\d+) (\d+) (\d+) (\d+)", t.serial())
+        assert m, "toast coordinates not reported"
+        x, y, w, h = (int(g) for g in m.groups())
+        t.click(x + 30, y + h // 2)                    # the toast body, left of the X/chevron
+        assert t.wait_for("[twm] notif open Files", 6), "toast click did not route to its sender"
+        assert t.wait_for("[files] file manager up", 12), "routing did not launch the target app"
+        assert t.wait_for("[twm] focus Files", 8), "target app did not take focus"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -451,10 +530,12 @@ def t_drivers(uefi):
 BIOS_TESTS = [
     # boot + filesystem
     t_boot_and_ls, t_partition, t_fs_crud, t_fs_persist, t_registry, t_many_files,
+    t_system_ownership,
     # processes / scheduler
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
-    t_gui, t_window_mgmt, t_alt_tab, t_notepad_edit_save, t_spotlight,
+    t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
+    t_alt_tab, t_notepad_edit_save, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]

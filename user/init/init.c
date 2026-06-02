@@ -27,6 +27,9 @@ void _ustart(void) {
         shutdown();
     }
     if (pid == 0) {                 /* child becomes the window manager, or the shell if it can't */
+        setuid(1);                  /* drop the whole desktop session to the user (uid 1) so it
+                                     * can't modify /System; init (pid 1) stays system. See
+                                     * design/system-ownership.md (TOS_UID_USER). */
         exec("twm");                /* twm falls back to the shell when there's no framebuffer */
         exec("shell");              /* only reached if twm is missing/unloadable */
         print("[init] FATAL: exec(twm/shell) failed\r\n");
