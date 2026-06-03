@@ -43,6 +43,11 @@ void reboot(void)              { sc(SYS_REBOOT, 0); for (;;) { } }
 int  getkey(void)              { return (int)sc(SYS_GETKEY, 0); }
 int  win_create(struct wininfo *wi) { return (int)sc(SYS_WIN_CREATE, (uint64_t)wi); }
 void win_present(int id)       { sc(SYS_WIN_PRESENT, (uint64_t)id); }
+void win_present_rect(int id, int x, int y, int w, int h) {
+    sc3(SYS_WIN_PRESENT_RECT, (uint64_t)id,
+        ((uint64_t)(x & 0xffff) << 16) | (uint32_t)(y & 0xffff),
+        ((uint64_t)(w & 0xffff) << 16) | (uint32_t)(h & 0xffff));
+}
 int  win_resize(int id, int w, int h) { return (int)sc3(SYS_WIN_RESIZE, (uint64_t)id, (uint64_t)w, (uint64_t)h); }
 int  win_poll(int id, struct winevent *ev) { return (int)sc3(SYS_WIN_POLL, (uint64_t)id, (uint64_t)ev, 0); }
 void win_close(int id)         { sc(SYS_WIN_CLOSE, (uint64_t)id); }

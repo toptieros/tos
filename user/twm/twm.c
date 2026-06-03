@@ -1695,8 +1695,20 @@ void _ustart(void) {
                     if (tch) { dirty_win(&cw[k]); add_dirty(0, 0, W, bar_h); }
                     if (snap[j].seq != cw[k].seq) {     /* the app redrew its surface */
                         cw[k].seq = snap[j].seq;
-                        if (!cw[k].min)                 /* a minimized window is off-screen */
-                            add_dirty(cw[k].wx, cw[k].wy + wth(&cw[k]), (int)cw[k].w, (int)cw[k].h);
+                        if (!cw[k].min) {               /* a minimized window is off-screen */
+                            int sx = cw[k].wx, sy = cw[k].wy + wth(&cw[k]);
+                            int dw = (int)snap[j].dmgw, dh = (int)snap[j].dmgh;
+                            int full = dw <= 0 || dh <= 0 ||                 /* no partial info */
+                                       (snap[j].dmgx == 0 && snap[j].dmgy == 0 &&
+                                        dw >= (int)cw[k].w && dh >= (int)cw[k].h);
+                            if (full) add_dirty(sx, sy, (int)cw[k].w, (int)cw[k].h);
+                            else {                                            /* composite only the damaged sub-rect */
+                                int dx = (int)snap[j].dmgx, dy = (int)snap[j].dmgy;
+                                if (dx + dw > (int)cw[k].w) dw = (int)cw[k].w - dx;
+                                if (dy + dh > (int)cw[k].h) dh = (int)cw[k].h - dy;
+                                if (dw > 0 && dh > 0) add_dirty(sx + dx, sy + dy, dw, dh);
+                            }
+                        }
                     }
                 }
             }

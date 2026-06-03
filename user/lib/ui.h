@@ -391,6 +391,13 @@ public:
     Color     bg;
     Widget   *focus = nullptr;
     bool      running = true, dirty = true;
+    /* Damage tracking: a frame's repaint is either the WHOLE surface (dmg_full) or
+     * the union of the invalidated widget rects (dmg). High-frequency local changes
+     * -- hover state layers, the blinking caret, typing -- invalidate only their
+     * widget's rect so redraw() composites + presents just that region (see
+     * win_present_rect), instead of re-blitting the whole client area every frame. */
+    bool      dmg_full = true;
+    Rect      dmg{0, 0, 0, 0};
     bool      popup = false;        /* WIN_POPUP: borderless centred overlay (set before create()) */
     bool      overlay = false;      /* WIN_OVERLAY: drawn above the dock with a dim scrim (Launchpad) */
     unsigned  ticks = 0;
@@ -398,7 +405,19 @@ public:
     Window();
     bool create(int w, int h, const char *title);
     void add(Widget *c);
-    void invalidate() { dirty = true; }
+    void invalidate() { dirty = true; dmg_full = true; }     /* repaint the whole surface */
+    /* Repaint only this rect (unioned with any other partial damage this frame).
+     * A bare invalidate() anywhere in the frame promotes it to a full repaint. */
+    void invalidate(int x, int y, int w, int h) {
+        dirty = true;
+        if (dmg_full) return;
+        if (dmg.w == 0 || dmg.h == 0) { dmg = { x, y, w, h }; return; }
+        int x0 = dmg.x, y0 = dmg.y, x1 = dmg.x + dmg.w, y1 = dmg.y + dmg.h;
+        if (x < x0) x0 = x; if (y < y0) y0 = y;
+        if (x + w > x1) x1 = x + w; if (y + h > y1) y1 = y + h;
+        dmg = { x0, y0, x1 - x0, y1 - y0 };
+    }
+    void invalidate(const Rect &rc) { invalidate(rc.x, rc.y, rc.w, rc.h); }
     int  run();                                 /* event loop until closed */
 
     virtual void on_resize(int nw, int nh) { (void)nw; (void)nh; }

@@ -39,6 +39,7 @@ void reboot(void) __attribute__((noreturn));/* SYS_REBOOT: reset the machine    
 int  getkey(void);                          /* SYS_GETKEY: next input byte, or -1 (non-blocking) */
 int  win_create(struct wininfo *wi);        /* SYS_WIN_CREATE: window + shared surface -> id     */
 void win_present(int id);                   /* SYS_WIN_PRESENT: surface updated                  */
+void win_present_rect(int id, int x, int y, int w, int h);  /* SYS_WIN_PRESENT_RECT: present a damage rect */
 int  win_resize(int id, int w, int h);      /* SYS_WIN_RESIZE: resize own surface                */
 int  win_poll(int id, struct winevent *ev); /* SYS_WIN_POLL: 1 if an event was dequeued          */
 void win_close(int id);                     /* SYS_WIN_CLOSE                                      */

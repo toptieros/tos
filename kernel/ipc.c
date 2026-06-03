@@ -131,6 +131,7 @@ struct window {
     uint64_t old_phys;                    /* a resize left these old frames to free (in comp ctx) */
     int      old_nf;
     uint32_t flags;                       /* WIN_* the app created the window with */
+    uint32_t dmgx, dmgy, dmgw, dmgh;      /* damage rect since the last snapshot (dmgw==0 = none) */
     char     title[32];
     struct winmenu menu;                  /* app-declared menu bar (nmenus==0 = none) */
     volatile int eh, et;                  /* input event ring (compositor -> app) */
@@ -166,6 +167,7 @@ int win_create(struct wininfo *wi) {
     win->comp_nf = 0; win->old_phys = 0; win->old_nf = 0;
     win->eh = win->et = 0;
     win->flags = wi->flags;
+    win->dmgx = win->dmgy = win->dmgw = win->dmgh = 0;   /* compositor full-paints a new window */
     win->menu.nmenus = 0;                 /* no app menu until SYS_WIN_SETMENU */
     copy_title(win->title, wi->title);
     uint64_t v = vmm_map_surface(vmm_current_pml4(), id, phys, nframes);   /* into the app */
@@ -179,7 +181,43 @@ int win_create(struct wininfo *wi) {
 int win_present(int id) {
     if (id < 0 || id >= MAX_WINDOWS) return -1;
     uint64_t f = spin_lock_irqsave(&ipc_lock);
-    if (wins[id].state == W_ALIVE && wins[id].owner == sched_current()) wins[id].seq++;
+    struct window *win = &wins[id];
+    if (win->state == W_ALIVE && win->owner == sched_current()) {
+        win->dmgx = 0; win->dmgy = 0; win->dmgw = win->w; win->dmgh = win->h;   /* whole surface */
+        win->seq++;
+    }
+    spin_unlock_irqrestore(&ipc_lock, f);
+    return 0;
+}
+/* Present only a damage rect (surface-relative). Repeated calls before the
+ * compositor snapshots union into one rect, clamped to the surface; the
+ * compositor then composites just that region (see wm_windows). */
+int win_present_rect(int id, int x, int y, int w, int h) {
+    if (id < 0 || id >= MAX_WINDOWS) return -1;
+    uint64_t f = spin_lock_irqsave(&ipc_lock);
+    struct window *win = &wins[id];
+    if (win->state == W_ALIVE && win->owner == sched_current()) {
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (x > (int)win->w) x = (int)win->w;
+        if (y > (int)win->h) y = (int)win->h;
+        if (x + w > (int)win->w) w = (int)win->w - x;
+        if (y + h > (int)win->h) h = (int)win->h - y;
+        if (w > 0 && h > 0) {
+            if (win->dmgw == 0 || win->dmgh == 0) {                 /* first damage this frame */
+                win->dmgx = (uint32_t)x; win->dmgy = (uint32_t)y;
+                win->dmgw = (uint32_t)w; win->dmgh = (uint32_t)h;
+            } else {                                                /* union with the pending rect */
+                int x0 = (int)win->dmgx, y0 = (int)win->dmgy;
+                int x1 = x0 + (int)win->dmgw, y1 = y0 + (int)win->dmgh;
+                if (x < x0) x0 = x; if (y < y0) y0 = y;
+                if (x + w > x1) x1 = x + w; if (y + h > y1) y1 = y + h;
+                win->dmgx = (uint32_t)x0; win->dmgy = (uint32_t)y0;
+                win->dmgw = (uint32_t)(x1 - x0); win->dmgh = (uint32_t)(y1 - y0);
+            }
+        }
+        win->seq++;
+    }
     spin_unlock_irqrestore(&ipc_lock, f);
     return 0;
 }
@@ -212,6 +250,7 @@ int win_resize(int id, int w, int h) {
     win->phys = newphys; win->nframes = newn;
     win->w = (uint32_t)w; win->h = (uint32_t)h;
     win->comp_vaddr = 0;                               /* force the compositor to remap */
+    win->dmgx = 0; win->dmgy = 0; win->dmgw = (uint32_t)w; win->dmgh = (uint32_t)h;  /* repaint whole new surface */
     win->seq++;
     spin_unlock_irqrestore(&ipc_lock, f);
     return 0;
@@ -282,6 +321,9 @@ int wm_windows(struct wmwin *buf, int max) {
         buf[n].id = i; buf[n].w = win->w; buf[n].h = win->h;
         buf[n].vaddr = win->comp_vaddr; buf[n].seq = (uint32_t)win->seq;
         buf[n].flags = win->flags;
+        buf[n].dmgx = win->dmgx; buf[n].dmgy = win->dmgy;
+        buf[n].dmgw = win->dmgw; buf[n].dmgh = win->dmgh;
+        win->dmgw = 0; win->dmgh = 0;            /* consumed: the compositor reads it once per change */
         copy_title(buf[n].title, win->title);
         n++;
     }

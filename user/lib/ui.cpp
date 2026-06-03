@@ -240,7 +240,9 @@ void TextField::ensure(int need) {
     buf = (char *)realloc(buf, (size_t)nc);
     cap = nc;
 }
-void TextField::changed() { if (on_change) on_change(ctx); if (win) win->invalidate(); }
+/* repaint just this field (typing is the hottest path); on_change may invalidate
+ * more (e.g. notepad's tab dirty-dot), which a full invalidate() there promotes. */
+void TextField::changed() { if (on_change) on_change(ctx); if (win) win->invalidate(r.x, r.y, r.w, r.h); }
 void TextField::set_text(const char *s) {
     len = 0; for (const char *p = s; p && *p; p++) len++;
     ensure(len + 1);
@@ -502,12 +504,34 @@ void Window::add(Widget *c) {
     kids.push(c);
     if (!focus) focus = c;
 }
+static bool rect_overlap(const Rect &a, const Rect &b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
 void Window::redraw() {
     ugfx_set_target(surf, w, h, w);
-    ugfx_clip_none();
-    ugfx_clear(bg);
-    for (int i = 0; i < kids.size(); i++) if (kids[i]->visible) kids[i]->draw();
-    win_present(id);
+    Rect c = dmg;
+    bool partial = !dmg_full && c.w > 0 && c.h > 0;
+    if (partial) {                                  /* clamp the damage rect to the surface */
+        if (c.x < 0) { c.w += c.x; c.x = 0; }
+        if (c.y < 0) { c.h += c.y; c.y = 0; }
+        if (c.x + c.w > w) c.w = w - c.x;
+        if (c.y + c.h > h) c.h = h - c.y;
+        if (c.w <= 0 || c.h <= 0) partial = false;
+    }
+    if (partial) {
+        ugfx_set_clip(c.x, c.y, c.w, c.h);
+        ugfx_fill(c.x, c.y, c.w, c.h, bg);          /* repaint just the dirty band */
+        for (int i = 0; i < kids.size(); i++)
+            if (kids[i]->visible && rect_overlap(kids[i]->r, c)) kids[i]->draw();
+        ugfx_clip_none();
+        win_present_rect(id, c.x, c.y, c.w, c.h);   /* compositor blits only this rect */
+    } else {
+        ugfx_clip_none();
+        ugfx_clear(bg);
+        for (int i = 0; i < kids.size(); i++) if (kids[i]->visible) kids[i]->draw();
+        win_present(id);
+    }
+    dmg_full = false; dmg = { 0, 0, 0, 0 };         /* start a fresh accumulation next frame */
 }
 void Window::dispatch_mouse(int x, int y, int btn) {
     if (btn & 2) { on_context(x, y); dirty = true; return; }   /* right-click -> context menu */
@@ -532,12 +556,11 @@ void Window::dispatch_hover(int x, int y) {
             if (c->visible && c->r.has(x, y)) { t = c; break; }
         }
     if (t != hot) {
-        if (hot) hot->on_leave();
+        if (hot) { hot->on_leave(); invalidate(hot->r); }    /* clear the old widget's hover layer */
         hot = t;
-        if (hot) hot->hovered = true;
-        dirty = true;
+        if (hot) { hot->hovered = true; invalidate(hot->r); }
     }
-    if (hot && hot->on_hover(x, y)) dirty = true;             /* sub-element hover (rows) */
+    if (hot && hot->on_hover(x, y)) invalidate(hot->r);      /* sub-element hover (rows / tabs) */
 }
 void Window::dispatch_scroll(int x, int y, int delta) {
     for (int i = kids.size() - 1; i >= 0; i--) {              /* topmost widget under the cursor */
@@ -1074,7 +1097,7 @@ int Window::run() {
         ticks++;
         on_tick(ticks);                       /* periodic app work (e.g. Notepad session autosave) */
         if (focus && focus->shows_caret() && (ticks % TF_BLINK) == 0)
-            dirty = true;                 /* pulse a repaint so the caret keeps blinking while idle */
+            invalidate(focus->r);         /* pulse a repaint (focused field only) so the caret blinks */
         if (dirty) { redraw(); dirty = false; }
         sleep_ms(15);
     }

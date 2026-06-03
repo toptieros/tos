@@ -26,6 +26,7 @@ void pty_out_write(int tty, const char *s);
 /* --- windows / compositor ------------------------------------------------- */
 int  win_create(struct wininfo *wi);              /* app: window + shared surface  */
 int  win_present(int id);                         /* mark the surface updated      */
+int  win_present_rect(int id, int x, int y, int w, int h);  /* present only a damage rect */
 int  win_resize(int id, int w, int h);            /* app: resize its own surface   */
 int  win_poll_event(int id, struct winevent *ev); /* 1 if dequeued, else 0         */
 int  win_close(int id);

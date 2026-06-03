@@ -34,7 +34,8 @@ enum { PEND_NONE, PEND_QUIT, PEND_CLOSE };  /* what to do after the unsaved-chan
  * here so a relaunch restores the whole session -- even notes never explicitly
  * saved (Windows-Notepad-style draft restore). */
 #define NP_CACHE "/Users/user/.cache/notepad"
-#define NP_AUTOSAVE_TICKS 120              /* ~1.8 s between drafts (loop ticks ~15 ms) */
+#define NP_IDLE_TICKS     40               /* flush a draft after ~0.6 s without an edit */
+#define NP_AUTOSAVE_TICKS 200              /* ...but force one at least this often while typing */
 
 static void np_tabpath(char *out, int cap, int i) { snprintf(out, cap, "%s/tab%d", NP_CACHE, i); }
 /* parse a leading (optionally signed) int from *pp, skipping leading blanks, and
@@ -92,8 +93,9 @@ struct Notepad : ui::Window {
     bool          show_status = true;   /* View > Status Bar toggle (#6 checkable menu) */
     bool          loading = false;      /* inside set_text(): don't mark the tab dirty   */
     int           pending = PEND_NONE, pending_tab = -1;  /* deferred action awaiting the guard */
+    int           close_after_pick = -1;  /* tab to close once a Save-As picker succeeds (-1 none) */
     unsigned      untitled_seq = 0;     /* disambiguates "untitled", "untitled 2" ...     */
-    unsigned      last_autosave = 0, autosave_n = 0;
+    unsigned      last_autosave = 0, autosave_n = 0, last_edit = 0;
     bool          session_changed = false;   /* the session differs from the last draft on disk */
 
     /* -------------------------------------------------------------- layout */
@@ -190,18 +192,33 @@ struct Notepad : ui::Window {
     }
 
     /* ------------------------------------------------------------- saving */
-    void save() {                                   /* ^S / File > Save: write the active tab */
-        char path[256]; resolve_path(path, sizeof path, cur().name);
-        const char *body = editor.text(); int n = (int)strlen(body);
-        if (sys_spit(path, body, n) >= 0) {
-            int i = 0; for (; path[i] && i < (int)sizeof cur().name - 1; i++) cur().name[i] = path[i]; cur().name[i] = 0;
-            cur().named = true; cur().dirty = false; session_changed = true;
-            char msg[96]; snprintf(msg, sizeof msg, "Saved %s", basename_of(path)); set_status(msg);
-            print("[notepad] saved "); print(path); print(" ("); printu((unsigned)n); print(" bytes)\r\n");
-        } else {
-            set_status("Save failed");
+    /* Write tab `i` to disk. The active tab's live body comes from the editor; an
+     * inactive tab's from its snapshot (kept current by sync_active() on switch).
+     * Updates the tab's name to the resolved path and clears its dirty flag. */
+    bool save_tab(int i) {
+        if (i < 0 || i >= ntabs) return false;
+        char path[256]; resolve_path(path, sizeof path, tabs[i].name);
+        const char *body = (i == active) ? editor.text() : (tabs[i].text ? tabs[i].text : "");
+        int n = (int)strlen(body);
+        if (sys_spit(path, body, n) < 0) {
             print("[notepad] save failed: "); print(path); print("\r\n");
+            return false;
         }
+        int k = 0; for (; path[k] && k < (int)sizeof tabs[i].name - 1; k++) tabs[i].name[k] = path[k]; tabs[i].name[k] = 0;
+        tabs[i].named = true; tabs[i].dirty = false; session_changed = true;
+        print("[notepad] saved "); print(path); print(" ("); printu((unsigned)n); print(" bytes)\r\n");
+        return true;
+    }
+    void save() {                                   /* ^S / File > Save: write the active tab */
+        if (save_tab(active)) { char msg[96]; snprintf(msg, sizeof msg, "Saved %s", basename_of(cur().name)); set_status(msg); }
+        else                  set_status("Save failed");
+        invalidate();
+    }
+    /* Quit-time Save: persist EVERY unsaved tab, not just the visible one (closing
+     * the window with a dirty background tab used to silently drop it). */
+    void save_all_dirty() {
+        sync_active();                              /* snapshot the active tab too */
+        for (int i = 0; i < ntabs; i++) if (tabs[i].dirty) save_tab(i);
         invalidate();
     }
     /* Open / Save As via the reusable file picker (#4), both rooted at ~/Documents. */
@@ -282,26 +299,37 @@ struct Notepad : ui::Window {
         printf("[notepad] restored %d tabs active %d\r\n", ntabs, active);
         return true;
     }
-    /* periodic draft flush -- only when the session actually changed since last time */
+    /* periodic draft flush. Debounced so a disk write never stalls active typing:
+     * flush once the user has paused (NP_IDLE_TICKS since the last edit), or -- as a
+     * backstop during nonstop typing -- once NP_AUTOSAVE_TICKS have elapsed. */
     void on_tick(unsigned t) override {
-        if (ntabs == 0 || t - last_autosave < NP_AUTOSAVE_TICKS) return;
+        if (ntabs == 0 || !session_changed) return;
+        bool idle   = (t - last_edit)     >= NP_IDLE_TICKS;
+        bool forced = (t - last_autosave) >= NP_AUTOSAVE_TICKS;
+        if (!idle && !forced) return;
         last_autosave = t;
-        if (!session_changed) return;
         session_changed = false;
         autosave();
     }
 
     /* ----------------------------------------------------- unsaved guard */
-    void ask_save() { confirm.show("Save changes?", "This note has unsaved changes.", "Save", "Discard", "Cancel"); }
-    /* guard answer: 0 = Save, 1 = Discard, 2/-1 = Cancel. Save writes first, then
-     * (Save or Discard) performs the deferred Close / Quit. */
+    void ask_save() {
+        bool quit = (pending == PEND_QUIT);          /* quit may abandon several tabs */
+        confirm.show("Save changes?",
+                     quit ? "You have unsaved changes." : "This note has unsaved changes.",
+                     "Save", "Discard", "Cancel");
+    }
+    /* guard answer: 0 = Save, 1 = Discard, 2/-1 = Cancel. On Quit, Save persists
+     * every dirty tab; on Close, Save persists just the tab being closed. */
     void resolve_guard(int idx) {
         int act = pending, pt = pending_tab; pending = PEND_NONE; pending_tab = -1;
         if (idx == 2 || idx < 0) return;            /* Cancel: stay put */
-        if (idx == 0) save();
-        if (act == PEND_QUIT)  { running = false; }
-        else if (act == PEND_CLOSE) {
-            if (idx == 1) tabs[pt < ntabs ? pt : active].dirty = false;  /* Discard: drop edits so do_close won't re-guard */
+        if (act == PEND_QUIT) {
+            if (idx == 0) save_all_dirty();          /* Save: persist every unsaved tab */
+            running = false;
+        } else if (act == PEND_CLOSE) {
+            if (idx == 0) save_tab(pt);              /* Save just this tab            */
+            else if (idx == 1 && pt >= 0 && pt < ntabs) tabs[pt].dirty = false;  /* Discard: drop edits */
             do_close(pt);
         }
     }
@@ -352,7 +380,7 @@ struct Notepad : ui::Window {
         editor.on_change = [](void *c) {
             Notepad *n = (Notepad *)c;
             if (n->loading || n->active < 0 || n->active >= n->ntabs) return;
-            n->session_changed = true;
+            n->session_changed = true; n->last_edit = n->ticks;   /* debounce the draft flush */
             if (!n->tabs[n->active].dirty) { n->tabs[n->active].dirty = true; n->invalidate(); }
         };
         confirm.ctx = this;

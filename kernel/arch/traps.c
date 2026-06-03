@@ -195,6 +195,12 @@ static struct regs *syscall_dispatch(struct regs *r) {
     case SYS_WIN_PRESENT:
         r->rax = (uint64_t)(int64_t)win_present((int)arg);
         return r;
+    case SYS_WIN_PRESENT_RECT: {
+        int xy = (int)r->rsi, wh = (int)r->rdx;       /* packed 16:16 x|y, w|h */
+        r->rax = (uint64_t)(int64_t)win_present_rect((int)r->rdi,
+                     (xy >> 16) & 0xffff, xy & 0xffff, (wh >> 16) & 0xffff, wh & 0xffff);
+        return r;
+    }
     case SYS_WIN_POLL:
         BUF(r->rsi, sizeof(struct winevent));
         r->rax = (uint64_t)(int64_t)win_poll_event((int)r->rdi, (struct winevent *)r->rsi);

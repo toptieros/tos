@@ -80,6 +80,7 @@
 #define SYS_GETUID      63 /* ()                 -> the caller's owner uid (TOS_UID_*)         */
 #define SYS_WIN_SETMENU 64 /* (id, struct winmenu*) -> app declares its menu bar; 0/-1        */
 #define SYS_WM_GETMENU  65 /* (id, struct winmenu*) -> compositor reads a window's menu; 1/0   */
+#define SYS_WIN_PRESENT_RECT 66 /* (id, xy, wh) -> present only a damage rect (packed 16:16)   */
 
 /* Keyboard modifier bitmask (SYS_KBD_MODS, and packed into WEV_KEY -- see below). */
 #define KMOD_SHIFT 1
@@ -245,6 +246,12 @@ struct wmwin {                /* SYS_WM_WINDOWS snapshot entry (compositor side)
     uint32_t seq;             /* present sequence; changes when the app draws      */
     char     title[32];
     uint32_t flags;           /* WIN_* the app created the window with              */
+    /* Damage rect (surface-relative) accumulated since the last snapshot: the only
+     * region the app repainted this present. dmgw==0 ⇒ no partial info (treat as the
+     * whole surface). The compositor composites just this rect instead of the whole
+     * client area, so high-frequency partial repaints (hover, caret, typing) are
+     * cheap. Reset by the kernel each snapshot. */
+    uint32_t dmgx, dmgy, dmgw, dmgh;
 };
 
 /* An app's menu bar (SYS_WIN_SETMENU): a handful of top-level menus (File / Edit /
