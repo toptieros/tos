@@ -10,6 +10,7 @@ import time
 from harness import Tos
 
 PERSIST_IMG = "/tmp/tos_persist_fs.img"
+SESSION_IMG = "/tmp/tos_session_fs.img"
 
 
 # --- individual tests (raise AssertionError on failure) -------------------
@@ -205,30 +206,28 @@ def _notepad_file_menu(t, idx):
     t.click(mx + 20, ry + idx * row + row // 2)
 
 
-def _notepad_file_new(t, wx, wy):
-    """Open Notepad's File menu and click New (item 0)."""
-    _notepad_file_menu(t, 0)
-
-
 def t_notepad_guard(uefi):
-    # Unsaved-changes guard (#5): New on a dirty buffer no longer silently nukes it.
-    # It raises a modal ConfirmDialog (Save / Discard / Cancel). We exercise both the
-    # Discard path (click the button) and the Save path (Enter = the primary button,
-    # which writes before resetting). New is triggered via File > New (a click).
+    # Unsaved-changes guard (#5), now on tab/window CLOSE -- File > New just opens a
+    # fresh tab (no data loss, no guard). Closing a dirty tab (File > Close Tab,
+    # item 4) raises the modal ConfirmDialog (Save / Discard / Cancel). We open two
+    # dirty tabs (so closing one leaves the window alive) and exercise both the
+    # Discard (click) and Save (Enter) paths; the Save path writes before closing.
     with Tos(uefi=uefi) as t:
         assert t.open_terminal(), "desktop/terminal did not come up"
         t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
         t.type("note", delay=0.06); t.key("ret", delay=0.1)
         assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
         assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
-        wr = t.win_rect("Notepad")
-        assert wr, "Notepad window rect not reported"
+        wr = t.win_rect("Notepad"); assert wr, "Notepad window rect not reported"
         wx, wy = wr[0], wr[1]
-        # --- Discard path: type, File > New, click Discard -> buffer cleared ---
+        # tab 0 = "keepme"; File > New opens a second tab (no guard) ...
         t.type("keepme", delay=0.05)
-        _notepad_file_new(t, wx, wy)
-        assert t.wait_for("[notepad] menu 0 0", 6), "File > New was not delivered"
-        assert t.wait_for("[notepad] guard new", 8), "New on a dirty buffer did not raise the guard"
+        _notepad_file_menu(t, 0)                          # File > New -> a fresh tab
+        assert t.wait_for("[notepad] newtab 1/2", 8), "File > New did not open a second tab"
+        t.type("savedtext", delay=0.05)                   # tab 1 = "savedtext" (also dirty)
+        # --- Discard path: Close Tab on the dirty active tab 1, click Discard ---
+        _notepad_file_menu(t, 4)                          # File > Close Tab
+        assert t.wait_for("[notepad] guard close 1", 8), "closing a dirty tab did not raise the guard"
         d = None
         for _ in range(40):
             d = re.search(r"\[ui\] dlgbtn 1 (\d+) (\d+)", t.serial())   # button 1 = Discard
@@ -238,22 +237,19 @@ def t_notepad_guard(uefi):
         assert d, "the guard's Discard button position was not reported"
         t.click(wx + int(d.group(1)), wy + int(d.group(2)))
         assert t.wait_for("[ui] confirm 1", 6), "clicking Discard did not register"
-        assert t.wait_for("[notepad] reset", 6), "Discard did not reset the note"
-        t.key("ctrl-s", delay=0.12)
-        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (0 bytes)", 8), \
-            "the buffer was not actually discarded (expected an empty save)"
-        # --- Save path: type new text, File > New, Enter (primary=Save) -> saved then reset ---
-        t.type("savedtext", delay=0.05)
-        _notepad_file_new(t, wx, wy)
-        assert t.wait_for("[notepad] guard new", 8), "second guard did not appear"
-        t.key("ret", delay=0.12)                      # Enter = the primary (Save) button
+        assert t.wait_for("[notepad] closetab 0/1", 6), "Discard did not close the tab (tab 0 should remain)"
+        # --- Save path: Close Tab on the remaining dirty tab 0, Enter = Save ---
+        _notepad_file_menu(t, 4)                          # File > Close Tab (the last tab)
+        assert t.wait_for("[notepad] guard close 0", 8), "closing the last dirty tab did not raise the guard"
+        t.key("ret", delay=0.12)                          # Enter = the primary (Save) button
         assert t.wait_for("[ui] confirm 0", 6), "Enter did not choose the primary (Save) button"
-        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (9 bytes)", 8), \
-            "Save path did not write the buffer before resetting"
+        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (6 bytes)", 8), \
+            "Save path did not write the tab before closing"
+        # the note persisted to disk (read it back from the terminal)
         t.key("alt-tab", delay=0.1)
         assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
         t.line("cat Documents/untitled.txt")
-        assert t.wait_for("savedtext", 6), "the Save-then-New path did not persist the text"
+        assert t.wait_for("keepme", 6), "the Save-then-Close path did not persist the text"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -269,6 +265,8 @@ def t_file_dialog(uefi):
         t.type("note", delay=0.06); t.key("ret", delay=0.1)
         assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
         assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        wr = t.win_rect("Notepad"); assert wr, "Notepad window rect not reported"
+        wx, wy = wr[0], wr[1]
         t.type("viapicker", delay=0.05)                  # 9 bytes into the editor
         _notepad_file_menu(t, 3)                          # File > Save As...
         assert t.wait_for("[notepad] menu 0 3", 6), "File > Save As was not delivered"
@@ -281,11 +279,66 @@ def t_file_dialog(uefi):
             "the picker did not report the chosen path"
         assert t.wait_for("[notepad] saved /Users/user/Documents/picked.txt (9 bytes)", 8), \
             "Notepad did not save to the picked path"
-        # prove it persisted: read it back through the terminal (shell cwd is ~)
+        # --- overwrite -> Keep Both: Save As the same name, then dedupe to "picked (2).txt" ---
+        _notepad_file_menu(t, 3)                          # File > Save As... again
+        time.sleep(0.6)                                   # let the picker open + grab focus (same name pre-filled)
+        t.key("ret", delay=0.15)                          # Enter on "picked.txt" -> the file exists
+        d = None
+        for _ in range(40):
+            d = re.search(r"\[ui\] dlgbtn 1 (\d+) (\d+)", t.serial())   # button 1 = Keep Both
+            if d:
+                break
+            time.sleep(0.1)
+        assert d, "the overwrite warning's Keep Both button was not reported"
+        t.click(wx + int(d.group(1)), wy + int(d.group(2)))
+        assert t.wait_for("[ui] confirm 1", 6), "clicking Keep Both did not register"
+        assert t.wait_for("[filedialog] pick /Users/user/Documents/picked (2).txt", 8), \
+            "Keep Both did not dedupe the colliding name"
+        assert t.wait_for("[notepad] saved /Users/user/Documents/picked (2).txt (9 bytes)", 8), \
+            "Notepad did not save the deduped file"
+        # prove both persisted: read picked.txt back + list the deduped sibling
         t.key("alt-tab", delay=0.1)
         assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
         t.line("cat Documents/picked.txt")
         assert t.wait_for("viapicker", 6), "the picker-saved note was not readable from the filesystem"
+        t.line("ls Documents")
+        assert t.wait_for("picked (2).txt", 6), "the Keep Both dedupe did not land on disk"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_notepad_session(uefi):
+    # Session autosave + restore (#5): Notepad periodically drafts every open tab +
+    # the session layout to ~/.cache/notepad, so a relaunch restores the whole
+    # session -- even notes never explicitly saved. Boot 1 opens two unsaved tabs and
+    # waits for a draft; boot 2 (same disk) relaunches Notepad and must rebuild both
+    # tabs from the drafts. The restore markers carry each tab's loaded byte count, so
+    # they prove the content (not just the layout) came back.
+    with Tos(uefi=uefi, scratch=SESSION_IMG, reuse=False) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up (boot 1)"
+        t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06); t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch (boot 1)"
+        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        t.type("restoreme", delay=0.05)                   # tab 0 (9 bytes), never saved
+        _notepad_file_menu(t, 0)                           # File > New -> tab 1
+        assert t.wait_for("[notepad] newtab 1/2", 8), "second tab did not open"
+        t.type("second tab", delay=0.04)                  # tab 1 (10 bytes), never saved
+        # wait for a draft written AFTER the last edit (count must strictly increase)
+        c0 = t.serial().count("[notepad] autosave")
+        assert _count_at_least(t, "[notepad] autosave", c0 + 1, timeout=10), \
+            "Notepad did not autosave a draft of the session"
+        t.key("alt-tab", delay=0.1)
+        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
+        t.line("poweroff"); assert t.wait_for("shutdown requested", 5), "did not shut down (boot 1)"
+    # Boot 2 on the SAME disk: relaunch Notepad; it must restore both tabs from drafts.
+    with Tos(uefi=uefi, scratch=SESSION_IMG, reuse=True) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up (boot 2)"
+        t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06); t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch (boot 2)"
+        assert t.wait_for("[notepad] restored 2 tabs active 1", 10), "Notepad did not restore the session"
+        assert t.wait_for("[notepad] restored tab 0 9 untitled.txt", 4), "tab 0 content was not restored"
+        assert t.wait_for("[notepad] restored tab 1 10 untitled 2.txt", 4), "tab 1 content was not restored"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -765,7 +818,7 @@ BIOS_TESTS = [
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
     t_app_menu, t_files_menu, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
-    t_notepad_guard, t_file_dialog, t_spotlight,
+    t_notepad_guard, t_file_dialog, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]

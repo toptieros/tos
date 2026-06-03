@@ -402,6 +402,10 @@ public:
     int  run();                                 /* event loop until closed */
 
     virtual void on_resize(int nw, int nh) { (void)nw; (void)nh; }
+    /* Called once per event-loop iteration with the running tick count (the loop
+     * sleeps ~15 ms between ticks). Default no-op; apps override for periodic work
+     * like Notepad's session autosave. Keep it cheap -- it runs every frame. */
+    virtual void on_tick(unsigned t) { (void)t; }
     /* The compositor's close button (WEV_CLOSE). Return true to let the window close
      * (the default); return false to veto it -- e.g. raise an unsaved-changes guard
      * first and close later by clearing `running`. */

@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **40/40** (29 e2e journeys on BIOS + a UEFI subset 11) + **62 host
+**Status:** `make test` **41/41** (30 e2e journeys on BIOS + a UEFI subset 11) + **62 host
 unit tests** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -46,29 +46,32 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   and (Save) a name field — without re-implementing it. It honours system ownership (the Save button
   greys when the folder isn't user-writable) and raises a nested `ui::ConfirmDialog` **Replace /
   Cancel** when overwriting. Notepad wired it up: **File > Open…** (`^O`) and **File > Save As…**
-  drive it; e2e `t_file_dialog`. **Left:** (a) the chosen design was the **in-process modal**, not a
-  standalone picker **process** returning a path over IPC — revisit the process variant only when a
-  non-toolkit app (e.g. the raw-syscall terminal) needs a picker; (b) **Rename** in the overwrite
-  warning (it's Replace/Cancel today, the design wanted Replace/**Rename**/Cancel); (c) once the
-  Files suite's shared `ui::FileView` lands (#10), refactor the dialog's hand-rolled list onto it so
-  there's one directory-view component. → ties into [`files-and-desktop.md`](design/files-and-desktop.md)
-- [~] **Notepad redesign: tabs + session autosave (#5).** The filename still sits in an editable
-  field at the top. Rework it:
-  - [x] **Unsaved-changes guard** — **DONE.** New (and the window Close) on a dirty buffer now raise
-    a modal **Save / Discard / Cancel** sheet (the reusable `ui::ConfirmDialog`) instead of silently
-    nuking; Save writes first, then performs the deferred New/Quit. Backed by a `Window::on_close()`
-    veto hook + an `editor.on_change` dirty flag. e2e `t_notepad_guard`.
-  - **Tabs** — drop the top filename field; each note is a tab. A **`+` button** beside the tabs and
-    **File > New** both open a fresh **"untitled"** tab; switch + close tabs; the title bar / active
-    tab shows the note's name (or "untitled").
-  - **Session autosave** — periodically cache each tab's text **and** the app state (open tabs, the
-    active one, per-tab name + dirty flag) to a per-user draft store (e.g.
-    `/Users/user/.cache/notepad/`, like Windows Notepad's draft restore), so relaunching restores the
-    whole session — even notes that were never explicitly saved.
-  - **Save / Open flow** — the reusable **file open/save dialog** above now exists and is wired into
-    Notepad as **File > Open…** / **File > Save As…**. Remaining for the tabs rework: route a plain
-    **Save on an untitled note** through the Save dialog (today `^S` still writes straight to
-    `Documents/untitled.txt`). → [`ui.md`](design/ui.md)
+  drive it; e2e `t_file_dialog`. The overwrite warning is **Replace / Keep Both / Cancel** — Keep
+  Both dedupes to `name (N).ext` (`fd_dedup`) rather than clobbering. **Left:** (a) the chosen design
+  was the **in-process modal**, not a standalone picker **process** returning a path over IPC —
+  revisit the process variant only when a non-toolkit app (e.g. the raw-syscall terminal) needs a
+  picker; (b) once the Files suite's shared `ui::FileView` lands (#10), refactor the dialog's
+  hand-rolled list onto it so there's one directory-view component. → ties into [`files-and-desktop.md`](design/files-and-desktop.md)
+- [x] **Notepad redesign: tabs + session autosave (#5).** **DONE** — Notepad is now a tabbed editor.
+  - [x] **Unsaved-changes guard** — New no longer needs a guard (it opens a tab, no data loss); the
+    guard moved to **tab/window close**. Closing a dirty tab (the tab's × or **File > Close Tab ^W**)
+    or the window with any dirty tab raises the modal **Save / Discard / Cancel** sheet (the reusable
+    `ui::ConfirmDialog`); Save writes first, then the deferred Close/Quit runs. e2e `t_notepad_guard`.
+  - [x] **Tabs** — the top filename field is gone; each note is a tab in a `TabBar` strip (active
+    highlighted, dirty shows a dot, each has a × to close) + a trailing **`+`** (also **File > New /
+    ^N**); switch/close per tab; one shared `editor` swaps the active tab's text in/out (a `loading`
+    flag stops a load from dirtying the tab). The active tab shows the note's name. *(The window
+    title bar stays "Notepad" — there's no win-set-title syscall yet; the tab is the per-note name.)*
+    *(Per-tab undo history isn't preserved across a switch — acceptable for v1.)* Screenshot-verified.
+  - [x] **Session autosave** — a new `Window::on_tick()` hook drives a periodic draft (~1.8 s, only
+    when the session changed) of every tab's text + the layout (open tabs, active one, per-tab
+    name/dirty, the untitled counter) to `/Users/user/.cache/notepad/` (`session` + `tab<i>`). On a
+    bare relaunch Notepad rebuilds the whole session — even never-saved notes. Two-boot e2e
+    `t_notepad_session`.
+  - [x] **Save / Open flow** — the reusable picker is wired as **File > Open…** (`^O`) / **File >
+    Save As…**. A plain **Save / ^S** is a deliberate *quick-save*: a named note rewrites its path,
+    an untitled note writes straight to `~/Documents/<name>` (so `t_notepad_edit_save` stays a clean
+    "saves to disk" canary); use **Save As…** to choose a folder/name. → [`ui.md`](design/ui.md)
 
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
@@ -125,6 +128,20 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select,
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Notepad tabs + session autosave #5 (2026-06-03).** Notepad is now a tabbed editor. The top
+  filename field is gone; each note is a tab in an app-local `TabBar` strip (active accent-edged,
+  dirty shows a dot, each with a ×) + a trailing `+`; **File > New / ^N** opens a fresh untitled tab
+  (no guard — opening a tab can't lose data), **File > Close Tab / ^W** (or the ×) closes one. One
+  shared `editor` swaps the active tab's text in/out, gated by a `loading` flag so a load doesn't
+  dirty the tab; a `Tab{name,named,dirty,text,caret}` model holds the rest. The unsaved-changes guard
+  moved from New to **tab/window close** (`t_notepad_guard` reworked: two dirty tabs, Discard one +
+  Save the other — which also proves per-tab content isolation). **Session autosave:** a new toolkit
+  `Window::on_tick()` hook drives a periodic draft (~1.8 s, only when changed) of every tab's text +
+  the layout to `~/.cache/notepad/` (`session` + `tab<i>`); a bare relaunch rebuilds the whole
+  session, even never-saved notes — two-boot e2e `t_notepad_session` (restore markers carry each
+  tab's loaded byte count). **Save** is a quick-save (named → its path; untitled → `~/Documents`),
+  **Save As…**/**Open…** use the picker. Window title stays "Notepad" (no set-title syscall yet);
+  per-tab undo isn't kept across a switch (v1). Screenshot-verified. BIOS 30/30 + UEFI 11/11 + 62 unit.
 - **Reusable file picker `ui::FileDialog` #4 (2026-06-03).** A new toolkit modal — the system's one
   Open/Save browser. Built on the toolkit's own `ListView` + `TextField` (no atlas dep — lean vector
   folder/file glyphs), so any app gets the same chrome for free: a **Favorites sidebar**
@@ -135,12 +152,14 @@ Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
   `TextField::force_focus` keeps its caret blinking while the modal owns focus), and swallows stray
   clicks. **Open** picks an existing file (the OK button greys until a file is selected; activating a
   folder navigates); **Save** browses + names, greys OK when the folder isn't user-writable
-  (`tos_may_write` via `kernel/fs/perm.h`), and raises a nested **Replace / Cancel**
-  `ui::ConfirmDialog` on an overwrite. `on_pick(ctx, path)` returns the chosen absolute path (or
-  nullptr on Cancel); markers `[filedialog] open …/cd …/pick …/cancel`. **Notepad** wired it up:
-  File > Open… (`^O`) loads a note, File > Save As… writes one (File menu is now New/Open/Save/Save
-  As). e2e `t_file_dialog` (Save As → type a name → Enter → read back off disk); screenshot-verified
-  (both Open + Save chrome). BIOS 29/29 + UEFI 11/11 + 62 unit.
+  (`tos_may_write` via `kernel/fs/perm.h`), and on an overwrite raises a nested **Replace / Keep
+  Both / Cancel** `ui::ConfirmDialog` — **Keep Both** dedupes to `name (N).ext` (`fd_dedup`) instead
+  of clobbering. `on_pick(ctx, path)` returns the chosen absolute path (or nullptr on Cancel);
+  markers `[filedialog] open …/cd …/pick …/cancel`. **Notepad** wired it up: File > Open… (`^O`)
+  loads a note, File > Save As… writes one (File menu is now New/Open/Save/Save As). e2e
+  `t_file_dialog` (Save As → type a name → Enter → read back; then Save As the same name → Keep Both
+  → `picked (2).txt`); screenshot-verified (Open + Save + the 3-button overwrite warning). BIOS 29/29
+  + UEFI 11/11 + 62 unit.
 - **Notepad default save location = Documents (2026-06-03).** A bare note name now resolves to
   `/Users/user/Documents/<name>` instead of the home root, so saved notes stop littering `$HOME`;
   `resolve_path` `mkdir`s `Documents` defensively (init already seeds it). Absolute paths are

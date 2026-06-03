@@ -715,6 +715,25 @@ static void fd_join(char *out, int cap, const char *dir, const char *name) {
     for (int i = 0; name[i] && n < cap - 1; i++) out[n++] = name[i];
     out[n] = 0;
 }
+/* Build a non-colliding "<stem> (N)<ext>" sibling of `full` -- the "Keep Both"
+ * choice on an overwrite: picked.txt -> "picked (2).txt" -> "picked (3).txt" ...
+ * The extension is only honoured in the basename (a dot in a parent dir is not a
+ * suffix); a name with no extension just gets " (N)". */
+static void fd_dedup(char *out, int cap, const char *full) {
+    int n = (int)strlen(full), slash = -1, dot = -1;
+    for (int i = 0; i < n; i++) if (full[i] == '/') slash = i;
+    for (int i = slash + 1; i < n; i++) if (full[i] == '.') dot = i;
+    char dir[256] = {0}, stem[128] = {0}, ext[40] = {0};
+    int di = 0; for (int i = 0; i <= slash && di < (int)sizeof dir - 1; i++) dir[di++] = full[i]; dir[di] = 0;
+    int stem_end = (dot > slash) ? dot : n;
+    int si = 0; for (int i = slash + 1; i < stem_end && si < (int)sizeof stem - 1; i++) stem[si++] = full[i]; stem[si] = 0;
+    int ei = 0; if (dot > slash) for (int i = dot; i < n && ei < (int)sizeof ext - 1; i++) ext[ei++] = full[i]; ext[ei] = 0;
+    for (int k = 2; k < 1000; k++) {
+        snprintf(out, cap, "%s%s (%d)%s", dir, stem, k, ext);
+        if (!sys_exists(out, 0)) return;
+    }
+    snprintf(out, cap, "%s%s (copy)%s", dir, stem, ext);   /* last-ditch */
+}
 /* a small Finder-ish folder glyph (tabbed rectangle) in an 18px box at (x,y) */
 static void fd_folder(int x, int y, uint32_t c) {
     ugfx_fill_a(x + 1, y + 3, 7, 3, c);                 /* tab   */
@@ -802,8 +821,8 @@ void FileDialog::do_ok() {
     struct fstat st;
     if (stat_(target, &st) == 0 && st.type == FT_FILE) {  /* overwrite warning (#4) */
         int i = 0; for (; target[i] && i < (int)sizeof pending - 1; i++) pending[i] = target[i]; pending[i] = 0;
-        char msg[160]; snprintf(msg, sizeof msg, "\"%s\" already exists. Replace it?", nm);
-        overwrite.show("Replace file?", msg, "Replace", "Cancel");
+        char msg[160]; snprintf(msg, sizeof msg, "\"%s\" already exists in this folder.", nm);
+        overwrite.show("Replace file?", msg, "Replace", "Keep Both", "Cancel");   /* Keep Both = save as "name (N)" */
         if (win) win->invalidate();
         return;
     }
@@ -846,8 +865,9 @@ void FileDialog::open_dialog(int m, const char *start_dir, const char *suggest) 
     overwrite.ctx = this;
     overwrite.on_choice = [](void *c, int idx) {
         FileDialog *d = (FileDialog *)c;
-        if (idx == 0) d->finish(d->pending);             /* Replace */
-        else if (d->win) { d->win->focus = d; d->win->invalidate(); }   /* Cancel: stay in the picker */
+        if (idx == 0) d->finish(d->pending);                                       /* Replace      */
+        else if (idx == 1) { char dup[256]; fd_dedup(dup, sizeof dup, d->pending); d->finish(dup); }  /* Keep Both */
+        else if (d->win) { d->win->focus = d; d->win->invalidate(); }              /* Cancel: stay */
     };
     name.multiline = false; name.bg = TH_SURF_0; name.fg = TH_TEXT;
     name.set_text(mode == FD_SAVE ? (suggest ? suggest : "untitled.txt") : "");
@@ -1052,6 +1072,7 @@ int Window::run() {
             }
         }
         ticks++;
+        on_tick(ticks);                       /* periodic app work (e.g. Notepad session autosave) */
         if (focus && focus->shows_caret() && (ticks % TF_BLINK) == 0)
             dirty = true;                 /* pulse a repaint so the caret keeps blinking while idle */
         if (dirty) { redraw(); dirty = false; }
