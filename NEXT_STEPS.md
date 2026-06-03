@@ -32,8 +32,9 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   accelerator (e.g. `^S`) right-aligned; the compositor intercepts `Ctrl+<letter>` for the focused
   window and fires the matching enabled item as a `WEV_MENU` (opt-in per declared menu, so
   menuless apps keep their raw Ctrl chords). Runtime toggles via `menu_set_checked/_set_enabled`.
-  Notepad ships File [New ^N, Save ^S] / Edit [Select All ^A, Undo ^Z, Redo ^Y] / View [✓ Status
-  Bar]; **Files** ships File [New Folder ^N, Refresh] / Edit [Copy ^C, Cut ^X, Paste ^V, Delete] /
+  Notepad ships File [New ^N, Open ^O, Save ^S, Save As, Close Tab ^W] / Edit [Select All ^A,
+  Undo ^Z, Redo ^Y] / View [✓ Status Bar]; **Files** ships File [New Folder ^N, Refresh] /
+  Edit [Copy ^C, Cut ^X, Paste ^V, Delete] /
   Go [Up, Back, Forward]; **Terminal** (a raw-syscall app, proving the protocol isn't toolkit-only)
   ships Edit [Copy, Paste, Clear] with no Ctrl accelerators so the shell keeps ^C. **Left:**
   submenus (needs a `struct winmenu` ABI bump — deferred until something needs nesting). →
@@ -53,10 +54,14 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   picker; (b) once the Files suite's shared `ui::FileView` lands (#10), refactor the dialog's
   hand-rolled list onto it so there's one directory-view component. → ties into [`files-and-desktop.md`](design/files-and-desktop.md)
 - [x] **Notepad redesign: tabs + session autosave (#5).** **DONE** — Notepad is now a tabbed editor.
-  - [x] **Unsaved-changes guard** — New no longer needs a guard (it opens a tab, no data loss); the
-    guard moved to **tab/window close**. Closing a dirty tab (the tab's × or **File > Close Tab ^W**)
-    or the window with any dirty tab raises the modal **Save / Discard / Cancel** sheet (the reusable
-    `ui::ConfirmDialog`); Save writes first, then the deferred Close/Quit runs. e2e `t_notepad_guard`.
+  - [x] **Close UX (refined per use)** — closing the **window** never prompts: the session autosave
+    already holds every tab + its unsaved contents, so `on_close` just flushes the latest draft and
+    exits (a relaunch restores everything). Closing a **tab** (the tab's × or **File > Close Tab ^W**)
+    is what asks about unsaved work — a dirty tab raises the modal **Save / Discard / Cancel** sheet
+    (`ui::ConfirmDialog`); **Discard** drops it, **Save** on a named tab writes to its path then
+    closes, and **Save** on a never-saved tab opens the picker to choose where (the tab closes once
+    the pick succeeds). Explicitly closing the *last* tab clears the draft store so a relaunch starts
+    fresh. e2e `t_notepad_guard`.
   - [x] **Tabs** — the top filename field is gone; each note is a tab in a `TabBar` strip (active
     highlighted, dirty shows a dot, each has a × to close) + a trailing **`+`** (also **File > New /
     ^N**); switch/close per tab; one shared `editor` swaps the active tab's text in/out (a `loading`
@@ -69,9 +74,10 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
     bare relaunch Notepad rebuilds the whole session — even never-saved notes. Two-boot e2e
     `t_notepad_session`.
   - [x] **Save / Open flow** — the reusable picker is wired as **File > Open…** (`^O`) / **File >
-    Save As…**. A plain **Save / ^S** is a deliberate *quick-save*: a named note rewrites its path,
-    an untitled note writes straight to `~/Documents/<name>` (so `t_notepad_edit_save` stays a clean
-    "saves to disk" canary); use **Save As…** to choose a folder/name. → [`ui.md`](design/ui.md)
+    Save As…**. **Save / ^S** writes a named note straight to its path; a **never-saved** note opens
+    the picker (rooted at `~/Documents`) so you always choose where the first time — a draft sitting
+    in the autosave store doesn't count as "saved". e2e `t_notepad_edit_save` (Save→picker→accept) +
+    `t_notepad_undo` (first save→picker, later saves write direct). → [`ui.md`](design/ui.md)
 
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
@@ -128,6 +134,24 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select,
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Damage-rect presents + notepad save/close fixes (2026-06-03).** Fixed a notepad lag regression
+  (hovering the tab strip while typing pinned the loop at the frame cap, each frame re-blitting the
+  whole client surface). New **`win_present_rect(id,x,y,w,h)`** syscall (#66): the kernel accumulates
+  a per-window damage rect (union of partial presents, reset each compositor snapshot; full
+  `win_present` ⇒ whole-surface), carried in `struct wmwin`, and twm composites **only** that
+  sub-rect instead of the whole window. The toolkit tracks a damage rect per frame — `invalidate()`
+  = whole, `invalidate(rect)` = union; hover state, the blinking caret, and `TextField` typing now
+  invalidate just their widget's rect, and `Window::redraw()` clips + `win_present_rect`s that band
+  (skipping non-overlapping widgets). Backward-compatible: a full present is just a whole-rect
+  damage, so every existing app is unchanged. **Save bug:** quitting with a dirty background tab used
+  to silently drop it (quit-Save only wrote the active tab). **Close/save UX reworked per use:**
+  closing the **window** never prompts (the autosave draft already holds every tab + unsaved
+  contents — `on_close` flushes + exits, relaunch restores); closing a **tab** is what guards, and
+  **Save** on a never-saved tab (or **Ctrl+S** on one) opens the **picker** to choose where (a draft
+  ≠ saved); closing the *last* tab clears the draft store. **Autosave debounced** so a disk write
+  never stalls active typing (flush after ~0.6 s idle, or a ~3 s backstop). Tests updated
+  (`t_notepad_edit_save`/`_undo`/`_guard`/`t_app_menu` now drive the picker). Screenshot-verified
+  (hover-while-typing clean, picker renders). BIOS 30/30 + UEFI 11/11 + 62 unit.
 - **Notepad tabs + session autosave #5 (2026-06-03).** Notepad is now a tabbed editor. The top
   filename field is gone; each note is a tab in an app-local `TabBar` strip (active accent-edged,
   dirty shows a dot, each with a ×) + a trailing `+`; **File > New / ^N** opens a fresh untitled tab

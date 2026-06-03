@@ -142,7 +142,8 @@ def t_notepad_edit_save(uefi):
         # ...and the dock draws a pinned|running divider once an unpinned app runs
         assert t.wait_for("[twm] docksep", 6), "dock did not record a pinned|running divider"
         t.type("notepadworks", delay=0.06)            # into the focused editor
-        t.key("ctrl-s", delay=0.1)                    # save
+        t.key("ctrl-s", delay=0.1)                    # Save -> a never-saved note asks WHERE (the picker)
+        _accept_save_picker(t)                        # accept the suggested ~/Documents/untitled.txt
         assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (12 bytes)", 8), \
             "Notepad did not save the typed note"
         # prove it persisted: read it back in the terminal (shell cwd is ~, saves land in Documents)
@@ -170,12 +171,13 @@ def t_notepad_undo(uefi):
         t.type("undoredo", delay=0.06)                # one coalesced typing run
         t.key("ctrl-z", delay=0.12)                   # undo -> Edit > Undo (menu 1, item 1)
         assert t.wait_for("[notepad] menu 1 1", 8), "Ctrl+Z did not fire Edit > Undo"
-        t.key("ctrl-s", delay=0.12)                   # buffer is now empty
+        t.key("ctrl-s", delay=0.12)                   # first save -> picker (never saved); buffer is empty
+        _accept_save_picker(t)                        # accept ~/Documents/untitled.txt
         assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (0 bytes)", 8), \
             "undo did not clear the typed run (expected a 0-byte save)"
         t.key("ctrl-y", delay=0.12)                   # redo -> Edit > Redo (menu 1, item 2)
         assert t.wait_for("[notepad] menu 1 2", 8), "Ctrl+Y did not fire Edit > Redo"
-        t.key("ctrl-s", delay=0.12)
+        t.key("ctrl-s", delay=0.12)                   # the tab now has a path -> saves directly (no picker)
         assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (8 bytes)", 8), \
             "redo did not restore the typed run (expected an 8-byte save)"
         # prove the restored text is exactly what was typed, read back off disk
@@ -206,12 +208,23 @@ def _notepad_file_menu(t, idx):
     t.click(mx + 20, ry + idx * row + row // 2)
 
 
+def _accept_save_picker(t, start="/Users/user/Documents", name=None):
+    """A never-saved note's Save (or close-with-Save) opens the file picker to pick a
+    location. Wait for it, optionally replace the select-all'd suggested name, then
+    Enter to confirm."""
+    assert t.wait_for("[filedialog] open save " + start, 8), "Save did not open the file picker"
+    if name is not None:
+        t.type(name, delay=0.05)
+    t.key("ret", delay=0.12)
+
+
 def t_notepad_guard(uefi):
     # Unsaved-changes guard (#5), now on tab/window CLOSE -- File > New just opens a
     # fresh tab (no data loss, no guard). Closing a dirty tab (File > Close Tab,
     # item 4) raises the modal ConfirmDialog (Save / Discard / Cancel). We open two
     # dirty tabs (so closing one leaves the window alive) and exercise both the
-    # Discard (click) and Save (Enter) paths; the Save path writes before closing.
+    # Discard (click) and Save (Enter) paths; Save on a never-saved tab opens the
+    # picker to choose a location, then writes + closes once the pick is confirmed.
     with Tos(uefi=uefi) as t:
         assert t.open_terminal(), "desktop/terminal did not come up"
         t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
@@ -243,6 +256,7 @@ def t_notepad_guard(uefi):
         assert t.wait_for("[notepad] guard close 0", 8), "closing the last dirty tab did not raise the guard"
         t.key("ret", delay=0.12)                          # Enter = the primary (Save) button
         assert t.wait_for("[ui] confirm 0", 6), "Enter did not choose the primary (Save) button"
+        _accept_save_picker(t)                            # never-saved tab -> picker asks where, then closes
         assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (6 bytes)", 8), \
             "Save path did not write the tab before closing"
         # the note persisted to disk (read it back from the terminal)
@@ -629,8 +643,9 @@ def t_app_menu(uefi):
         g = re.search(r"\[twm\] menu app File y (\d+) row (\d+) x (\d+)", t.serial())
         assert g, "File menu geometry not reported"
         ry, row, mx = int(g.group(1)), int(g.group(2)), int(g.group(3))
-        t.click(mx + 30, ry + 2 * row + row // 2)        # choose "Save" (File is New/Open/Save/Save As)
+        t.click(mx + 30, ry + 2 * row + row // 2)        # choose "Save" (File: New/Open/Save/Save As/Close Tab)
         assert t.wait_for("[notepad] menu 0 2", 6), "menu selection not delivered to the app (WEV_MENU)"
+        _accept_save_picker(t)                            # an unsaved note's Save opens the picker
         assert t.wait_for("[notepad] saved", 8), "File > Save did not save the document"
         # Keyboard accelerator (#6): Ctrl+N fires File > New (item 0) via a WEV_MENU,
         # the same path a click takes -- the compositor intercepts the chord and never

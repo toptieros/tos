@@ -239,7 +239,11 @@ surfaces + ptys, both in `kernel/ipc.c`):
 (US=1, 4 KiB pages, in the surface PDPT slot — see vmm.c) into **both** the app
 and the compositor at the same per-id vaddr. The app draws into its surface and
 calls `SYS_WIN_PRESENT` (bumps a sequence); the compositor reads the live window
-set with `SYS_WM_WINDOWS` and blits each surface. `SYS_WM_POST` delivers events
+set with `SYS_WM_WINDOWS` and blits each surface. To avoid re-blitting a whole
+window for a tiny change (a hover layer, a blinking caret, a typed glyph), an app
+can instead call `SYS_WIN_PRESENT_RECT` with a damage rect: the kernel unions
+partial presents into a per-window rect (carried in `struct wmwin`, reset each
+snapshot) and the compositor composites only that sub-rect. `SYS_WM_POST` delivers events
 back to a window — key bytes (`WEV_KEY`), `WEV_CLOSE`, `WEV_RESIZE`, and a
 client-area click (`WEV_MOUSE`, the press packed as x/y/buttons by `WEV_MOUSE_PACK`)
 — which the app drains with `SYS_WIN_POLL`. `SYS_WIN_RESIZE` reallocates a surface

@@ -1,11 +1,15 @@
 /* notepad -- a tabbed text editor on the ui:: toolkit. Each note is a TAB; a `+`
  * button (or File > New / ^N) opens a fresh "untitled" tab, and tabs switch/close
  * independently (^W or the tab's ×). Edit in a multiline TextField (the usual
- * editing + Ctrl+C/X/V/A + undo/redo); Save (^S) writes the active note, Save As…
- * picks a folder + name via the reusable file picker, and Open… loads a note the
- * same way. A bare untitled note quick-saves under ~/Documents so it is easy to
- * find and doesn't litter the home root. Closing a dirty tab (or the window) first
- * raises a Save / Discard / Cancel guard. */
+ * editing + Ctrl+C/X/V/A + undo/redo); Save (^S) writes the active note -- a note
+ * that was never saved prompts for a location via the reusable file picker (so does
+ * Save As…), and Open… loads a note the same way.
+ *
+ * Every open tab + its unsaved contents are continuously autosaved to a draft store
+ * (~/.cache/notepad), so closing the WINDOW never prompts -- a relaunch restores the
+ * whole session. Closing a TAB is what asks about unsaved work: a dirty tab raises a
+ * Save / Discard / Cancel guard, and Save on a never-saved tab opens the picker to
+ * choose where (the tab closes once the save succeeds). */
 #include "ui.h"
 #include "app.h"
 
@@ -170,7 +174,10 @@ struct Notepad : ui::Window {
         for (int k = i + 1; k < ntabs; k++) tabs[k - 1] = tabs[k];
         tabs[ntabs - 1] = Tab{};
         ntabs--;
-        if (ntabs == 0) { running = false; printf("[notepad] closetab -> quit\r\n"); return; }
+        /* Explicitly closing the LAST tab empties notepad on purpose, so drop the
+         * saved session -- a relaunch should start fresh, not resurrect closed tabs
+         * (closing the WINDOW, by contrast, keeps the session: see on_close). */
+        if (ntabs == 0) { clear_session(); running = false; printf("[notepad] closetab -> quit\r\n"); return; }
         if (active > i) active--;
         else if (active >= ntabs) active = ntabs - 1;
         if (wasactive) load_active();
@@ -210,15 +217,9 @@ struct Notepad : ui::Window {
         return true;
     }
     void save() {                                   /* ^S / File > Save: write the active tab */
+        if (!cur().named) { save_as(); return; }    /* never saved: ask WHERE via the picker */
         if (save_tab(active)) { char msg[96]; snprintf(msg, sizeof msg, "Saved %s", basename_of(cur().name)); set_status(msg); }
         else                  set_status("Save failed");
-        invalidate();
-    }
-    /* Quit-time Save: persist EVERY unsaved tab, not just the visible one (closing
-     * the window with a dirty background tab used to silently drop it). */
-    void save_all_dirty() {
-        sync_active();                              /* snapshot the active tab too */
-        for (int i = 0; i < ntabs; i++) if (tabs[i].dirty) save_tab(i);
         invalidate();
     }
     /* Open / Save As via the reusable file picker (#4), both rooted at ~/Documents. */
@@ -226,7 +227,7 @@ struct Notepad : ui::Window {
     void save_as()   { dlg_mode = ui::FD_SAVE; dlg.open_dialog(ui::FD_SAVE, "/Users/user/Documents", basename_of(cur().name)); }
     bool pristine(const Tab &t) const { return !t.named && !t.dirty; }
     void on_picked(const char *path) {
-        if (!path) return;                          /* cancelled */
+        if (!path) { close_after_pick = -1; return; }   /* cancelled: keep the tab open */
         if (dlg_mode == ui::FD_OPEN) {
             /* open into the current tab if it's pristine, else a fresh tab */
             if (!pristine(cur())) {
@@ -240,14 +241,26 @@ struct Notepad : ui::Window {
             char msg[96]; snprintf(msg, sizeof msg, "Opened %s", basename_of(path)); set_status(msg);
             invalidate();
             printf("[notepad] opened %s (tab %d/%d)\r\n", path, active, ntabs);
-        } else {
+        } else {                                    /* SAVE: write to the chosen path */
             int i = 0; for (; path[i] && i < (int)sizeof cur().name - 1; i++) cur().name[i] = path[i]; cur().name[i] = 0;
-            cur().named = true; save();
+            cur().named = true;
+            bool ok = save_tab(active);
+            if (ok) { char msg[96]; snprintf(msg, sizeof msg, "Saved %s", basename_of(cur().name)); set_status(msg); }
+            else      set_status("Save failed");
+            invalidate();
+            int t = close_after_pick; close_after_pick = -1;   /* a close deferred until the pick succeeded */
+            if (ok && t >= 0) do_close(t);
         }
     }
 
     /* --------------------------------------------- session autosave (#5) */
     bool session_exists() { char p[300]; snprintf(p, sizeof p, "%s/session", NP_CACHE); return sys_exists(p, 0) != 0; }
+    void clear_session() {                          /* drop the draft store (all tabs closed) */
+        char p[300];
+        for (int i = 0; i < MAXTABS; i++) { np_tabpath(p, sizeof p, i); funlink(p); }
+        snprintf(p, sizeof p, "%s/session", NP_CACHE); funlink(p);
+        session_changed = false;                    /* nothing left to flush */
+    }
     void autosave() {
         mkdir("/Users/user/.cache"); mkdir(NP_CACHE);    /* harmless if they already exist */
         sync_active();                                   /* so every tab's snapshot is current */
@@ -313,32 +326,26 @@ struct Notepad : ui::Window {
     }
 
     /* ----------------------------------------------------- unsaved guard */
-    void ask_save() {
-        bool quit = (pending == PEND_QUIT);          /* quit may abandon several tabs */
-        confirm.show("Save changes?",
-                     quit ? "You have unsaved changes." : "This note has unsaved changes.",
-                     "Save", "Discard", "Cancel");
-    }
-    /* guard answer: 0 = Save, 1 = Discard, 2/-1 = Cancel. On Quit, Save persists
-     * every dirty tab; on Close, Save persists just the tab being closed. */
+    void ask_save() { confirm.show("Save changes?", "This note has unsaved changes.", "Save", "Discard", "Cancel"); }
+    /* The guard fires when CLOSING a dirty tab. 0 = Save, 1 = Discard, 2/-1 = Cancel.
+     * Save on a never-saved tab opens the picker (choose a location) and defers the
+     * close until the pick succeeds; a named tab writes to its path then closes. */
     void resolve_guard(int idx) {
-        int act = pending, pt = pending_tab; pending = PEND_NONE; pending_tab = -1;
+        int pt = pending_tab; pending = PEND_NONE; pending_tab = -1;
         if (idx == 2 || idx < 0) return;            /* Cancel: stay put */
-        if (act == PEND_QUIT) {
-            if (idx == 0) save_all_dirty();          /* Save: persist every unsaved tab */
-            running = false;
-        } else if (act == PEND_CLOSE) {
-            if (idx == 0) save_tab(pt);              /* Save just this tab            */
-            else if (idx == 1 && pt >= 0 && pt < ntabs) tabs[pt].dirty = false;  /* Discard: drop edits */
-            do_close(pt);
+        if (idx == 1) {                             /* Discard: drop edits, then close */
+            if (pt >= 0 && pt < ntabs) tabs[pt].dirty = false;
+            do_close(pt); return;
         }
+        if (pt >= 0 && pt < ntabs && !tabs[pt].named) {   /* Save, never saved: ask where first */
+            close_after_pick = pt; save_as(); return;
+        }
+        save_tab(pt); do_close(pt);                 /* Save to the existing path, then close */
     }
-    /* the compositor's close button: guard if any tab is dirty, else let it close */
-    bool on_close() override {
-        if (!any_dirty()) return true;
-        pending = PEND_QUIT; print("[notepad] guard quit\r\n"); ask_save();
-        return false;
-    }
+    /* The compositor's close button: the session autosave already preserves every
+     * tab + its unsaved contents, so closing the WINDOW never prompts -- flush the
+     * latest draft and let it close (a relaunch restores the whole session). */
+    bool on_close() override { autosave(); return true; }
 
     /* -------------------------------------------------------------- input */
     void on_key(int key) override { if (key == 0x13) save(); }   /* raw ^S (if the editor lets it bubble) */
