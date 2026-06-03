@@ -517,12 +517,29 @@ int Window::menu_add(const char *title) {
     menu_spec.m[i].nitems = 0;
     return i;
 }
-void Window::menu_item(int menu, const char *label) {
+void Window::menu_item(int menu, const char *label, char accel, unsigned flags) {
     if (menu < 0 || menu >= (int)menu_spec.nmenus) return;
     unsigned n = menu_spec.m[menu].nitems;
     if (n >= WINMENU_ITEMS) return;
     menu_cpy(menu_spec.m[menu].items[n], label, WINMENU_LBL);
+    menu_spec.m[menu].flags[n] = (uint8_t)flags;
+    menu_spec.m[menu].accel[n] = accel;
     menu_spec.m[menu].nitems = n + 1;
+}
+/* Flip a per-item flag bit and re-publish so the compositor's next read reflects it. */
+static void menu_flag(struct winmenu &s, int menu, int item, unsigned bit, bool on, int id) {
+    if (menu < 0 || menu >= (int)s.nmenus) return;
+    if (item < 0 || item >= (int)s.m[menu].nitems) return;
+    if (on) s.m[menu].flags[item] |= (uint8_t)bit;
+    else    s.m[menu].flags[item] &= (uint8_t)~bit;
+    if (id >= 0) win_setmenu(id, &s);
+}
+void Window::menu_set_checked(int menu, int item, bool on) { menu_flag(menu_spec, menu, item, WMI_CHECKED, on, id); }
+void Window::menu_set_enabled(int menu, int item, bool on) { menu_flag(menu_spec, menu, item, WMI_DISABLED, !on, id); }
+bool Window::menu_is_checked(int menu, int item) const {
+    if (menu < 0 || menu >= (int)menu_spec.nmenus) return false;
+    if (item < 0 || item >= (int)menu_spec.m[menu].nitems) return false;
+    return (menu_spec.m[menu].flags[item] & WMI_CHECKED) != 0;
 }
 void Window::menu_commit() { if (id >= 0) win_setmenu(id, &menu_spec); }
 

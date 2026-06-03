@@ -287,7 +287,12 @@ public:
      * menu_begin / menu_add / menu_item, then menu_commit(). */
     void menu_begin();                           /* start a fresh menu spec            */
     int  menu_add(const char *title);            /* add a top-level menu -> its index  */
-    void menu_item(int menu, const char *label); /* add an item to menu `menu`         */
+    /* Add an item. `accel` is the Ctrl-shortcut letter shown + handled by the
+     * compositor (e.g. 'S' => Ctrl+S; 0 = none); `flags` are WMI_* (disabled/checked). */
+    void menu_item(int menu, const char *label, char accel = 0, unsigned flags = 0);
+    void menu_set_checked(int menu, int item, bool on);  /* flip WMI_CHECKED + re-publish */
+    void menu_set_enabled(int menu, int item, bool on);  /* flip WMI_DISABLED + re-publish */
+    bool menu_is_checked(int menu, int item) const;
     void menu_commit();                          /* publish to the compositor          */
     virtual void on_menu(int menu, int item) { (void)menu; (void)item; }  /* item chosen */
 

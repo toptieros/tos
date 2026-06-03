@@ -23,9 +23,14 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
   `menu_begin/menu_add/menu_item/menu_commit` + `on_menu()` API; twm draws a bar tile per menu
-  (kind-3 dropdown) and routes a pick back to the app. Notepad ships File [New, Save] / Edit
-  [Select All]. **Left:** keyboard accelerators (⌘/Ctrl shortcuts shown + handled), checkmarks/
-  disabled items, submenus, and porting more apps. → [`ui.md`](design/ui.md)
+  (kind-3 dropdown) and routes a pick back to the app. **Per-item state + accelerators:** items
+  carry `WMI_DISABLED`/`WMI_CHECKED` flags and a Ctrl-accelerator letter — the dropdown greys
+  disabled rows (no hover, non-clickable), draws a leading ✓ for checked rows, and shows the
+  accelerator (e.g. `^S`) right-aligned; the compositor intercepts `Ctrl+<letter>` for the focused
+  window and fires the matching enabled item as a `WEV_MENU` (opt-in per declared menu, so
+  menuless apps keep their raw Ctrl chords). Runtime toggles via `menu_set_checked/_set_enabled`.
+  Notepad ships File [New ^N, Save ^S] / Edit [Select All ^A, Undo (disabled)] / View [✓ Status
+  Bar]. **Left:** submenus, and porting term/Files. → [`ui.md`](design/ui.md)
 - [ ] **Grow the toolkit + port apps.** A layout system + menus, then port `term` / `fastfetch`
   (and new apps) onto the toolkit.
 - [ ] **Live resize preview + reflow.** A live outline while dragging the grip, and reflowing
@@ -86,6 +91,17 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select.
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **App-menu accelerators + checkmarks + disabled items #6 (2026-06-03).** `struct winmenu`
+  items gained a `flags` byte (`WMI_DISABLED`/`WMI_CHECKED`) and an `accel` letter. `ui::Window`'s
+  `menu_item(label, accel=0, flags=0)` plus `menu_set_checked/_set_enabled/_is_checked` declare and
+  live-toggle them. twm's dropdown greys disabled rows (no hover, ignored clicks), draws a leading
+  ✓ for checked rows (a two-stroke `draw_check`, no line primitive), and right-aligns the `^X`
+  accelerator hint; the key loop intercepts `Ctrl+<letter>` for the focused window and fires the
+  matching enabled item as a `WEV_MENU` (opt-in per declared menu — menuless apps keep raw chords;
+  Backspace/Tab/Enter/Esc arrive without Ctrl so never match). `menu_sig` folds in flags+accel so a
+  runtime toggle re-publishes. Notepad now ships File [New ^N, Save ^S] / Edit [Select All ^A, Undo
+  disabled] / View [✓ Status Bar]. `[twm] accel <L> <m> <i>` trace; `t_app_menu` extended with the
+  Ctrl+N accelerator path. Build + unit (46) + screenshot-verified.
 - **App menus #6 (2026-06-02).** App→WM menu protocol: `struct winmenu` (≤5 menus × ≤8 items) set
   via `SYS_WIN_SETMENU`, read by the compositor via `SYS_WM_GETMENU`, with `WEV_MENU` delivering a
   pick back to the app. `ui::Window` gained `menu_begin/menu_add/menu_item/menu_commit` + an

@@ -30,6 +30,7 @@ struct Notepad : ui::Window {
     char         *doc = nullptr;
     int           fh = 0, TBH = 0;
     char          statusbuf[64] = {0};
+    bool          show_status = true;   /* View > Status Bar toggle (#6 checkable menu) */
 
     void layout() {
         fh = ugfx_font_h(); TBH = fh + 18;
@@ -72,7 +73,14 @@ struct Notepad : ui::Window {
     void on_menu(int menu, int item) override {
         print("[notepad] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
         if (menu == 0) { if (item == 0) new_note(); else if (item == 1) save(); }
-        else if (menu == 1) { if (item == 0 && focus) { focus->on_key(0x01); invalidate(); } }  /* Select All */
+        else if (menu == 1) { if (item == 0 && focus) { focus->on_key(0x01); invalidate(); } }  /* Select All (item 1 Undo is disabled) */
+        else if (menu == 2 && item == 0) {                       /* View > Status Bar: toggle + checkmark */
+            show_status = !show_status;
+            status.visible = show_status;
+            menu_set_checked(2, 0, show_status);
+            set_status(show_status ? "Status bar shown" : "");
+            invalidate();
+        }
     }
 
     bool build(const char *path) {
@@ -107,9 +115,10 @@ struct Notepad : ui::Window {
         add(&bar); add(&name); add(&status); add(&savebtn); add(&editor);
         focus = &editor;
 
-        menu_begin();                                 /* declare a menu bar (#6) */
-        int mf = menu_add("File"); menu_item(mf, "New");        menu_item(mf, "Save");
-        int me = menu_add("Edit"); menu_item(me, "Select All");
+        menu_begin();                                 /* declare a menu bar (#6): accels, a disabled item, a checkable toggle */
+        int mf = menu_add("File"); menu_item(mf, "New", 'N');        menu_item(mf, "Save", 'S');
+        int me = menu_add("Edit"); menu_item(me, "Select All", 'A'); menu_item(me, "Undo", 0, WMI_DISABLED);
+        int mv = menu_add("View"); menu_item(mv, "Status Bar", 0, WMI_CHECKED);
         menu_commit();
         return true;
     }

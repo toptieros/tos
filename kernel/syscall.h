@@ -255,12 +255,19 @@ struct wmwin {                /* SYS_WM_WINDOWS snapshot entry (compositor side)
 #define WINMENU_MAX   5       /* top-level menus                                   */
 #define WINMENU_ITEMS 8       /* items per menu                                    */
 #define WINMENU_LBL   18      /* label length (incl. NUL)                          */
+/* Per-item state flags (winmenu.m[].flags[]). An app sets these when it declares
+ * the menu; the compositor greys WMI_DISABLED rows (and ignores clicks/accels on
+ * them) and draws a check mark beside WMI_CHECKED rows. */
+#define WMI_DISABLED  0x01    /* item is greyed out and non-actionable             */
+#define WMI_CHECKED   0x02    /* item shows a leading check mark (a toggle is on)   */
 struct winmenu {
     uint32_t nmenus;
     struct {
         char     title[WINMENU_LBL];
         uint32_t nitems;
         char     items[WINMENU_ITEMS][WINMENU_LBL];
+        uint8_t  flags[WINMENU_ITEMS];  /* WMI_* per item (0 = normal)              */
+        char     accel[WINMENU_ITEMS];  /* Ctrl-accelerator letter, 0 = none        */
     } m[WINMENU_MAX];
 };
 

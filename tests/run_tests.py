@@ -442,6 +442,12 @@ def t_app_menu(uefi):
         t.click(mx + 30, ry + row + row // 2)           # choose "Save" (item index 1)
         assert t.wait_for("[notepad] menu 0 1", 6), "menu selection not delivered to the app (WEV_MENU)"
         assert t.wait_for("[notepad] saved", 8), "File > Save did not save the document"
+        # Keyboard accelerator (#6): Ctrl+N fires File > New (item 0) via a WEV_MENU,
+        # the same path a click takes -- the compositor intercepts the chord and never
+        # forwards the control byte.
+        t.key("ctrl-n", delay=0.1)
+        assert t.wait_for("[twm] accel N 0 0", 6), "Ctrl+N accelerator was not recognised by the compositor"
+        assert t.wait_for("[notepad] menu 0 0", 6), "the accelerator did not deliver WEV_MENU(File,New) to the app"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
