@@ -226,6 +226,9 @@ public:
     void        on_button_up() override { sb.dragging = false; }   /* end a scrollbar drag */
     bool        on_scroll(int delta) override;                     /* multiline: scroll the viewport */
     bool        shows_caret() const override { return visible; }    /* keeps the caret blinking when idle */
+    bool        force_focus = false;        /* draw as focused (caret + accent edge) even when the
+                                             * window's focus is elsewhere -- for a field embedded in
+                                             * a modal that owns focus and forwards keys here (FileDialog). */
     void        drag_to(int x, int y);
     /* Undo / redo (global text contract): two bounded stacks of insert/delete
      * span records; a run of single-char typing or backspacing coalesces into one
@@ -311,6 +314,71 @@ private:
     void    layout();
     int     btn_at(int x, int y) const;
     void    choose(int idx);
+};
+
+/* ------------------------------------------------------------- FileDialog */
+/* A reusable modal file chooser, the system's one Open/Save browser. OPEN mode
+ * picks an existing file; SAVE mode browses to a folder + types a name. Built on
+ * the toolkit's own ListView + TextField so every app gets the same chrome -- a
+ * Favorites sidebar, an Up button, a path bar -- without re-implementing it.
+ *
+ * Add it LAST to a Window (so it draws on top + grabs every click), then call
+ * open_dialog(); while up it captures keyboard focus. on_pick(ctx, path) fires
+ * with the chosen absolute path, or path == nullptr on Cancel. It honours system
+ * ownership: Save into a system-owned folder (/System, /Apps) is blocked (the Save
+ * button greys), and overwriting an existing file raises a nested Replace / Cancel
+ * confirm (a ui::ConfirmDialog). */
+enum { FD_OPEN = 0, FD_SAVE = 1 };
+class FileDialog : public Widget {
+public:
+    bool  open = false;
+    void *ctx = nullptr;
+    void (*on_pick)(void *, const char *) = nullptr;   /* chosen path, or nullptr = cancelled */
+    FileDialog();
+    /* mode FD_OPEN / FD_SAVE; start_dir = initial folder (nullptr => ~);
+     * suggest = the default name in SAVE mode (nullptr => "untitled.txt"). */
+    void open_dialog(int mode, const char *start_dir = nullptr, const char *suggest = nullptr);
+    void dismiss();
+    void draw() override;
+    bool on_mouse(int x, int y, int btn) override;
+    void on_drag(int x, int y) override;
+    void on_button_up() override;
+    bool on_key(int key, bool shift = false) override;
+    bool on_hover(int x, int y) override;
+    void on_leave() override;
+    bool on_scroll(int delta) override;
+    bool shows_caret() const override { return open && mode == FD_SAVE; }   /* blink the name field */
+
+    static const int FD_NMAX = 128;
+    struct Fav { const char *label; char path[64]; };
+private:
+    int           mode = FD_OPEN;
+    char          path[256] = {0};
+    struct dirent ents[FD_NMAX]; int nents = 0;
+    ListView      list;                 /* the directory pane                         */
+    TextField     name;                 /* SAVE: the filename field                   */
+    ConfirmDialog overwrite;            /* SAVE: the Replace / Cancel warning          */
+    Fav           fav[8]; int nfav = 0;
+    Widget       *prev_focus = nullptr;
+    /* laid out each draw (window-absolute, client-relative coords) */
+    Rect  card{0,0,0,0}, upbtn{0,0,0,0}, namer{0,0,0,0}, okbtn{0,0,0,0}, cancelbtn{0,0,0,0};
+    Rect  side{0,0,0,0};
+    int   fav_rowh = 0;
+    int   hover_btn = -1;               /* 0 = OK, 1 = Cancel, 2 = Up */
+    int   hover_fav = -1;
+    char  pending[256] = {0};           /* SAVE target awaiting the overwrite answer  */
+    bool  has_up() const { return !(path[0] == '/' && path[1] == 0); }
+    bool  dir_writable() const;         /* may the user create in `path`? (system-owned => no) */
+    void  layout();
+    void  load_dir();
+    void  navigate(const char *p);
+    void  go_up();
+    void  row_selected(int row);
+    void  row_activated(int row);
+    void  do_ok();
+    void  finish(const char *p);        /* close + report (p or nullptr) */
+    int   fav_at(int x, int y) const;
+    static void render_row(void *ctx, int index, Rect cell, bool selected);
 };
 
 /* ------------------------------------------------------------------- Window */

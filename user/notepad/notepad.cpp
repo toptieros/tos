@@ -2,7 +2,8 @@
  * edit it in a multiline TextField (the usual editing + Ctrl+C/X/V/A clipboard
  * chords), and Save / Save As it to the filesystem. Launched with a document path
  * (Files "Open With"), it opens that file; launched bare, it starts an untitled
- * note. A bare filename is saved under the user's home so it is easy to find. */
+ * note. A bare filename is saved under the user's Documents so it is easy to
+ * find and doesn't litter the home root. */
 #include "ui.h"
 #include "app.h"
 
@@ -12,11 +13,14 @@ static const char *basename_of(const char *p) {
     return *b ? b : p;
 }
 /* Resolve the name field to an absolute path: absolute stays as-is, a bare name
- * lands in the user's home so both notepad and the shell (cwd = ~) can find it. */
+ * lands in the user's Documents folder (created if missing) so saved notes don't
+ * litter $HOME — the shell reaches them as Documents/<name>. Once the file picker
+ * (#4) lands this becomes its default folder. */
 static void resolve_path(char *dst, int cap, const char *name) {
     if (name[0] == '/') { int i = 0; for (; name[i] && i < cap - 1; i++) dst[i] = name[i]; dst[i] = 0; return; }
-    const char *home = "/Users/user/";
-    int i = 0; for (; home[i] && i < cap - 1; i++) dst[i] = home[i];
+    const char *docs = "/Users/user/Documents/";
+    mkdir("/Users/user/Documents");            /* harmless if it already exists */
+    int i = 0; for (; docs[i] && i < cap - 1; i++) dst[i] = docs[i];
     for (int j = 0; name[j] && i < cap - 1; j++) dst[i++] = name[j];
     dst[i] = 0;
 }
@@ -30,6 +34,8 @@ struct Notepad : ui::Window {
     ui::Label     status;
     ui::TextField editor;        /* the document body */
     ui::ConfirmDialog confirm;   /* the unsaved-changes guard (#5) */
+    ui::FileDialog dlg;          /* the reusable Open / Save-As picker (#4) */
+    int           dlg_mode = ui::FD_OPEN;   /* which flow the open picker is serving */
     char         *doc = nullptr;
     int           fh = 0, TBH = 0;
     char          statusbuf[64] = {0};
@@ -68,9 +74,29 @@ struct Notepad : ui::Window {
             print("[notepad] save failed: "); print(path); print("\r\n");
         }
     }
+    /* Open / Save As via the reusable file picker (#4). Open browses for an
+     * existing note; Save As browses to a folder + names the file. Both default
+     * to ~/Documents (where notes live). on_picked() runs when the user confirms. */
+    void open_open() { dlg_mode = ui::FD_OPEN; dlg.open_dialog(ui::FD_OPEN, "/Users/user/Documents"); }
+    void save_as()   { dlg_mode = ui::FD_SAVE; dlg.open_dialog(ui::FD_SAVE, "/Users/user/Documents", basename_of(name.text())); }
+    void on_picked(const char *path) {
+        if (!path) return;                               /* cancelled */
+        if (dlg_mode == ui::FD_OPEN) {
+            int len = 0; char *nb = sys_slurp(path, &len);
+            if (doc) free(doc);
+            doc = nb;
+            editor.set_text(doc ? doc : ""); editor.caret = 0;
+            name.set_text(path); dirty = false;
+            char msg[80]; snprintf(msg, sizeof msg, "Opened %s", basename_of(path)); set_status(msg);
+            focus = &editor; invalidate();
+        } else {
+            name.set_text(path); save();                 /* save() writes the absolute path as-is */
+        }
+    }
     void do_new() {                          /* the actual reset, once any guard has cleared */
         name.set_text("untitled.txt"); editor.set_text(""); editor.caret = 0;
         focus = &editor; dirty = false; set_status("New note"); invalidate();
+        print("[notepad] reset\r\n");
     }
     /* New on a dirty buffer no longer nukes it silently (#5): raise the guard and
      * defer the reset until the user answers. */
@@ -100,7 +126,10 @@ struct Notepad : ui::Window {
     /* Menu-bar selections (#6): File [New, Save], Edit [Select All]. */
     void on_menu(int menu, int item) override {
         print("[notepad] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
-        if (menu == 0) { if (item == 0) new_note(); else if (item == 1) save(); }
+        if (menu == 0) {                                         /* File: New / Open / Save / Save As */
+            if (item == 0) new_note(); else if (item == 1) open_open();
+            else if (item == 2) save(); else if (item == 3) save_as();
+        }
         else if (menu == 1 && focus) {                           /* Edit: Select All / Undo / Redo */
             if (item == 0) focus->on_key(0x01);
             else if (item == 1) focus->undo();
@@ -135,6 +164,8 @@ struct Notepad : ui::Window {
         editor.on_change = [](void *c) { ((Notepad *)c)->dirty = true; };
         confirm.ctx = this;
         confirm.on_choice = [](void *c, int idx) { ((Notepad *)c)->resolve_guard(idx); };
+        dlg.ctx = this;
+        dlg.on_pick = [](void *c, const char *p) { ((Notepad *)c)->on_picked(p); };
 
         if (path && path[0]) {
             int len = 0; doc = sys_slurp(path, &len);
@@ -151,11 +182,12 @@ struct Notepad : ui::Window {
 
         layout();
         add(&bar); add(&name); add(&status); add(&savebtn); add(&editor);
-        add(&confirm);                                /* last = drawn on top + grabs input when shown */
+        add(&confirm); add(&dlg);                     /* last = drawn on top + grab input when shown */
         focus = &editor;
 
         menu_begin();                                 /* declare a menu bar (#6): accels, a disabled item, a checkable toggle */
-        int mf = menu_add("File"); menu_item(mf, "New", 'N');        menu_item(mf, "Save", 'S');
+        int mf = menu_add("File"); menu_item(mf, "New", 'N'); menu_item(mf, "Open", 'O');
+                                   menu_item(mf, "Save", 'S'); menu_item(mf, "Save As", 0);
         int me = menu_add("Edit"); menu_item(me, "Select All", 'A'); menu_item(me, "Undo", 'Z'); menu_item(me, "Redo", 'Y');
         int mv = menu_add("View"); menu_item(mv, "Status Bar", 0, WMI_CHECKED);
         menu_commit();

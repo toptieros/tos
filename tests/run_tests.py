@@ -142,12 +142,12 @@ def t_notepad_edit_save(uefi):
         assert t.wait_for("[twm] docksep", 6), "dock did not record a pinned|running divider"
         t.type("notepadworks", delay=0.06)            # into the focused editor
         t.key("ctrl-s", delay=0.1)                    # save
-        assert t.wait_for("[notepad] saved /Users/user/untitled.txt (12 bytes)", 8), \
+        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (12 bytes)", 8), \
             "Notepad did not save the typed note"
-        # prove it persisted: read it back in the terminal (shell cwd is ~)
+        # prove it persisted: read it back in the terminal (shell cwd is ~, saves land in Documents)
         t.key("alt-tab", delay=0.1)                   # focus the terminal again
         assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
-        t.line("cat untitled.txt")
+        t.line("cat Documents/untitled.txt")
         assert t.wait_for("notepadworks", 6), "saved note not readable from the filesystem"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
@@ -170,18 +170,122 @@ def t_notepad_undo(uefi):
         t.key("ctrl-z", delay=0.12)                   # undo -> Edit > Undo (menu 1, item 1)
         assert t.wait_for("[notepad] menu 1 1", 8), "Ctrl+Z did not fire Edit > Undo"
         t.key("ctrl-s", delay=0.12)                   # buffer is now empty
-        assert t.wait_for("[notepad] saved /Users/user/untitled.txt (0 bytes)", 8), \
+        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (0 bytes)", 8), \
             "undo did not clear the typed run (expected a 0-byte save)"
         t.key("ctrl-y", delay=0.12)                   # redo -> Edit > Redo (menu 1, item 2)
         assert t.wait_for("[notepad] menu 1 2", 8), "Ctrl+Y did not fire Edit > Redo"
         t.key("ctrl-s", delay=0.12)
-        assert t.wait_for("[notepad] saved /Users/user/untitled.txt (8 bytes)", 8), \
+        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (8 bytes)", 8), \
             "redo did not restore the typed run (expected an 8-byte save)"
         # prove the restored text is exactly what was typed, read back off disk
         t.key("alt-tab", delay=0.1)
         assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
-        t.line("cat untitled.txt")
+        t.line("cat Documents/untitled.txt")
         assert t.wait_for("undoredo", 6), "redo did not restore the original text"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def _notepad_file_menu(t, idx):
+    """Open Notepad's File menu and click item `idx` (0=New, 1=Open, 2=Save,
+    3=Save As). Deterministic (a click, not the Ctrl accelerator, which races the
+    modifier release at launch)."""
+    m = None
+    for _ in range(50):
+        m = re.search(r"\[twm\] appmenu 0 File (\d+) (\d+)", t.serial())
+        if m:
+            break
+        time.sleep(0.1)
+    assert m, "Notepad's File menu tile was not shown"
+    fx, fw = int(m.group(1)), int(m.group(2))
+    t.click(fx + fw // 2, 12)
+    assert t.wait_for("[twm] menu app File", 6), "the File menu did not open"
+    g = re.search(r"\[twm\] menu app File y (\d+) row (\d+) x (\d+)", t.serial())
+    assert g, "File menu geometry not reported"
+    ry, row, mx = int(g.group(1)), int(g.group(2)), int(g.group(3))
+    t.click(mx + 20, ry + idx * row + row // 2)
+
+
+def _notepad_file_new(t, wx, wy):
+    """Open Notepad's File menu and click New (item 0)."""
+    _notepad_file_menu(t, 0)
+
+
+def t_notepad_guard(uefi):
+    # Unsaved-changes guard (#5): New on a dirty buffer no longer silently nukes it.
+    # It raises a modal ConfirmDialog (Save / Discard / Cancel). We exercise both the
+    # Discard path (click the button) and the Save path (Enter = the primary button,
+    # which writes before resetting). New is triggered via File > New (a click).
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06); t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
+        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        wr = t.win_rect("Notepad")
+        assert wr, "Notepad window rect not reported"
+        wx, wy = wr[0], wr[1]
+        # --- Discard path: type, File > New, click Discard -> buffer cleared ---
+        t.type("keepme", delay=0.05)
+        _notepad_file_new(t, wx, wy)
+        assert t.wait_for("[notepad] menu 0 0", 6), "File > New was not delivered"
+        assert t.wait_for("[notepad] guard new", 8), "New on a dirty buffer did not raise the guard"
+        d = None
+        for _ in range(40):
+            d = re.search(r"\[ui\] dlgbtn 1 (\d+) (\d+)", t.serial())   # button 1 = Discard
+            if d:
+                break
+            time.sleep(0.1)
+        assert d, "the guard's Discard button position was not reported"
+        t.click(wx + int(d.group(1)), wy + int(d.group(2)))
+        assert t.wait_for("[ui] confirm 1", 6), "clicking Discard did not register"
+        assert t.wait_for("[notepad] reset", 6), "Discard did not reset the note"
+        t.key("ctrl-s", delay=0.12)
+        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (0 bytes)", 8), \
+            "the buffer was not actually discarded (expected an empty save)"
+        # --- Save path: type new text, File > New, Enter (primary=Save) -> saved then reset ---
+        t.type("savedtext", delay=0.05)
+        _notepad_file_new(t, wx, wy)
+        assert t.wait_for("[notepad] guard new", 8), "second guard did not appear"
+        t.key("ret", delay=0.12)                      # Enter = the primary (Save) button
+        assert t.wait_for("[ui] confirm 0", 6), "Enter did not choose the primary (Save) button"
+        assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (9 bytes)", 8), \
+            "Save path did not write the buffer before resetting"
+        t.key("alt-tab", delay=0.1)
+        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
+        t.line("cat Documents/untitled.txt")
+        assert t.wait_for("savedtext", 6), "the Save-then-New path did not persist the text"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_file_dialog(uefi):
+    # Reusable file picker (#4): Notepad's File > Save As... opens a modal ui::FileDialog
+    # (a Favorites sidebar + an Up button + the directory list + a name field). It starts
+    # in ~/Documents; we replace the suggested name (it opens select-all'd) by typing a new
+    # one, Enter confirms, the dialog reports the chosen path, Notepad saves there, and we
+    # read it back off disk through the terminal to prove it persisted.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06); t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
+        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        t.type("viapicker", delay=0.05)                  # 9 bytes into the editor
+        _notepad_file_menu(t, 3)                          # File > Save As...
+        assert t.wait_for("[notepad] menu 0 3", 6), "File > Save As was not delivered"
+        assert t.wait_for("[filedialog] open save /Users/user/Documents", 8), \
+            "Save As did not open the picker in ~/Documents"
+        # the name field opens pre-filled + select-all'd, so typing replaces it
+        t.type("picked.txt", delay=0.05)
+        t.key("ret", delay=0.12)                          # Enter = the primary (Save) button
+        assert t.wait_for("[filedialog] pick /Users/user/Documents/picked.txt", 8), \
+            "the picker did not report the chosen path"
+        assert t.wait_for("[notepad] saved /Users/user/Documents/picked.txt (9 bytes)", 8), \
+            "Notepad did not save to the picked path"
+        # prove it persisted: read it back through the terminal (shell cwd is ~)
+        t.key("alt-tab", delay=0.1)
+        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
+        t.line("cat Documents/picked.txt")
+        assert t.wait_for("viapicker", 6), "the picker-saved note was not readable from the filesystem"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -472,8 +576,8 @@ def t_app_menu(uefi):
         g = re.search(r"\[twm\] menu app File y (\d+) row (\d+) x (\d+)", t.serial())
         assert g, "File menu geometry not reported"
         ry, row, mx = int(g.group(1)), int(g.group(2)), int(g.group(3))
-        t.click(mx + 30, ry + row + row // 2)           # choose "Save" (item index 1)
-        assert t.wait_for("[notepad] menu 0 1", 6), "menu selection not delivered to the app (WEV_MENU)"
+        t.click(mx + 30, ry + 2 * row + row // 2)        # choose "Save" (File is New/Open/Save/Save As)
+        assert t.wait_for("[notepad] menu 0 2", 6), "menu selection not delivered to the app (WEV_MENU)"
         assert t.wait_for("[notepad] saved", 8), "File > Save did not save the document"
         # Keyboard accelerator (#6): Ctrl+N fires File > New (item 0) via a WEV_MENU,
         # the same path a click takes -- the compositor intercepts the chord and never
@@ -660,7 +764,8 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo, t_spotlight,
+    t_app_menu, t_files_menu, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_notepad_guard, t_file_dialog, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]
