@@ -152,6 +152,39 @@ def t_notepad_edit_save(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_notepad_undo(uefi):
+    # Undo/redo is a global TextField contract: type a word into Notepad's editor,
+    # Ctrl+Z drops the whole typed run in one step (the chars coalesce), and Ctrl+Y
+    # puts it back. Notepad surfaces these as Edit > Undo/Redo (accelerators ^Z/^Y),
+    # so the compositor routes them as menu picks (menu 1, items 1/2). We prove the
+    # buffer actually changed by saving after each and reading the byte count.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        t.key("meta_l-spc", delay=0.1)                # Super+Space -> Spotlight
+        assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06)
+        t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
+        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        t.type("undoredo", delay=0.06)                # one coalesced typing run
+        t.key("ctrl-z", delay=0.12)                   # undo -> Edit > Undo (menu 1, item 1)
+        assert t.wait_for("[notepad] menu 1 1", 8), "Ctrl+Z did not fire Edit > Undo"
+        t.key("ctrl-s", delay=0.12)                   # buffer is now empty
+        assert t.wait_for("[notepad] saved /Users/user/untitled.txt (0 bytes)", 8), \
+            "undo did not clear the typed run (expected a 0-byte save)"
+        t.key("ctrl-y", delay=0.12)                   # redo -> Edit > Redo (menu 1, item 2)
+        assert t.wait_for("[notepad] menu 1 2", 8), "Ctrl+Y did not fire Edit > Redo"
+        t.key("ctrl-s", delay=0.12)
+        assert t.wait_for("[notepad] saved /Users/user/untitled.txt (8 bytes)", 8), \
+            "redo did not restore the typed run (expected an 8-byte save)"
+        # prove the restored text is exactly what was typed, read back off disk
+        t.key("alt-tab", delay=0.1)
+        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
+        t.line("cat untitled.txt")
+        assert t.wait_for("undoredo", 6), "redo did not restore the original text"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_spotlight(uefi):
     # Super+Space opens the Spotlight launcher (a popup). Typing filters the
     # installed apps; Enter launches the match (here: Notepad).
@@ -572,7 +605,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_alt_tab, t_notepad_edit_save, t_spotlight,
+    t_app_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]

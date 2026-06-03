@@ -73,7 +73,12 @@ struct Notepad : ui::Window {
     void on_menu(int menu, int item) override {
         print("[notepad] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
         if (menu == 0) { if (item == 0) new_note(); else if (item == 1) save(); }
-        else if (menu == 1) { if (item == 0 && focus) { focus->on_key(0x01); invalidate(); } }  /* Select All (item 1 Undo is disabled) */
+        else if (menu == 1 && focus) {                           /* Edit: Select All / Undo / Redo */
+            if (item == 0) focus->on_key(0x01);
+            else if (item == 1) focus->undo();
+            else if (item == 2) focus->redo();
+            invalidate();
+        }
         else if (menu == 2 && item == 0) {                       /* View > Status Bar: toggle + checkmark */
             show_status = !show_status;
             status.visible = show_status;
@@ -117,7 +122,7 @@ struct Notepad : ui::Window {
 
         menu_begin();                                 /* declare a menu bar (#6): accels, a disabled item, a checkable toggle */
         int mf = menu_add("File"); menu_item(mf, "New", 'N');        menu_item(mf, "Save", 'S');
-        int me = menu_add("Edit"); menu_item(me, "Select All", 'A'); menu_item(me, "Undo", 0, WMI_DISABLED);
+        int me = menu_add("Edit"); menu_item(me, "Select All", 'A'); menu_item(me, "Undo", 'Z'); menu_item(me, "Redo", 'Y');
         int mv = menu_add("View"); menu_item(mv, "Status Bar", 0, WMI_CHECKED);
         menu_commit();
         return true;

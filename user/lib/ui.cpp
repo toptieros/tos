@@ -3,6 +3,7 @@
 #include "ui.h"
 #include "theme.h"
 #include "textutil.h"
+#include "editlog.h"
 
 namespace ui {
 
@@ -160,7 +161,76 @@ bool ListView::on_key(int key, bool shift) {
 static inline bool tf_wordch(char c) { return tu_wordch(c); }  /* pure; unit-tested in tests/unit */
 
 TextField::TextField() { bg = TH_SURF_0; fg = TH_TEXT; focusable = true; }
-TextField::~TextField() { if (buf) free(buf); }
+TextField::~TextField() {
+    if (buf) free(buf);
+    hist_clear(ust, un); hist_clear(rst, rn);
+    if (ust) free(ust); if (rst) free(rst);
+}
+
+/* --- edit history (undo/redo) ------------------------------------------------
+ * Two bounded stacks of {op, pos, span text, caret-before}. ins()/del_range()
+ * record() every mutation; undo/redo pop one stack and apply the inverse, which
+ * record() routes onto the opposite stack (so the chain is reversible). Runs of
+ * single-char typing or backspacing coalesce into the top record. */
+void TextField::hist_init() {
+    if (!ust) { ust = (Edit *)malloc(sizeof(Edit) * UNDO_MAX); un = 0; }
+    if (!rst) { rst = (Edit *)malloc(sizeof(Edit) * UNDO_MAX); rn = 0; }
+}
+void TextField::hist_clear(Edit *stk, int &n) {
+    if (stk) for (int i = 0; i < n; i++) if (stk[i].txt) free(stk[i].txt);
+    n = 0;
+}
+void TextField::hist_push(Edit *stk, int &n, uint8_t op, int pos, const char *txt, int cnt, int caret0) {
+    char *cp = (char *)malloc(cnt > 0 ? cnt : 1);
+    memcpy(cp, txt, cnt);
+    if (n == UNDO_MAX) { if (stk[0].txt) free(stk[0].txt); memmove(stk, stk + 1, sizeof(Edit) * (UNDO_MAX - 1)); n--; }
+    stk[n] = { op, pos, cnt, caret0, cp }; n++;
+}
+/* Merge a single-char edit into the top undo record per editlog.h's pure rule
+ * (APPEND grows the right end, PREPEND the left). caret0 is left at the run's
+ * start, so one Ctrl+Z drops the whole run. */
+bool TextField::hist_coalesce(uint8_t op, int pos, const char *txt, int cnt) {
+    if (cnt != 1 || un == 0) return false;
+    Edit &t = ust[un - 1];
+    int kind = el_coalesce_kind(t.op, t.pos, t.n, t.txt[0], t.txt[t.n - 1], op, pos, txt[0]);
+    if (kind == EL_NONE) return false;
+    char *nt = (char *)realloc(t.txt, t.n + 1); if (!nt) return false;
+    t.txt = nt;
+    if (kind == EL_PREPEND) { for (int i = t.n; i > 0; i--) t.txt[i] = t.txt[i - 1]; t.txt[0] = txt[0]; t.pos = pos; }
+    else                    { t.txt[t.n] = txt[0]; }
+    t.n++;
+    return true;
+}
+void TextField::record(uint8_t op, int pos, const char *txt, int cnt, int caret0) {
+    if (cnt <= 0) return;
+    hist_init();
+    if (!applying) {
+        if (!brk && hist_coalesce(op, pos, txt, cnt)) { hist_clear(rst, rn); return; }
+        hist_push(ust, un, op, pos, txt, cnt, caret0);
+        hist_clear(rst, rn);                              /* a fresh edit invalidates redo */
+        brk = false;
+        return;
+    }
+    hist_push(cur_stk, *cur_n, op, pos, txt, cnt, caret0);
+}
+/* Pop one record off `from`, apply its inverse (which record() pushes onto `to`),
+ * and restore the caret. Shared by undo() (ust->rst) and redo() (rst->ust). */
+bool TextField::pop_apply(Edit *from, int &fn, Edit *to, int &tn) {
+    if (fn == 0) return false;
+    Edit e = from[--fn];                                  /* take ownership of e.txt */
+    anchor = -1;
+    applying = true; cur_stk = to; cur_n = &tn;
+    if (e.op == 0) { caret = e.pos + e.n; del_range(e.pos, e.pos + e.n); }  /* undo an insert */
+    else           { caret = e.pos;       ins(e.txt, e.n); }                /* undo a delete  */
+    applying = false;
+    caret = e.caret0;
+    if (e.txt) free(e.txt);
+    brk = true;
+    if (win) win->invalidate();
+    return true;
+}
+bool TextField::undo() { return pop_apply(ust, un, rst, rn); }
+bool TextField::redo() { return pop_apply(rst, rn, ust, un); }
 
 void TextField::ensure(int need) {
     if (need <= cap) return;
@@ -176,18 +246,22 @@ void TextField::set_text(const char *s) {
     for (int i = 0; i < len; i++) buf[i] = s[i];
     if (buf) buf[len] = 0;
     caret = len; anchor = -1; top = hoff = 0;
+    hist_clear(ust, un); hist_clear(rst, rn); brk = true;  /* loading content resets the history */
     changed();
 }
 void TextField::ins(const char *s, int n) {
     if (has_sel()) { int a, b; sel_bounds(a, b); del_range(a, b); }
+    int c0 = caret;                                       /* caret before the insert (undo target) */
     ensure(len + n + 1);
     for (int i = len; i >= caret; i--) buf[i + n] = buf[i];   /* shift tail (incl NUL) right */
     for (int i = 0; i < n; i++) buf[caret + i] = s[i];
     len += n; caret += n; buf[len] = 0; anchor = -1;
+    record(0, c0, s, n, c0);
     changed();
 }
 void TextField::del_range(int a, int b) {
     if (a < 0) a = 0; if (b > len) b = len; if (a >= b) return;
+    record(1, a, buf + a, b - a, caret);                 /* capture the span before it's gone */
     int n = b - a;
     for (int i = b; i <= len; i++) buf[i - n] = buf[i];
     len -= n; if (caret > b) caret -= n; else if (caret > a) caret = a;
@@ -247,6 +321,7 @@ int TextField::index_at(int px, int py) {
 }
 bool TextField::on_mouse(int x, int y, int btn) {
     if (multiline && sb.hit(x)) { sb.dragging = true; sb_set_top_from_y(y); return true; }  /* press on the scroll track */
+    brk = true;                            /* repositioning the caret ends the typing-coalesce run */
     int idx = index_at(x, y);
     unsigned now = win ? win->ticks : 0;
     if (btn & WEV_MOUSE_SHIFT) {           /* Shift+click: extend the selection to the click */
@@ -295,7 +370,12 @@ bool TextField::on_key(int key, bool shift) {  /* shift => extend the selection 
     if (key == 0x03) { copy_sel(false); return true; }            /* Ctrl+C */
     if (key == 0x18) { copy_sel(true);  return true; }            /* Ctrl+X */
     if (key == 0x16) { paste();         return true; }            /* Ctrl+V */
-    if (key == 0x01) { anchor = 0; caret = len; if (win) win->invalidate(); return true; }  /* Ctrl+A */
+    if (key == 0x1a) { undo(); return true; }                     /* Ctrl+Z */
+    if (key == 0x19) { redo(); return true; }                     /* Ctrl+Y */
+    if (key == 0x01) { anchor = 0; caret = len; brk = true; if (win) win->invalidate(); return true; }  /* Ctrl+A */
+    /* a caret jump (arrows / home / end / word-jump) ends the typing-coalesce run */
+    if (key == UK_LEFT || key == UK_RIGHT || key == UK_UP || key == UK_DOWN ||
+        key == UK_HOME || key == UK_END || key == UK_WORD_LEFT || key == UK_WORD_RIGHT) brk = true;
     if (key >= 0x20 && key < 0x7f) { char c = (char)key; ins(&c, 1); return true; }
     if (key == UK_ENTER || key == '\n') {     /* the keyboard sends '\n' (10) for Return */
         if (multiline) { char c = '\n'; ins(&c, 1); }

@@ -19,7 +19,10 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   and a new bottom-pinned `WIN_DESKTOP` layer over `~/Desktop`: **multi-select** (Ctrl/Shift-click
   + rubber-band marquee — single-select today), **folder/multi-item copy-cut-paste** (today's
   `CLIP_FILE`-of-bytes can't hold a directory → path-reference clipboard + recursive `cp_r`),
-  **rename**, context menus, and **drag-to-move** (needs DnD). → [`files-and-desktop.md`](design/files-and-desktop.md)
+  **rename**, context menus, and **drag-to-move** (needs DnD). **Keyboard shortcuts:** F2 rename,
+  Ctrl+N new folder, Enter/Ctrl+O open, Delete (or Backspace) remove, Ctrl+A select-all,
+  Backspace/Alt+← up a directory, plus the existing Ctrl+C/X/V — surfaced in the context menu and a
+  menu bar (#6) so the accelerators show. → [`files-and-desktop.md`](design/files-and-desktop.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
   `menu_begin/menu_add/menu_item/menu_commit` + `on_menu()` API; twm draws a bar tile per menu
@@ -33,11 +36,40 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   Bar]. **Left:** submenus, and porting term/Files. → [`ui.md`](design/ui.md)
 - [ ] **Grow the toolkit + port apps.** A layout system + menus, then port `term` / `fastfetch`
   (and new apps) onto the toolkit.
+- [ ] **File open/save dialog (reusable picker).** A modal file chooser the whole system can reuse —
+  **Open** mode (browse the fs, pick an existing file) and **Save** mode (pick a folder, type a
+  name). Saving over an existing name warns with **Replace / Rename / Cancel**; it respects system
+  ownership (can't write into `/System`/`/Apps` — those are greyed). *Open design question:* an
+  in-process `ui::FileDialog` modal built on the Files suite's shared `ui::FileView`, vs. a
+  standalone picker **process** that returns the chosen path over IPC (matches the "spawns a files
+  instance" idea and lets even non-toolkit apps request a path). Either way it must **preserve the
+  Files feel** — the same browsing chrome and the **Favorites / quick-access sidebar** — so picking
+  a location is familiar (another reason to share `ui::FileView` + the `Sidebar`). First consumers:
+  Notepad Save/Open; then any app that loads or stores a file. → ties into [`files-and-desktop.md`](design/files-and-desktop.md)
+- [ ] **Notepad redesign: tabs + session autosave (#5).** Today **New note silently discards an
+  unsaved buffer**, and the filename sits in an editable field at the top. Rework it:
+  - **Unsaved-changes guard** — New / Close / Quit on a dirty buffer prompts **Save / Discard / Cancel**
+    (no more silent nuke).
+  - **Tabs** — drop the top filename field; each note is a tab. A **`+` button** beside the tabs and
+    **File > New** both open a fresh **"untitled"** tab; switch + close tabs; the title bar / active
+    tab shows the note's name (or "untitled").
+  - **Session autosave** — periodically cache each tab's text **and** the app state (open tabs, the
+    active one, per-tab name + dirty flag) to a per-user draft store (e.g.
+    `/Users/user/.cache/notepad/`, like Windows Notepad's draft restore), so relaunching restores the
+    whole session — even notes that were never explicitly saved.
+  - **Save / Open flow** — Save on an untitled note opens the **file open/save dialog** above to pick
+    a folder + name (with the overwrite warning); **Open** loads an existing note through the same
+    picker. → [`ui.md`](design/ui.md)
 
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
 toolkit app for free. **Done:** blink caret, drag-select, Ctrl+A, double-click word-select,
 Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select. **Left:**
+- [ ] **Undo / redo (Ctrl+Z / Ctrl+Y).** A per-`TextField` edit history (a ring of edit records —
+  insert/delete spans, or periodic snapshots) so every toolkit text field inherits undo/redo for
+  free; coalesce a run of typing into one step. Ctrl+Z = undo, Ctrl+Y (and/or Ctrl+Shift+Z) = redo;
+  a fresh edit clears the redo stack. Lands the Notepad **Edit > Undo** item (declared but disabled
+  today, see App menus #6) plus a Redo item, with their accelerators.
 - [ ] **I-beam cursor over selectable text.** Blocked on an app→compositor cursor-shape protocol
   (twm composites the cursor and doesn't know widget regions).
 - [ ] **Primary selection + cross-app text drag.** Blocked on the DnD protocol.

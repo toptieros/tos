@@ -62,6 +62,10 @@ public:
     virtual void on_drag(int x, int y) { (void)x; (void)y; }     /* button-held move over this widget */
     virtual void on_button_up() {}                              /* pointer button released (end a drag) */
     virtual bool on_key(int key, bool shift = false) { (void)key; (void)shift; return false; }  /* shift: held-Shift (selection extend); true if consumed */
+    /* per-widget undo/redo (the global text contract: any editable widget can
+     * implement these and inherit Ctrl+Z/Ctrl+Y + the menu items for free). */
+    virtual bool undo() { return false; }
+    virtual bool redo() { return false; }
     /* pointer moved over the widget (absolute coords); return true if its look
      * changed and the window must repaint. The base hover/leave (the `hovered`
      * flag) is managed by Window; override only for sub-element hover (rows etc.). */
@@ -223,6 +227,13 @@ public:
     bool        on_scroll(int delta) override;                     /* multiline: scroll the viewport */
     bool        shows_caret() const override { return visible; }    /* keeps the caret blinking when idle */
     void        drag_to(int x, int y);
+    /* Undo / redo (global text contract): two bounded stacks of insert/delete
+     * span records; a run of single-char typing or backspacing coalesces into one
+     * step; a fresh edit clears the redo stack. */
+    bool        undo() override;
+    bool        redo() override;
+    bool        can_undo() const { return un > 0; }
+    bool        can_redo() const { return rn > 0; }
     int         caret = 0;
 private:
     char *buf = nullptr;
@@ -251,6 +262,20 @@ private:
     int   word_prev(int i) const;           /* Ctrl+Left:  start of the previous word    */
     int   word_next(int i) const;           /* Ctrl+Right: start of the next word        */
     void  changed();
+    /* --- edit history (undo/redo) ----------------------------------------- */
+    struct Edit { uint8_t op; int pos, n, caret0; char *txt; };  /* op 0 = insert, 1 = delete */
+    static const int UNDO_MAX = 64;         /* bounded ring; oldest steps drop off */
+    Edit *ust = nullptr; int un = 0;        /* undo stack (lazily allocated)       */
+    Edit *rst = nullptr; int rn = 0;        /* redo stack                          */
+    Edit *cur_stk = nullptr; int *cur_n = nullptr;   /* where record() pushes      */
+    bool  applying = false;                 /* inside undo()/redo(): don't coalesce/clear-redo */
+    bool  brk = true;                       /* a click/jump broke the coalesce run */
+    void  hist_init();                      /* allocate the two stacks on first edit */
+    void  hist_push(Edit *stk, int &n, uint8_t op, int pos, const char *txt, int cnt, int caret0);
+    void  hist_clear(Edit *stk, int &n);
+    bool  hist_coalesce(uint8_t op, int pos, const char *txt, int cnt);
+    void  record(uint8_t op, int pos, const char *txt, int cnt, int caret0);
+    bool  pop_apply(Edit *from, int &fn, Edit *to, int &tn);
 };
 
 /* ------------------------------------------------------------------- Window */

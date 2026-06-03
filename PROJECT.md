@@ -182,7 +182,9 @@ hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
   only on framebuffer boots.
 - **rtc** — CMOS real-time clock (ports 0x70/0x71); stable (no-straddle) read,
   BCD/12-hour aware; `SYS_TIME` backs the shell `date` command.
-- **timer** — 8254 PIT @ 100 Hz drives preemption + sleeps on the BSP.
+- **timer** — 8254 PIT @ 100 Hz drives preemption + sleeps on the BSP; each AP runs
+  its LAPIC timer at the same 100 Hz, its initial count measured at boot by
+  `lapic_timer_calibrate` (PIT channel-2 one-shot reference) instead of a fixed constant.
 - **ata** — minimal ATA PIO (LBA28) driver for the primary master (the boot
   disk); polled, so it works identically during early init and inside syscalls.
 - **pci** — PCI config-space access (legacy 0xCF8/0xCFC) + a bus scan; `SYS_LSPCI`
@@ -258,7 +260,12 @@ management. Draws the desktop + top bar (logo, focused-app title, live clock) an
 clicking** an icon `fork`+`exec`s that program. It composites window surfaces,
 draws chrome, and handles **focus, dragging (title bar), close (the `x` button →
 `WEV_CLOSE`), resize (the corner grip → `WEV_RESIZE`), and forwarding client-area
-clicks (`WEV_MOUSE`) to the focused window**. Dragging draws the window at its new
+clicks (`WEV_MOUSE`) to the focused window**. An app may also declare a **menu bar**
+(`SYS_WIN_SETMENU` → a `struct winmenu` of ≤5 menus × ≤8 items, each item carrying
+`WMI_DISABLED`/`WMI_CHECKED` flags + a Ctrl-accelerator letter); the compositor draws a
+tile per menu after the app name, opens a dropdown (greyed/checked rows, right-aligned
+`^X` hints), posts the pick back as `WEV_MENU`, and intercepts `Ctrl+<letter>` for the
+focused window to fire the matching item directly. Dragging draws the window at its new
 spot and then erases only the *trailing* sliver (never blanks-then-redraws), so
 there's no flicker. The arrow cursor is composited on top each frame
 (`ugfx_cursor_hide` before redrawing, redraw, then re-draw the cursor), so the
