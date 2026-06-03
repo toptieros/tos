@@ -22,10 +22,15 @@
 #define TR_AP_ENTRY  (TRAMPO + 0xFE8)
 #define TR_AP_STACK  (TRAMPO + 0xFF0)
 #define AP_STACK_SZ  8192
-#define LAPIC_TIMER_COUNT 1000000u             /* per-CPU preemption period (QEMU) */
+#define LAPIC_PREEMPT_HZ  100u                 /* AP preempt rate; matches the BSP's PIT tick */
 
 struct cpu cpus[MAX_CPUS];
 int ncpu = 1;
+
+/* Per-CPU LAPIC timer initial count, measured once on the BSP (lapic_timer_calibrate)
+ * so the APs preempt at LAPIC_PREEMPT_HZ on whatever this machine's bus rate is,
+ * rather than a magic constant. Stays at the calibration fallback until smp_init runs. */
+static uint32_t lapic_count = 1000000u;
 
 static uint8_t ap_stacks[MAX_CPUS][AP_STACK_SZ] __attribute__((aligned(16)));
 static volatile int cpu_online = 1;            /* the BSP counts as online */
@@ -53,7 +58,7 @@ __attribute__((used)) static void ap_main(void) {
     gdt_load_cpu(idx);
     idt_load();
     lapic_enable();
-    lapic_timer_init(0x22, LAPIC_TIMER_COUNT);
+    lapic_timer_init(0x22, lapic_count);        /* BSP-calibrated count (LAPIC_PREEMPT_HZ) */
     __sync_fetch_and_add(&cpu_online, 1);
     sched_ap_enter(idx);                        /* never returns */
 }
@@ -81,6 +86,16 @@ void smp_init(void) {
     uint64_t kpml4 = sched_kernel_cr3();
     __asm__ volatile("mov %0, %%cr3" : : "r"(kpml4) : "memory");
     lapic_enable();
+
+    /* Measure the local timer once (IRQs are still off here) so the APs preempt at a
+     * defined LAPIC_PREEMPT_HZ instead of a magic count. The BSP itself preempts on
+     * the PIT, so this only sets the AP cadence. */
+    lapic_count = lapic_timer_calibrate(LAPIC_PREEMPT_HZ);
+    console_puts("[smp] lapic timer calibrated: count ");
+    console_putdec(lapic_count);
+    console_puts(" (~");
+    console_putdec(LAPIC_PREEMPT_HZ);
+    console_puts(" hz preempt)\r\n");
 
     cpus[0].apic_id = lapic_id();              /* the BSP */
     cpus[0].index   = 0;

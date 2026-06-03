@@ -33,8 +33,6 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   Bar]. **Left:** submenus, and porting term/Files. → [`ui.md`](design/ui.md)
 - [ ] **Grow the toolkit + port apps.** A layout system + menus, then port `term` / `fastfetch`
   (and new apps) onto the toolkit.
-- [ ] **Live resize preview + reflow.** A live outline while dragging the grip, and reflowing
-  wrapped lines (resize snaps on mouse-up today, no reflow).
 
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
@@ -82,8 +80,7 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select.
   configurable ring size.
 
 ### Smaller ideas
-- A heap / `sbrk` for user programs (a program is its static image + stack today).
-- Calibrate the LAPIC timer instead of a fixed count.
+- _(nothing queued right now)_
 
 ---
 
@@ -91,6 +88,28 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select.
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **User-program heap — confirmed already done (2026-06-03).** The "a program is its static image
+  + stack" note was stale: `user/lib/libc.c` already ships a full growable heap over `SYS_MMAP`
+  (`malloc/free/realloc/calloc`, an address-sorted free list with first-fit + split + boundary
+  coalescing, arena grown in ≥1 MiB mmap chunks) — `operator new`/`delete` (crt.cpp) sit on it, and
+  twm/Files/ui all allocate through it. An mmap-backed heap supersedes a `sbrk`; the stale "smaller
+  idea" bullet was removed. (Making the terminal scrollback ring runtime-sized still sits under
+  *Terminal scrollback*.)
+- **LAPIC timer calibrated against the PIT (2026-06-03).** The AP preemption timer was a magic
+  QEMU-tuned count (`1000000`, ~62.5 Hz). `lapic_timer_calibrate(hz)` (apic.c) now measures the
+  local timer's real rate over a PIT-channel-2 one-shot window (gated + polled via port 0x61 bit5,
+  so no IRQs — it runs at boot with interrupts still off) and returns the divide-by-16 count for a
+  defined rate; `smp_init` calls it once on the BSP (`LAPIC_PREEMPT_HZ` = 100, matching the BSP's
+  PIT tick) and the APs reuse the result. Implausible readings / a watchdog timeout fall back to
+  the old fixed count, so the worst case is unchanged. Measured count 626723 on QEMU (≈625000
+  expected: 1 GHz APIC ÷16 ÷100) — `[smp] lapic timer calibrated: count N (~100 hz preempt)`.
+- **Live resize + reflow — verified done (2026-06-03).** twm already streams `WEV_RESIZE` to the
+  app as the grip is dragged (throttled to >7px) and sends the exact size on release (twm.c live-
+  resize block); the terminal recomputes its grid via `setup_surface` and the toolkit's multiline
+  `TextField` re-wraps from the current width on each redraw, so content reflows **live**, not on
+  mouse-up. Screenshot-verified (notepad text re-wrapped as the window narrowed). A separate XOR
+  "ghost outline" is unnecessary now that the content itself resizes live; the stale open bullet
+  was removed.
 - **App-menu accelerators + checkmarks + disabled items #6 (2026-06-03).** `struct winmenu`
   items gained a `flags` byte (`WMI_DISABLED`/`WMI_CHECKED`) and an `accel` letter. `ui::Window`'s
   `menu_item(label, accel=0, flags=0)` plus `menu_set_checked/_set_enabled/_is_checked` declare and

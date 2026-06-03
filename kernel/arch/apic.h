@@ -16,3 +16,8 @@ void lapic_send_sipi(uint32_t apic_id, uint8_t vector);
 
 /* Start this CPU's local timer firing `vector` periodically (for preemption). */
 void lapic_timer_init(uint8_t vector, uint32_t count);
+
+/* Measure the local timer against the PIT and return the periodic count for `hz`
+ * preempts/sec (divide-by-16). Run once on the BSP at boot; APs reuse the result.
+ * Falls back to a safe fixed count if the reading is implausible. */
+uint32_t lapic_timer_calibrate(uint32_t hz);
