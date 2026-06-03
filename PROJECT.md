@@ -283,7 +283,10 @@ as a piped child (`pty_open` + `fork` + `pty_attach` + `exec`), maintains a
 character grid (fixed stride, so resize preserves content), parses the shell's
 byte stream — newline/CR/backspace/tab plus ANSI **CSI/SGR** escapes for colour —
 renders changed cells into its surface, and forwards the keys twm routes to it
-into the pty. It draws its own block cursor.
+into the pty. It draws its own block cursor. Though it's a raw-syscall app (not the
+`ui::` toolkit), it still declares a menu bar by hand (`win_setmenu` with a literal
+`struct winmenu`) and handles `WEV_MENU`: **Edit [Copy, Paste, Clear]**, with no Ctrl
+accelerators so a plain Ctrl+C still reaches the shell as an interrupt.
 
 **`shell`** is an ordinary pty client: line editing with history, and it parses
 **ANSI escape sequences** for the arrow/Home/End/Delete keys (the keyboard emits
@@ -300,7 +303,9 @@ sizes), and drives the filesystem through the FS syscalls. Navigation is mouse-
 driven via the forwarded `WEV_MOUSE` clicks: single-click selects, double-click
 opens a folder (or views a text file, with a Back button); `..` goes up. It is a
 plain FS client — no kernel knowledge of "a file manager", just `readdir`/`mkdir`/
-`rmdir`/`stat`/`rename`/`unlink` + the file API into its window surface.
+`rmdir`/`stat`/`rename`/`unlink` + the file API into its window surface. It declares a
+**File / Edit / Go** menu bar (New Folder, Copy/Cut/Paste/Delete, Up/Back/Forward) whose
+accelerators (^N/^C/^X/^V) the compositor routes back as `WEV_MENU` picks.
 
 ---
 

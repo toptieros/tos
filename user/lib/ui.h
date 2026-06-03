@@ -278,6 +278,41 @@ private:
     bool  pop_apply(Edit *from, int &fn, Edit *to, int &tn);
 };
 
+/* ------------------------------------------------------------ ConfirmDialog */
+/* A modal confirmation sheet: a dim scrim over the window + a centred card with a
+ * title, a message, and up to three buttons (e.g. Save / Discard / Cancel). Add it
+ * LAST to a Window (so it draws on top and grabs every click), then call show();
+ * on_choice(ctx, idx) fires with the button index, or -1 for Esc/Cancel. While open
+ * it captures keyboard focus (Enter = the primary button, Esc = cancel) so the rest
+ * of the window is inert. Reused by Notepad's unsaved-changes guard and the file
+ * dialog's overwrite warning. */
+class ConfirmDialog : public Widget {
+public:
+    bool  open = false;
+    void *ctx = nullptr;
+    void (*on_choice)(void *, int) = nullptr;
+    ConfirmDialog() { visible = false; focusable = true; }
+    /* `b0` is the primary (default) button; b1/b2 optional. Pass cancel last so Esc
+     * maps to it -- show() records the index of a button labelled "Cancel" as the
+     * Esc target (else -1). */
+    void show(const char *title, const char *msg,
+              const char *b0, const char *b1 = nullptr, const char *b2 = nullptr);
+    void dismiss();
+    void draw() override;
+    bool on_mouse(int x, int y, int btn) override;
+    bool on_key(int key, bool shift = false) override;
+    bool on_hover(int x, int y) override;
+    void on_leave() override { hovered = false; hover = -1; }
+private:
+    char    title[48] = {0}, msg[192] = {0}, btn[3][20] = {{0}};
+    int     nbtn = 0, hover = -1, esc_btn = -1;
+    Rect    card{0,0,0,0}, brect[3];
+    Widget *prev_focus = nullptr;
+    void    layout();
+    int     btn_at(int x, int y) const;
+    void    choose(int idx);
+};
+
 /* ------------------------------------------------------------------- Window */
 class Window {
 public:
@@ -299,6 +334,10 @@ public:
     int  run();                                 /* event loop until closed */
 
     virtual void on_resize(int nw, int nh) { (void)nw; (void)nh; }
+    /* The compositor's close button (WEV_CLOSE). Return true to let the window close
+     * (the default); return false to veto it -- e.g. raise an unsaved-changes guard
+     * first and close later by clearing `running`. */
+    virtual bool on_close() { return true; }
     virtual void on_key(int key) { (void)key; } /* keys when nothing is focused */
     virtual void on_nav(int dir) { (void)dir; } /* WEV_NAV: 0 = back, 1 = forward (mouse side buttons) */
     virtual void on_context(int x, int y) { (void)x; (void)y; }  /* right-click (client-relative) */

@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **36/36** (25 e2e journeys on BIOS + a UEFI subset 11) + **62 host
+**Status:** `make test` **38/38** (27 e2e journeys on BIOS + a UEFI subset 11) + **62 host
 unit tests** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -32,10 +32,14 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   accelerator (e.g. `^S`) right-aligned; the compositor intercepts `Ctrl+<letter>` for the focused
   window and fires the matching enabled item as a `WEV_MENU` (opt-in per declared menu, so
   menuless apps keep their raw Ctrl chords). Runtime toggles via `menu_set_checked/_set_enabled`.
-  Notepad ships File [New ^N, Save ^S] / Edit [Select All ^A, Undo (disabled)] / View [✓ Status
-  Bar]. **Left:** submenus, and porting term/Files. → [`ui.md`](design/ui.md)
-- [ ] **Grow the toolkit + port apps.** A layout system + menus, then port `term` / `fastfetch`
-  (and new apps) onto the toolkit.
+  Notepad ships File [New ^N, Save ^S] / Edit [Select All ^A, Undo ^Z, Redo ^Y] / View [✓ Status
+  Bar]; **Files** ships File [New Folder ^N, Refresh] / Edit [Copy ^C, Cut ^X, Paste ^V, Delete] /
+  Go [Up, Back, Forward]; **Terminal** (a raw-syscall app, proving the protocol isn't toolkit-only)
+  ships Edit [Copy, Paste, Clear] with no Ctrl accelerators so the shell keeps ^C. **Left:**
+  submenus (needs a `struct winmenu` ABI bump — deferred until something needs nesting). →
+  [`ui.md`](design/ui.md)
+- [ ] **Grow the toolkit + port apps.** A layout system; `fastfetch` and new apps onto the toolkit.
+  (term + Files now carry real menu bars; the toolkit layout system is the remaining piece.)
 - [ ] **File open/save dialog (reusable picker).** A modal file chooser the whole system can reuse —
   **Open** mode (browse the fs, pick an existing file) and **Save** mode (pick a folder, type a
   name). Saving over an existing name warns with **Replace / Rename / Cancel**; it respects system
@@ -116,6 +120,18 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select,
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Terminal + Files ported onto the app-menu API #6 (2026-06-03).** Two more apps now carry real
+  menu bars. **Files** (a `ui::Window`) declares File [New Folder ^N, Refresh] / Edit [Copy ^C, Cut
+  ^X, Paste ^V, Delete] / Go [Up, Back, Forward] via `menu_begin/menu_add/menu_item/menu_commit`,
+  routed in `on_menu` to the same actions the toolbar + right-click already run; the ^C/^X/^V/^N
+  accelerators are intercepted by the compositor and arrive as `WEV_MENU` picks (`[files] menu m i`
+  trace). **Terminal** — a raw-syscall app, *not* the toolkit — builds a `struct winmenu` by hand
+  and calls `win_setmenu(win, &m)`, then handles `WEV_MENU` in its event loop: Edit [Copy, Paste,
+  Clear] with **no** Ctrl accelerators on purpose, so a plain ^C still reaches the shell as an
+  interrupt (`[term] menu i` trace). Proves the menu protocol is app-agnostic, not toolkit-only.
+  e2e `t_files_menu` (Ctrl+N → New Folder lands on disk) + `t_term_menu` (click Edit > Clear →
+  WEV_MENU); both menu bars screenshot-verified. BIOS 27/27 + UEFI 11/11 + 62 unit. Still left
+  under #6: submenus (a `struct winmenu` ABI bump, deferred until a use appears).
 - **TextField undo/redo — the global text contract (2026-06-03).** Every toolkit text field now
   inherits Ctrl+Z / Ctrl+Y. `TextField` carries two bounded ring stacks of insert/delete span
   records (`{op, pos, span text, caret-before}`); `ins`/`del_range` record each mutation, `undo`/

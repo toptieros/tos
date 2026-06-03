@@ -623,6 +623,85 @@ bool Window::menu_is_checked(int menu, int item) const {
 }
 void Window::menu_commit() { if (id >= 0) win_setmenu(id, &menu_spec); }
 
+/* --- ConfirmDialog (modal sheet) ----------------------------------------- */
+void ConfirmDialog::show(const char *t, const char *m, const char *b0, const char *b1, const char *b2) {
+    menu_cpy(title, t, sizeof title);
+    menu_cpy(msg, m, sizeof msg);
+    const char *bs[3] = { b0, b1, b2 };
+    nbtn = 0; esc_btn = -1;
+    for (int i = 0; i < 3; i++) if (bs[i]) {
+        menu_cpy(btn[nbtn], bs[i], sizeof btn[nbtn]);
+        if (btn[nbtn][0] == 'C' && btn[nbtn][1] == 'a') esc_btn = nbtn;   /* "Cancel" -> the Esc target */
+        nbtn++;
+    }
+    open = true; visible = true; hover = -1;
+    if (win) { r = { 0, 0, win->w, win->h }; prev_focus = win->focus; win->focus = this; win->invalidate(); }
+    layout();
+}
+void ConfirmDialog::dismiss() {
+    open = false; visible = false;
+    if (win) { if (win->focus == this) win->focus = prev_focus; win->invalidate(); }
+}
+void ConfirmDialog::layout() {
+    if (!win) return;
+    int fh = ugfx_font_h(), pad = 20, gap = 10, bh = fh + 16;
+    int bw[3], btot = 0;
+    for (int i = 0; i < nbtn; i++) { bw[i] = ugfx_text_w(btn[i]) + 30; if (bw[i] < 78) bw[i] = 78; btot += bw[i] + (i ? gap : 0); }
+    int cw = ugfx_text_w(title); int mw = ugfx_text_w(msg); if (mw > cw) cw = mw; if (btot > cw) cw = btot;
+    cw += pad * 2; if (cw < 300) cw = 300; if (cw > win->w - 40) cw = win->w - 40;
+    int ch = pad + fh + 12 + fh + 18 + bh + pad;
+    int cx = (win->w - cw) / 2, cy = (win->h - ch) / 2;
+    card = { cx, cy, cw, ch };
+    int bx = cx + cw - pad, by = cy + ch - pad - bh;     /* primary (i=0) at the far right */
+    for (int i = 0; i < nbtn; i++) { bx -= bw[i]; brect[i] = { bx, by, bw[i], bh }; bx -= gap; }
+}
+int ConfirmDialog::btn_at(int x, int y) const {
+    for (int i = 0; i < nbtn; i++) if (brect[i].has(x, y)) return i;
+    return -1;
+}
+void ConfirmDialog::choose(int idx) {
+    dismiss();                                            /* restore focus first, so the callback may re-show */
+    printf("[ui] confirm %d\r\n", idx);
+    if (on_choice) on_choice(ctx, idx);
+}
+void ConfirmDialog::draw() {
+    if (!open || !win) return;
+    layout();
+    int fh = ugfx_font_h(), pad = 20, rad = TH_R_MD;
+    ugfx_fill_a(0, 0, win->w, win->h, ARGB(150, 8, 10, 16));        /* dim the window behind the sheet */
+    ugfx_elevation(card.x, card.y, card.w, card.h, rad, 6);
+    ugfx_rrect_aa(card.x, card.y, card.w, card.h, rad, TH_SURF_3);
+    ugfx_rrect_border(card.x, card.y, card.w, card.h, rad, 1, TH_BORDER);
+    ugfx_text(card.x + pad, card.y + pad, title, TH_TEXT, UGFX_TRANSPARENT);
+    ugfx_text(card.x + pad, card.y + pad + fh + 12, msg, TH_MUTED, UGFX_TRANSPARENT);
+    for (int i = 0; i < nbtn; i++) {
+        Rect b = brect[i]; bool primary = (i == 0);
+        ugfx_rrect_aa(b.x, b.y, b.w, b.h, TH_R_SM, primary ? TH_ACCENT : TH_SURF_4);
+        if (!primary) ugfx_rrect_border(b.x, b.y, b.w, b.h, TH_R_SM, 1, TH_BORDER);
+        if (i == hover) ugfx_state_layer(b.x, b.y, b.w, b.h, TH_R_SM, TH_HOVER_A);
+        uint32_t tc = primary ? RGB(255, 255, 255) : TH_TEXT;
+        ugfx_text(b.x + (b.w - ugfx_text_w(btn[i])) / 2, b.y + (b.h - fh) / 2, btn[i], tc, UGFX_TRANSPARENT);
+    }
+}
+bool ConfirmDialog::on_mouse(int x, int y, int) {
+    if (!open) return true;
+    int b = btn_at(x, y);
+    if (b >= 0) choose(b);                                /* clicks off the buttons are swallowed (stay modal) */
+    return true;
+}
+bool ConfirmDialog::on_hover(int x, int y) {
+    if (!open) return false;
+    int b = btn_at(x, y);
+    if (b == hover) return false;
+    hover = b; return true;
+}
+bool ConfirmDialog::on_key(int key, bool) {
+    if (!open) return false;
+    if (key == UK_ESC)   { choose(esc_btn); return true; }
+    if (key == UK_ENTER || key == '\n') { choose(0); return true; }   /* Enter = the primary button */
+    return true;                                          /* swallow everything else while modal */
+}
+
 int Window::run() {
     redraw(); dirty = false;
     while (running) {
@@ -658,7 +737,7 @@ int Window::run() {
             }
             case WEV_NAV:   on_nav((int)ev.a); dirty = true; break;
             case WEV_MENU:  on_menu((int)WEV_MENU_M(ev.a), (int)WEV_MENU_I(ev.a)); dirty = true; break;
-            case WEV_CLOSE: running = false; break;
+            case WEV_CLOSE: if (on_close()) running = false; break;
             }
         }
         ticks++;

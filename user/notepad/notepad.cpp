@@ -21,16 +21,21 @@ static void resolve_path(char *dst, int cap, const char *name) {
     dst[i] = 0;
 }
 
+enum { PEND_NONE, PEND_NEW, PEND_QUIT };   /* what to do after the unsaved-changes guard resolves */
+
 struct Notepad : ui::Window {
     ui::Panel     bar;
     ui::TextField name;          /* the file name / path (Save As = edit this, then Save) */
     ui::Button    savebtn;
     ui::Label     status;
     ui::TextField editor;        /* the document body */
+    ui::ConfirmDialog confirm;   /* the unsaved-changes guard (#5) */
     char         *doc = nullptr;
     int           fh = 0, TBH = 0;
     char          statusbuf[64] = {0};
     bool          show_status = true;   /* View > Status Bar toggle (#6 checkable menu) */
+    bool          dirty = false;        /* buffer edited since the last save/load */
+    int           pending = PEND_NONE;  /* deferred action awaiting the guard's answer */
 
     void layout() {
         fh = ugfx_font_h(); TBH = fh + 18;
@@ -56,6 +61,7 @@ struct Notepad : ui::Window {
         if (sys_spit(path, body, n) >= 0) {           /* sys_spit returns bytes written, -1 on error */
             char msg[80]; snprintf(msg, sizeof msg, "Saved %s", basename_of(path));
             set_status(msg);
+            dirty = false;
             print("[notepad] saved "); print(path); print(" ("); printu((unsigned)n); print(" bytes)\r\n");
         } else {
             set_status("Save failed");
