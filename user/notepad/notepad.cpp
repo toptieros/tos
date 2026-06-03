@@ -68,9 +68,31 @@ struct Notepad : ui::Window {
             print("[notepad] save failed: "); print(path); print("\r\n");
         }
     }
-    void new_note() {
+    void do_new() {                          /* the actual reset, once any guard has cleared */
         name.set_text("untitled.txt"); editor.set_text(""); editor.caret = 0;
-        focus = &editor; set_status("New note"); invalidate();
+        focus = &editor; dirty = false; set_status("New note"); invalidate();
+    }
+    /* New on a dirty buffer no longer nukes it silently (#5): raise the guard and
+     * defer the reset until the user answers. */
+    void new_note() {
+        if (dirty) { pending = PEND_NEW; print("[notepad] guard new\r\n"); ask_save(); }
+        else do_new();
+    }
+    void ask_save() { confirm.show("Save changes?", "This note has unsaved changes.", "Save", "Discard", "Cancel"); }
+    /* The guard's answer: 0 = Save, 1 = Discard, 2/-1 = Cancel. Save writes first,
+     * then (Save or Discard) performs the deferred New / Quit. */
+    void resolve_guard(int idx) {
+        int act = pending; pending = PEND_NONE;
+        if (idx == 2 || idx < 0) return;     /* Cancel: stay put */
+        if (idx == 0) save();
+        if (act == PEND_NEW) do_new();
+        else if (act == PEND_QUIT) running = false;
+    }
+    /* Veto the compositor's close on a dirty buffer; close after the guard answers. */
+    bool on_close() override {
+        if (!dirty) return true;
+        pending = PEND_QUIT; print("[notepad] guard quit\r\n"); ask_save();
+        return false;
     }
     /* Ctrl+S anywhere in the window saves (the editor doesn't consume ^S, so it
      * bubbles up to here). */
@@ -109,6 +131,10 @@ struct Notepad : ui::Window {
         status.fg = TH_MUTED; status.align = 2;
         savebtn.text = "Save"; savebtn.ctx = this;
         savebtn.on_click = [](void *c) { ((Notepad *)c)->save(); };
+        editor.ctx = this;                            /* mark the buffer dirty on any edit (#5 guard) */
+        editor.on_change = [](void *c) { ((Notepad *)c)->dirty = true; };
+        confirm.ctx = this;
+        confirm.on_choice = [](void *c, int idx) { ((Notepad *)c)->resolve_guard(idx); };
 
         if (path && path[0]) {
             int len = 0; doc = sys_slurp(path, &len);
@@ -121,9 +147,11 @@ struct Notepad : ui::Window {
             set_status("New note");
         }
         editor.caret = 0;
+        dirty = false;                                /* the initial load is not a user edit */
 
         layout();
         add(&bar); add(&name); add(&status); add(&savebtn); add(&editor);
+        add(&confirm);                                /* last = drawn on top + grabs input when shown */
         focus = &editor;
 
         menu_begin();                                 /* declare a menu bar (#6): accels, a disabled item, a checkable toggle */
