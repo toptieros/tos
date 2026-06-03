@@ -293,6 +293,23 @@ static void term_paste(int pty) {
     if (n > 0) pty_write(pty, b, n);
 }
 
+static void mset(char *d, const char *s) { int i = 0; for (; s[i]; i++) d[i] = s[i]; d[i] = 0; }
+
+/* Declare the terminal's menu bar (app menus #6). Edit > Copy/Paste/Clear carry NO
+ * Ctrl accelerators on purpose: terminal copy/paste are Ctrl+Shift+C/V, and a plain
+ * ^C/^V accelerator would be intercepted by the compositor and stolen from the shell
+ * (^C = interrupt). The items are reachable by clicking the menu. */
+static void setup_menu(int wid) {
+    struct winmenu mb = {0};
+    mb.nmenus = 1;
+    mset(mb.m[0].title, "Edit");
+    mb.m[0].nitems = 3;
+    mset(mb.m[0].items[0], "Copy");
+    mset(mb.m[0].items[1], "Paste");
+    mset(mb.m[0].items[2], "Clear");
+    win_setmenu(wid, &mb);
+}
+
 __attribute__((section(".text.start"), used, noreturn))
 void _ustart(void) {
     struct sysinfo si; sysinfo(&si);
@@ -305,6 +322,7 @@ void _ustart(void) {
     const char *t = "Terminal"; int q = 0; for (; t[q]; q++) wi.title[q] = t[q]; wi.title[q] = 0;
     win = win_create(&wi);
     if (win < 0) { print("[term] win_create failed\r\n"); proc_exit(); }
+    setup_menu(win);                  /* Edit > Copy / Paste / Clear in the bar */
     surf = (uint32_t *)wi.vaddr; sw = (int)wi.w; sh = (int)wi.h;
     fw = ugfx_font_w(); fh = ugfx_font_h();
     setup_surface((int)wi.pitch);     /* sets cols/rows first ... */
@@ -362,6 +380,13 @@ void _ustart(void) {
                 int d = (int)WEV_MOUSE_BTN(ev.a); if (d > 127) d -= 256;
                 int nv = view_off + d * 3; if (nv < 0) nv = 0; if (nv > sb_count) nv = sb_count;
                 if (nv != view_off) { view_off = nv; hide_cursor(); invalidate(); dirty = 1; }
+            }
+            else if (ev.type == WEV_MENU) {              /* Edit menu pick (app menus #6) */
+                int it = WEV_MENU_I(ev.a);
+                print("[term] menu "); printu((unsigned)it); print("\r\n");
+                if (it == 0) { term_copy(); clear_sel(); }            /* Copy */
+                else if (it == 1) { term_paste(pty); }               /* Paste */
+                else if (it == 2) { clear_grid(); invalidate(); dirty = 1; }  /* Clear */
             }
             else if (ev.type == WEV_CLOSE) { goto done; }
             else if (ev.type == WEV_RESIZE) {

@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **35/35** (24 e2e journeys: BIOS 24 + a UEFI subset 11) + **46 host
+**Status:** `make test` **36/36** (25 e2e journeys on BIOS + a UEFI subset 11) + **62 host
 unit tests** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -64,12 +64,8 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
 toolkit app for free. **Done:** blink caret, drag-select, Ctrl+A, double-click word-select,
-Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select. **Left:**
-- [ ] **Undo / redo (Ctrl+Z / Ctrl+Y).** A per-`TextField` edit history (a ring of edit records —
-  insert/delete spans, or periodic snapshots) so every toolkit text field inherits undo/redo for
-  free; coalesce a run of typing into one step. Ctrl+Z = undo, Ctrl+Y (and/or Ctrl+Shift+Z) = redo;
-  a fresh edit clears the redo stack. Lands the Notepad **Edit > Undo** item (declared but disabled
-  today, see App menus #6) plus a Redo item, with their accelerators.
+Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select, **undo/redo
+(Ctrl+Z / Ctrl+Y)**. **Left:**
 - [ ] **I-beam cursor over selectable text.** Blocked on an app→compositor cursor-shape protocol
   (twm composites the cursor and doesn't know widget regions).
 - [ ] **Primary selection + cross-app text drag.** Blocked on the DnD protocol.
@@ -120,6 +116,20 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select.
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **TextField undo/redo — the global text contract (2026-06-03).** Every toolkit text field now
+  inherits Ctrl+Z / Ctrl+Y. `TextField` carries two bounded ring stacks of insert/delete span
+  records (`{op, pos, span text, caret-before}`); `ins`/`del_range` record each mutation, `undo`/
+  `redo` pop one stack and apply the inverse (which re-records onto the other, so the chain is fully
+  reversible) and restore the caret. A run of single-char typing or backspacing **coalesces** into
+  one step (one Ctrl+Z drops the whole word), broken by a newline or a caret jump/click; a fresh
+  edit clears the redo stack; `set_text` resets the history. The subtle merge rule is factored into
+  a pure `user/lib/editlog.h` (`el_coalesce_kind`) shared by the widget and the new host unit test
+  `t_editlog` (16 checks). Notepad's **Edit > Undo** (was declared-but-disabled) is enabled with
+  accelerator `^Z` and a **Redo `^Y`** item added — the compositor routes the chords as menu picks
+  for the focused window, and the same raw `^Z`/`^Y` bytes drive undo/redo in any non-menu app
+  (Spotlight, Files name fields). e2e `t_notepad_undo` (type → Ctrl+Z → 0-byte save → Ctrl+Y →
+  8-byte save → read back). BIOS 25/25 + UEFI 11/11 + 62 unit; screenshot-verified (Edit dropdown
+  shows enabled Undo ^Z / Redo ^Y).
 - **User-program heap — confirmed already done (2026-06-03).** The "a program is its static image
   + stack" note was stale: `user/lib/libc.c` already ships a full growable heap over `SYS_MMAP`
   (`malloc/free/realloc/calloc`, an address-sorted free list with first-fit + split + boundary

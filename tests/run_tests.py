@@ -484,6 +484,61 @@ def t_app_menu(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_menu(uefi):
+    # Files is now a toolkit app with a real File/Edit/Go menu bar (app menus #6).
+    # The compositor shows the three tiles next to the app name, and the Edit/File
+    # accelerators (^C/^X/^V/^N) route to the same actions the toolbar + right-click
+    # run. Here Ctrl+N fires File > New Folder via a WEV_MENU and a folder lands on
+    # disk in the user's home (where Files opens).
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files")
+        assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        # the compositor draws all three declared menu tiles in the bar
+        for tile in ("appmenu 0 File", "appmenu 1 Edit", "appmenu 2 Go"):
+            assert t.wait_for("[twm] " + tile, 8), f"Files menu bar missing the {tile} tile"
+        # Ctrl+N is intercepted for the focused Files window and delivered as a menu pick
+        t.key("ctrl-n", delay=0.12)
+        assert t.wait_for("[twm] accel N 0 0", 6), "Ctrl+N accelerator not recognised for Files"
+        assert t.wait_for("[files] menu 0 0", 6), "the accelerator did not deliver WEV_MENU(File,New Folder)"
+        # prove the action ran: the new folder is on disk, visible from the terminal
+        t.key("alt-tab", delay=0.1)
+        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
+        t.line("ls /Users/user")
+        assert t.wait_for("newfolder", 6), "File > New Folder did not create the folder on disk"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_term_menu(uefi):
+    # The terminal is a raw-syscall app (not the ui:: toolkit), but it declares a
+    # menu the same way via SYS_WIN_SETMENU: an Edit menu with Copy/Paste/Clear (no
+    # Ctrl accelerators, so the shell keeps ^C). Open the menu and pick Clear; the
+    # pick arrives as a WEV_MENU the terminal handles ("[term] menu 2").
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        m = None
+        for _ in range(50):
+            m = re.search(r"\[twm\] appmenu 0 Edit (\d+) (\d+)", t.serial())
+            if m:
+                break
+            time.sleep(0.1)
+        assert m, "the terminal's Edit menu tile was not shown in the bar"
+        ex, ew = int(m.group(1)), int(m.group(2))
+        t.click(ex + ew // 2, 12)                        # open the Edit menu
+        assert t.wait_for("[twm] menu app Edit", 6), "the Edit menu did not open"
+        g = re.search(r"\[twm\] menu app Edit y (\d+) row (\d+) x (\d+)", t.serial())
+        assert g, "Edit menu geometry not reported"
+        ry, row, mx = int(g.group(1)), int(g.group(2)), int(g.group(3))
+        t.click(mx + 20, ry + row * 2 + row // 2)        # choose "Clear" (item index 2)
+        assert t.wait_for("[term] menu 2", 6), "Edit > Clear was not delivered to the terminal (WEV_MENU)"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_fullscreen(uefi):
     # Fullscreen (Super+F) fills the whole screen and auto-hides BOTH the menu bar
     # and the window's own title bar; a top-edge hover reveals them together as one
@@ -605,7 +660,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo, t_spotlight,
+    t_app_menu, t_files_menu, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]

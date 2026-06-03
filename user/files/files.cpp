@@ -647,6 +647,13 @@ struct FilesApp : ui::Window {
         focus = &list;
         details.visible = details_open;
 
+        menu_begin();                                 /* app menus #6: a real File/Edit/Go bar */
+        int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "Refresh", 0);
+        int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
+                                   menu_item(me, "Paste", 'V'); menu_item(me, "Delete", 0);
+        int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
+        menu_commit();
+
         struct fstat st;
         nav_to(sys_exists(HOMEDIR, &st) ? HOMEDIR : "/");
         return true;
@@ -712,6 +719,20 @@ struct FilesApp : ui::Window {
         else if (key == 'r') load_dir();
     }
     void on_nav(int dir) override { if (dir == 0) go_back(); else go_fwd(); }
+    /* Menu bar (app menus #6): File / Edit / Go. The Edit accelerators ^C/^X/^V and
+     * File's ^N are intercepted by the compositor for the focused Files window and
+     * arrive here as WEV_MENU picks (the same actions the toolbar + right-click run). */
+    void on_menu(int menu, int item) override {
+        print("[files] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
+        if (menu == 0) { if (item == 0) make_folder(); else if (item == 1) load_dir(); }      /* File: New Folder / Refresh */
+        else if (menu == 1) {                                                                 /* Edit */
+            if (item == 0) copy_sel(false); else if (item == 1) copy_sel(true);
+            else if (item == 2) paste(); else if (item == 3) do_delete();
+        } else if (menu == 2) {                                                               /* Go */
+            if (item == 0) go_up(); else if (item == 1) go_back(); else if (item == 2) go_fwd();
+        }
+        invalidate();
+    }
 };
 
 int app_main() {
