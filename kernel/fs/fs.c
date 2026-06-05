@@ -233,9 +233,9 @@ static const struct tosfs_ent *find_ent(const char *name) {
 }
 
 const struct tosfs_ent *fs_find(const char *name) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     const struct tosfs_ent *e = find_ent(name);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return e;
 }
 
@@ -247,8 +247,8 @@ uint32_t fs_nfiles(void) {
 }
 
 void fs_ls(void) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
-    if (!mounted) { spin_unlock_irqrestore(&fs_lock, f); console_puts("fs: not mounted\r\n"); return; }
+    uint64_t f = spin_lock_preempt(&fs_lock);
+    if (!mounted) { spin_unlock_preempt(&fs_lock, f); console_puts("fs: not mounted\r\n"); return; }
     int dir = cwd[sched_current()];
     for (uint32_t i = 0; i < TOSFS_MAX_FILES; i++) {
         if (super.ents[i].type == TOSFS_FREE || super.ents[i].parent != dir) continue;
@@ -258,7 +258,7 @@ void fs_ls(void) {
         console_putdec(super.ents[i].size);
         console_puts(" bytes\r\n");
     }
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
 }
 
 /* --- directory operations -------------------------------------------------- */
@@ -284,9 +284,9 @@ static int mkdir_l(const char *path) {
 }
 
 int fs_mkdir(const char *path) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = mkdir_l(path);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -310,9 +310,9 @@ static int rmdir_l(const char *path) {
 }
 
 int fs_rmdir(const char *path) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = rmdir_l(path);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -325,9 +325,9 @@ static int chdir_l(const char *path) {
 }
 
 int fs_chdir(const char *path) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = chdir_l(path);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -347,9 +347,9 @@ static int getcwd_l(char *buf, int len) {
 }
 
 int fs_getcwd(char *buf, int len) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = getcwd_l(buf, len);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -379,9 +379,9 @@ static int rename_l(const char *oldp, const char *newp) {
 }
 
 int fs_rename(const char *oldp, const char *newp) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = rename_l(oldp, newp);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -397,9 +397,9 @@ static int stat_l(const char *path, struct fstat *st) {
 }
 
 int fs_stat(const char *path, struct fstat *st) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = stat_l(path, st);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -419,9 +419,9 @@ static int readdir_l(const char *path, struct dirent *out, int max) {
 }
 
 int fs_readdir(const char *path, struct dirent *out, int max) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = readdir_l(path, out, max);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -470,9 +470,9 @@ static int unlink_l(const char *path) {
 }
 
 int fs_unlink(const char *name) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = unlink_l(name);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -522,9 +522,9 @@ static int open_l(const char *name, int flags) {
 }
 
 int fs_open(const char *name, int flags) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = open_l(name, flags);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -547,9 +547,9 @@ static int read_l(int fd, void *buf, uint32_t len) {
 }
 
 int fs_read(int fd, void *buf, uint32_t len) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = read_l(fd, buf, len);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -576,9 +576,9 @@ static int write_l(int fd, const void *buf, uint32_t len) {
 }
 
 int fs_write(int fd, const void *buf, uint32_t len) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = write_l(fd, buf, len);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -614,9 +614,9 @@ static int close_l(int fd) {
 }
 
 int fs_close(int fd) {
-    uint64_t f = spin_lock_irqsave(&fs_lock);
+    uint64_t f = spin_lock_preempt(&fs_lock);
     int r = close_l(fd);
-    spin_unlock_irqrestore(&fs_lock, f);
+    spin_unlock_preempt(&fs_lock, f);
     return r;
 }
 
@@ -625,7 +625,7 @@ int fs_close(int fd) {
  * sectors go back to the free map and it is never recorded. */
 void fs_close_all(int task) {
     if (task < 0 || task >= MAX_TASKS) return;
-    uint64_t fl = spin_lock_irqsave(&fs_lock);
+    uint64_t fl = spin_lock_preempt(&fs_lock);
     for (int i = 0; i < NOFILE; i++) {
         struct ofile *f = &oft[task][i];
         if (!f->used) continue;
@@ -634,13 +634,13 @@ void fs_close_all(int task) {
         f->used = 0;
     }
     cwd[task] = TOSFS_ROOT;
-    spin_unlock_irqrestore(&fs_lock, fl);
+    spin_unlock_preempt(&fs_lock, fl);
 }
 
 /* A forked child inherits the parent's working directory. */
 void fs_fork(int parent, int child) {
     if (parent < 0 || parent >= MAX_TASKS || child < 0 || child >= MAX_TASKS) return;
-    uint64_t fl = spin_lock_irqsave(&fs_lock);
+    uint64_t fl = spin_lock_preempt(&fs_lock);
     cwd[child] = cwd[parent];
-    spin_unlock_irqrestore(&fs_lock, fl);
+    spin_unlock_preempt(&fs_lock, fl);
 }

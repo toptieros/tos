@@ -239,14 +239,19 @@ static void make_runnable(int i) {
 }
 
 int sched_spawn(const char *prog) {
-    uint64_t f = spin_lock_irqsave(&sched_lock);
-    int idx = free_slot();
-    if (idx < 0) { spin_unlock_irqrestore(&sched_lock, f); return -1; }
+    /* Build the new address space (reads the ELF from disk) and its kernel stack
+     * BEFORE taking sched_lock: both self-serialise (frame allocator / fs+ata
+     * locks) and touch no task-table state, and the ELF read is slow, preemptible
+     * disk I/O that must not run with interrupts off under sched_lock (see
+     * sched_exit). Only the slot reservation + task-table publish need the lock. */
     uint64_t entry;
     uint64_t cr3 = vmm_create_user(prog, &entry);
-    if (!cr3) { spin_unlock_irqrestore(&sched_lock, f); return -1; }
+    if (!cr3) return -1;
     uint64_t ks = vmm_alloc_kstack();
-    if (!ks) { vmm_destroy_user(cr3); spin_unlock_irqrestore(&sched_lock, f); return -1; }
+    if (!ks) { vmm_destroy_user(cr3); return -1; }
+    uint64_t f = spin_lock_irqsave(&sched_lock);
+    int idx = free_slot();
+    if (idx < 0) { spin_unlock_irqrestore(&sched_lock, f); vmm_destroy_user(cr3); vmm_free_kstack(ks); return -1; }
     tasks[idx].cr3        = cr3;
     tasks[idx].kstack     = ks;
     tasks[idx].kstack_top = ks + KSTACK_SZ;
@@ -398,14 +403,22 @@ struct regs *sched_sleep(struct regs *r, uint64_t nticks) {
 }
 
 struct regs *sched_exit(struct regs *r) {
-    uint64_t f = spin_lock_irqsave(&sched_lock);
     int me = cpus[this_cpu()].current;
     if (me == PID_INIT) {                       /* init must never exit */
         console_puts("[kernel] PANIC: init (pid 1) exited -- halting\r\n");
         for (;;) __asm__ volatile("cli; hlt");
     }
+    /* Flush+close this task's files and tear down its windows BEFORE taking
+     * sched_lock. Closing a writing file flushes a draft to disk, and disk I/O is
+     * now PREEMPTIBLE (runs with interrupts on -- see the 0x80 case in traps.c and
+     * spin_lock_preempt). Doing it under sched_lock (IF=0) would both freeze the
+     * machine for the transfer and risk a single-CPU deadlock: an IF=0 spin on the
+     * fs/ata lock can never be broken if that lock is held by a task that was
+     * preempted mid-I/O. The task is `current` and on its way out, so nothing else
+     * touches its open-file table or windows -- no lock is needed for this. */
     fs_close_all(me);
     win_owner_exited(me);                       /* tear down any windows this task owned */
+    uint64_t f = spin_lock_irqsave(&sched_lock);
     for (int i = 1; i < MAX_TASKS; i++)         /* re-parent orphans to init */
         if (i != me && tasks[i].state != TASK_UNUSED && tasks[i].parent == me)
             tasks[i].parent = PID_INIT;
@@ -555,10 +568,16 @@ struct regs *sched_fork(struct regs *r) {
 }
 
 struct regs *sched_exec(struct regs *r, const char *prog) {
-    uint64_t f = spin_lock_irqsave(&sched_lock);
+    /* Build the replacement address space (reads the ELF from disk) BEFORE taking
+     * sched_lock -- the load is slow, preemptible disk I/O that must not freeze the
+     * machine under the lock (see sched_exit/sched_spawn). It runs on the caller's
+     * still-current CR3 and produces a fresh CR3; the swap below is the only part
+     * that needs the task table. A preemption in this window is harmless: the new
+     * CR3 is just a local until installed. */
     uint64_t entry;
     uint64_t cr3 = vmm_create_user(prog, &entry);  /* built on the old CR3 */
-    if (!cr3) { r->rax = (uint64_t)-1; spin_unlock_irqrestore(&sched_lock, f); return r; }
+    if (!cr3) { r->rax = (uint64_t)-1; return r; }
+    uint64_t f = spin_lock_irqsave(&sched_lock);
     int me = cpus[this_cpu()].current;
     uint64_t old = tasks[me].cr3;
     tasks[me].cr3 = cr3;

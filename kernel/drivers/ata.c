@@ -103,15 +103,15 @@ static int ata_write_unlocked(uint32_t lba, uint8_t count, const void *buf) {
 }
 
 int ata_read(uint32_t lba, uint8_t count, void *buf) {
-    uint64_t f = spin_lock_irqsave(&ata_lock);
+    uint64_t f = spin_lock_preempt(&ata_lock);
     int r = ata_read_unlocked(lba, count, buf);
-    spin_unlock_irqrestore(&ata_lock, f);
+    spin_unlock_preempt(&ata_lock, f);
     return r;
 }
 
 int ata_write(uint32_t lba, uint8_t count, const void *buf) {
-    uint64_t f = spin_lock_irqsave(&ata_lock);
+    uint64_t f = spin_lock_preempt(&ata_lock);
     int r = ata_write_unlocked(lba, count, buf);
-    spin_unlock_irqrestore(&ata_lock, f);
+    spin_unlock_preempt(&ata_lock, f);
     return r;
 }

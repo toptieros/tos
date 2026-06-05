@@ -134,6 +134,36 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select,
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Preemptible syscalls — long disk ops no longer freeze the machine; short writes still hitch (2026-06-05).** The
+  "typing in notepad freezes the entire OS / the mouse locks up" report. Root cause (measured on
+  KVM, where each 16-bit `rep insw/outsw` word is a VM-exit, so a 128-sector PIO read ≈ 20M cycles
+  ≈ 5–7 ms): **every syscall ran with interrupts disabled** — the `int 0x80` gate is an *interrupt*
+  gate and `isr_common` never `sti`'d — and `fs_lock`/`ata_lock` were `spin_lock_irqsave`, so a slow
+  polled-PIO disk transfer held IF=0 for its whole duration. On a single core the timer then never
+  fired, so the scheduler never ran the compositor and the cursor locked up for the length of the
+  transfer (notepad autosaving on every typing pause = repeated freezes). **Fix:** (1) run syscalls
+  **preemptibly** — `sti` in the `0x80` dispatch; the scheduler already parks a half-finished kernel
+  frame per task (`tasks[].krsp` in `do_switch`), and every kernel lock is `irqsave`, so a timer
+  preemption can never land inside a critical section. (2) New **`spin_lock_preempt` /
+  `spin_unlock_preempt`** (`kernel/arch/spinlock.h`) — a mutual-exclusion lock that leaves IF
+  untouched — for `fs_lock` + `ata_lock`, so the disk transfer itself stays preemptible. (3) **Moved
+  all disk I/O out of `sched_lock`**: `sched_exit` flushes+closes files *before* the lock, and
+  `sched_spawn`/`sched_exec` build the address space + read the ELF *before* the lock — this keeps
+  those paths preemptible (also fixing a pre-existing multi-ms **app-launch freeze**) and avoids a
+  single-CPU deadlock (an IF=0 spinner on a preempt-lock held by a preempted task). (4) Preemptible
+  syscalls exposed one **lost-wakeup**: `SYS_READ` checked the input ring empty and then blocked as
+  two steps, so a keystroke could arrive + wake between them and be lost — the check+block is now
+  interrupt-atomic. (5) Notepad autosave debounce widened (~0.6 s → ~1.3 s idle). `make test`
+  40–41/41 (the lone miss a known compositor toast-timing flake, green in isolation) + 62 unit.
+  **What this does NOT fix (verified by the user — the cursor still freezes on save):** a syscall is
+  only actually *preempted* if it spans a **10 ms** (100 Hz) timer tick. App launches / large reads
+  (tens of ms) now do, so they no longer freeze — but a **short synchronous write that finishes
+  inside one tick still blocks everything, cursor included**, for its duration, because the timer
+  never fires mid-write. notepad's autosave is a handful of small writes (~a few ms) that mostly
+  complete within a tick, so it **still freezes the cursor briefly on every save**. The fix is
+  correct architecture (and removes a deadlock + the multi-ms launch freeze) but is the wrong layer
+  for the autosave hitch — the real cure is **async/DMA disk + a write-back cache** so the UI task
+  never blocks on the platter. See Known issues.
 - **Damage-rect presents + notepad save/close fixes (2026-06-03).** Fixed a notepad lag regression
   (hovering the tab strip while typing pinned the loop at the frame cap, each frame re-blitting the
   whole client surface). New **`win_present_rect(id,x,y,w,h)`** syscall (#66): the kernel accumulates
@@ -370,3 +400,17 @@ Read [`roadmap.md`](design/roadmap.md) first — the strategic plan and current-
   OVMF+TCG; the harness now retries (`t_mouse` re-injects, `line_for` retypes). Environmental.
 - **tmpfs scratch leak — FIXED.** `Tos.stop()` removes the per-run scratch disk / OVMF-vars / serial
   log it created (a caller-supplied scratch is left alone).
+- **Synchronous disk I/O still freezes the desktop on short writes — OPEN (2026-06-05).** The
+  preemptible-syscall fix makes *long* disk ops (app launches, large reads) preemptible so they no
+  longer freeze the machine — but a syscall is only preempted if it spans a **10 ms** timer tick, and
+  a short synchronous write finishes *inside* one tick, so **the whole desktop incl. the cursor still
+  freezes for its duration** (user-confirmed: notepad's autosave, ~a few ms of small writes, still
+  freezes the cursor on every save). It's polled PIO, so the task busy-waits the transfer and nothing
+  else runs; PIO under KVM is the killer (every transferred word is a VM-exit). Raising `TIMER_HZ`
+  wouldn't really help (a 3 ms write still freezes ~3 ms even at 1 kHz). Real cures, in order of payoff: **(a)** an **async / DMA**
+  block driver (virtio-blk or AHCI+DMA — see the Phase-4 driver item) so a transfer is one descriptor,
+  not thousands of `inb`/`outb`; **(b)** a **write-back buffer cache** that returns immediately and
+  flushes on idle/sync, so the app never blocks on the platter; **(c)** make the writer not block the
+  UI thread (background the flush). Cheaper palliatives already in place: autosave is debounced to a
+  real ~1.3 s pause and only drafts. (More CPU cores would let *other* tasks run during a writer's
+  blocking write, but won't stop the *writer* itself from hitching — only async I/O does that.)

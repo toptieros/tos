@@ -38,8 +38,13 @@ enum { PEND_NONE, PEND_QUIT, PEND_CLOSE };  /* what to do after the unsaved-chan
  * here so a relaunch restores the whole session -- even notes never explicitly
  * saved (Windows-Notepad-style draft restore). */
 #define NP_CACHE "/Users/user/.cache/notepad"
-#define NP_IDLE_TICKS     40               /* flush a draft after ~0.6 s without an edit */
-#define NP_AUTOSAVE_TICKS 200              /* ...but force one at least this often while typing */
+/* The draft flush is a crash-safety net, not the user's explicit save, so it waits
+ * for a genuine "stopped typing" pause rather than firing on every micro-pause --
+ * each flush writes the disk, and while a disk write runs this task can't echo new
+ * keystrokes (the OS itself stays live now that syscalls are preemptible, see
+ * kernel/arch/traps.c, but a too-eager flush still makes typing feel sticky). */
+#define NP_IDLE_TICKS     90               /* flush a draft after ~1.3 s without an edit */
+#define NP_AUTOSAVE_TICKS 400              /* ...but force one at least this often while typing */
 
 static void np_tabpath(char *out, int cap, int i) { snprintf(out, cap, "%s/tab%d", NP_CACHE, i); }
 /* parse a leading (optionally signed) int from *pp, skipping leading blanks, and

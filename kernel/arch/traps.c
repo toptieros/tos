@@ -81,9 +81,20 @@ static struct regs *syscall_dispatch(struct regs *r) {
         return r;
     }
     case SYS_READ: {                         /* stdin: pty if bound, else the keyboard */
+        /* Check-and-block must be atomic against the IRQ that delivers input and
+         * wakes blocked readers (keyboard_irq / pty_write -> sched_wake_readers).
+         * Now that syscalls run with interrupts ON (preemptible -- see the sti at
+         * the 0x80 case), without this an input byte could arrive and fire the wake
+         * AFTER we saw the ring empty but BEFORE we marked ourselves BLOCKED: the
+         * wake would find us still RUNNABLE, do nothing, and we would then block on
+         * data already waiting -- a lost wakeup that hangs the reader. Disabling
+         * interrupts across the empty-check + block closes that window; if data is
+         * already there we re-enable and return, and sched_block_read switches away
+         * (the next task's iretq restores its own IF). */
+        __asm__ volatile("cli" ::: "memory");
         int tty = sched_get_tty(sched_current());
         int c = (tty >= 0) ? pty_in_getc(tty) : kbd_getc();
-        if (c >= 0) { r->rax = (uint64_t)(uint8_t)c; return r; }
+        if (c >= 0) { r->rax = (uint64_t)(uint8_t)c; __asm__ volatile("sti" ::: "memory"); return r; }
         return sched_block_read(r);          /* nothing buffered -> sleep until woken */
     }
     case SYS_YIELD:
@@ -377,6 +388,18 @@ struct regs *isr_dispatch(struct regs *r) {
         lapic_eoi();
         return sched_tick(r);
     case 0x80:                                /* syscall */
+        /* The syscall gate (0xee) is an interrupt gate, so we arrive with IF=0.
+         * Run the syscall body PREEMPTIBLY -- re-enable interrupts so the PIT can
+         * still tick and switch CPUs during a long syscall (notably the polled,
+         * FLUSH_CACHE-bearing PIO disk writes in fs_write/ata_write). Without this
+         * a single disk write froze the whole machine -- on one CPU the timer
+         * never fired, so the compositor never ran and the cursor locked up while
+         * an app autosaved. Critical sections still take spin_lock_irqsave(), which
+         * disables interrupts for their (short) duration, so they stay atomic; the
+         * scheduler already saves/restores a preempted task's kernel stack
+         * (tasks[].krsp in do_switch), so being switched out mid-syscall is safe.
+         * iretq restores the caller's RFLAGS (IF=1) on the way back to ring 3. */
+        __asm__ volatile("sti" ::: "memory");
         return syscall_dispatch(r);
     default:
         return exception_handler(r);          /* kills a ring-3 task, or halts on a kernel fault */

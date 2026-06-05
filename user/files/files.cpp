@@ -12,6 +12,7 @@
 #include "icons.h"
 #include "manifest.h"
 #include "registry.h"
+#include "textutil.h"      /* tu_ci_contains: the filter-bar substring matcher */
 
 #define NMAX    256
 #define HISTN   32
@@ -226,6 +227,33 @@ public:
     }
 };
 
+/* ---------------------------------------------------------------- StatusBar */
+/* The bottom bar (Finder/Dolphin both have one): item count on the left, a
+ * selection summary on the right. Free-space + zoom slider are future (need a
+ * statfs syscall) -- see design/files-app.md §6. */
+class StatusBar : public ui::Widget {
+public:
+    char left[96] = {0};            /* "12 items" / "3 of 12 shown"          */
+    char right[96] = {0};           /* "name selected -- 42 bytes" / empty   */
+    StatusBar() { focusable = false; }
+    void draw() override {
+        if (!visible) return;
+        int fh = ugfx_font_h();
+        ugfx_fill(r.x, r.y, r.w, r.h, C_TOOLBAR);
+        ugfx_fill_a(r.x, r.y, r.w, 1, ARGB(70, 0, 0, 0));            /* top hairline */
+        ugfx_set_clip(r.x, r.y, r.w, r.h);
+        int ty = r.y + (r.h - fh) / 2;
+        ugfx_text(r.x + 14, ty, left, TH_MUTED, UGFX_TRANSPARENT);
+        if (right[0]) {
+            int rw = ugfx_text_w(right);
+            int lx = r.x + 14 + ugfx_text_w(left) + 16;             /* don't overlap the left text */
+            int rx = r.x + r.w - rw - 14; if (rx < lx) rx = lx;
+            ugfx_text(rx, ty, right, TH_TEXT, UGFX_TRANSPARENT);
+        }
+        ugfx_clip_none();
+    }
+};
+
 /* ---------------------------------------------------------------- Popup menu */
 /* Doubles as the right-click context menu and the "Open With" chooser. When open
  * its rect is the whole window so it captures the next click anywhere (modal):
@@ -327,19 +355,24 @@ struct FilesApp : ui::Window {
     IconButton   back, fwd, up, newf, del;
     ui::Button   info;
     ui::Label    pathlbl;
+    ui::TextField filterfld;                 /* the "/" live name-filter field */
     ui::ListView list;
     Sidebar      side;
     DetailsPanel details;
+    StatusBar    status;
     Popup        menu;
 
     char          path[256] = HOMEDIR;
     struct dirent ents[NMAX];
     int           nents = 0;
+    int           view[NMAX]; int nview = 0;     /* ents indices currently shown (after filter) */
+    bool          filter_open = false;           /* the live filter bar is up ("/") */
+    bool          loading = false;               /* guard: set_text() fires on_change mid-load */
     uint32_t     *appicon[NMAX] = {};
     int           appiw[NMAX] = {}, appih[NMAX] = {};
     char          appexec[NMAX][160] = {};
     bool          details_open = true;
-    int           fw = 0, fh = 0, TBH = 0, SBW = 0, DPW = 0, listy = 0;
+    int           fw = 0, fh = 0, TBH = 0, SBW = 0, DPW = 0, STH = 0, listy = 0;
     char          hist[HISTN][256] = {};
     int           hist_n = 0, hist_i = -1;
 
@@ -407,13 +440,67 @@ struct FilesApp : ui::Window {
             }
             free(mbuf);
         }
-        list.count = nents + has_up();
+        apply_filter();                 /* sets list.count, resets sel, refreshes status */
+    }
+    /* map a visible list row to an ents[] index, or -1 for the ".." row / off-list */
+    int ent_at(int row) const {
+        int hu = has_up();
+        if (row < 0 || (hu && row == 0)) return -1;
+        int v = row - hu;
+        return (v >= 0 && v < nview) ? view[v] : -1;
+    }
+    bool filtering() const { return filter_open && filterfld.length() > 0; }
+    /* rebuild the visible set from the current filter text (case-insensitive substring
+     * over the display name); resets the selection, like Finder/Dolphin's filter. */
+    void apply_filter() {
+        const char *q = filter_open ? filterfld.text() : "";
+        nview = 0;
+        for (int i = 0; i < nents; i++) {
+            char label[64]; disp_name(ents[i].name, label, sizeof label);
+            if (tu_ci_contains(label, q)) view[nview++] = i;
+        }
+        list.count = nview + has_up();
         list.sel = -1; list.top = 0;
         details.has = false;
+        update_status();
+        if (q[0]) { print("[files] filter "); printu((unsigned)nview); print("\r\n"); }
+        invalidate();
+    }
+    /* refresh the bottom status bar from the folder count + current selection */
+    void update_status() {
+        if (filtering()) snprintf(status.left, sizeof status.left, "%d of %d shown", nview, nents);
+        else             snprintf(status.left, sizeof status.left, "%d item%s", nents, nents == 1 ? "" : "s");
+        int hu = has_up();
+        if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
+            if (details.is_file)
+                snprintf(status.right, sizeof status.right, "%s selected  --  %u bytes", details.name, details.size);
+            else
+                snprintf(status.right, sizeof status.right, "%s selected", details.name);
+        } else status.right[0] = 0;
+    }
+    /* "/" opens the filter bar (or refocuses it if already open) */
+    void open_filter() {
+        if (!filter_open) {
+            filter_open = true; filterfld.visible = true;
+            loading = true; filterfld.set_text(""); loading = false;
+            layout_widgets();
+        }
+        focus = &filterfld;
+        apply_filter();
+    }
+    /* Esc (or "/" toggle) closes it, clearing the filter and restoring the full list */
+    void close_filter() {
+        if (!filter_open) return;
+        filter_open = false; filterfld.visible = false;
+        loading = true; filterfld.set_text(""); loading = false;
+        layout_widgets();
+        focus = &list;
+        apply_filter();
     }
     void load_path(const char *p) {
         strncpy(path, p, sizeof path - 1); path[sizeof path - 1] = 0;
         if (!path[0]) { path[0] = '/'; path[1] = 0; }
+        if (filterfld.length() > 0) { loading = true; filterfld.set_text(""); loading = false; }  /* fresh folder, fresh filter */
         load_dir();
         pathlbl.text = path; side.cur = path;
     }
@@ -461,15 +548,19 @@ struct FilesApp : ui::Window {
 
     void enter(int row) {
         if (has_up() && row == 0) { go_up(); return; }
-        int idx = row - has_up();
+        int idx = ent_at(row);
+        if (idx < 0) return;
         struct dirent *e = &ents[idx];
         if (is_app_dir(e->type, e->name)) { if (appexec[idx][0]) sys_launch(appexec[idx]); return; }
         if (e->type == FT_DIR) { char t[256]; join(t, sizeof t, path, e->name); nav_to(t); }
         else open_file(e->name);
     }
+    /* A row click mutates the details pane + status bar, which lie outside the
+     * list's own rect; without a repaint request the damage-tracked frame would
+     * only refresh the list. Repaint the whole window (selection is low-frequency). */
     void select_row(int row) {
-        if (has_up() && row == 0) { details.has = false; return; }
-        int idx = row - has_up();
+        int idx = ent_at(row);
+        if (idx < 0) { details.has = false; update_status(); invalidate(); return; }
         struct dirent *e = &ents[idx];
         disp_name(e->name, details.name, sizeof details.name);
         details.kind = kind_for(e->type, e->name);
@@ -479,6 +570,8 @@ struct FilesApp : ui::Window {
         details.file_icon = file_icon_for(e->type, e->name);
         join(details.where, sizeof details.where, path, e->name);
         details.has = true;
+        update_status();
+        invalidate();
     }
     static void rmrf(const char *p) {
         struct fstat st; if (stat_(p, &st) < 0) return;
@@ -492,9 +585,9 @@ struct FilesApp : ui::Window {
         } else funlink(p);
     }
     void do_delete() {
-        int hu = has_up();
-        if (list.sel < 0 || (hu && list.sel == 0)) return;
-        struct dirent *e = &ents[list.sel - hu];
+        int idx = ent_at(list.sel);
+        if (idx < 0) return;
+        struct dirent *e = &ents[idx];
         char child[256]; join(child, sizeof child, path, e->name);
         rmrf(child); load_dir();
     }
@@ -502,9 +595,9 @@ struct FilesApp : ui::Window {
      * remembers the source so a later Paste moves it. Files only for now -- copying a
      * whole directory needs a recursive walk we don't do yet. */
     void copy_sel(bool cut) {
-        int hu = has_up();
-        if (list.sel < 0 || (hu && list.sel == 0)) return;
-        struct dirent *e = &ents[list.sel - hu];
+        int idx = ent_at(list.sel);
+        if (idx < 0) return;
+        struct dirent *e = &ents[idx];
         if (e->type != FT_FILE) return;
         char full[256]; join(full, sizeof full, path, e->name);
         int n = 0; char *b = sys_slurp(full, &n);
@@ -557,7 +650,7 @@ struct FilesApp : ui::Window {
         int ix = cell.x + 12, ty = cell.y + (cell.h - a->fh) / 2, iyy = cell.y + (cell.h - 20) / 2;
         const char *name; int type; unsigned size = 0; int idx = -1;
         if (a->has_up() && i == 0) { name = ".."; type = FT_DIR; }
-        else { idx = i - a->has_up(); struct dirent *e = &a->ents[idx]; name = e->name; type = e->type; size = e->size; }
+        else { idx = a->ent_at(i); if (idx < 0) return; struct dirent *e = &a->ents[idx]; name = e->name; type = e->type; size = e->size; }
         char label[64]; disp_name(name, label, sizeof label);
         if (idx >= 0 && is_app_dir(type, name) && a->appicon[idx]) blit_scaled(ix, iyy, 20, 20, a->appicon[idx], a->appiw[idx], a->appih[idx]);
         else blit_scaled(ix, iyy, 20, 20, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
@@ -571,6 +664,7 @@ struct FilesApp : ui::Window {
     void layout_widgets() {
         fw = ugfx_font_w(); fh = ugfx_font_h();
         TBH = fh + 20;
+        STH = fh + 12;
         SBW = 11 * fw + 34; if (SBW < 150) SBW = 150;
         DPW = 20 * fw + 28; if (DPW < 200) DPW = 200; if (DPW > 264) DPW = 264;
         int dp = dpw_now(), mainx = SBW, mainw = w - SBW - dp;
@@ -590,8 +684,14 @@ struct FilesApp : ui::Window {
         info.text = "Info"; info.r = { w - iw_ - 8, by, iw_, sz };
 
         pathlbl.r = { mainx + 12, TBH + 6, mainw - 24, fh };
-        listy = TBH + fh + 14;
-        list.r = { mainx, listy, mainw, h - listy }; list.row_h = fh + 12;
+        int loc_bottom = TBH + fh + 14;                  /* where the location bar ends   */
+        int FBH = filter_open ? fh + 16 : 0;             /* the live-filter bar band       */
+        filterfld.visible = filter_open;
+        filterfld.r = { mainx + 10, loc_bottom + 3, mainw - 20, fh + 8 };
+        listy = loc_bottom + FBH;
+        int lh = h - listy - STH; if (lh < fh) lh = fh;
+        list.r = { mainx, listy, mainw, lh }; list.row_h = fh + 12;
+        status.r = { mainx, h - STH, mainw, STH };
         details.r = { w - DPW, TBH, DPW, h - TBH };
     }
 
@@ -643,7 +743,7 @@ struct FilesApp : ui::Window {
 
         layout_widgets();
         add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info);
-        add(&pathlbl); add(&list); add(&details); add(&menu);   /* menu last = on top + modal */
+        add(&pathlbl); add(&list); add(&details); add(&status); add(&menu);   /* menu last = on top + modal */
         focus = &list;
         details.visible = details_open;
 

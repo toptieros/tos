@@ -121,6 +121,24 @@ page tables, exits boot services, and jumps with `rdi = &boot_info`.
   exceptions, IRQ0 timer, IRQ1 keyboard, IRQ12 mouse, LAPIC timer 0x22, int 0x80
   syscall) saves a `struct regs` and calls `isr_dispatch`, which returns the
   frame to resume — returning a *different* task's frame is a context switch.
+- **Preemptible syscalls**: the `0x80` gate is an interrupt gate (arrives IF=0),
+  but the dispatch `sti`s so the **syscall body runs with interrupts on** — the PIT
+  can preempt a long syscall and run another task. NB this only helps an op that
+  *spans* a 10 ms (100 Hz) tick: a **long** disk op (app launch, large read) no
+  longer freezes the machine, but a **short synchronous write that finishes inside
+  one tick still blocks everything (cursor included) for its duration** — that's the
+  notepad-autosave hitch, whose real cure is async/DMA disk, not preemption. This is
+  safe because each task
+  parks its half-finished kernel frame on its own kernel stack (`tasks[].krsp`), and
+  every kernel lock is `spin_lock_irqsave` (IF=0 while held) — so a preemption can
+  never land inside a critical section. The one blocking *check-then-sleep* syscall,
+  `SYS_READ`, brackets its empty-check + block with `cli`/`sti` so an input IRQ can't
+  wake it between the two (lost-wakeup). Slow disk I/O is also kept *out* of
+  `sched_lock`: `exit` flushes/closes files, and `spawn`/`exec` read the ELF, before
+  taking the lock — and `fs_lock`/`ata_lock` use `spin_lock_preempt` (mutual
+  exclusion, IF left on) so the transfer they guard stays preemptible. (Disk I/O is
+  still *synchronous*, so the task doing a write blocks for it; async/DMA is future
+  work — see NEXT_STEPS "Known issues".)
 - **Per-CPU scheduling**: `cpus[]` each have their own `current`, idle context,
   per-CPU TSS (one shared GDT with a TSS descriptor per CPU), and a RUNNABLE run
   queue behind their own `rq_lock`. Preemption (PIT on the BSP, LAPIC timer on
@@ -187,6 +205,11 @@ hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
   `lapic_timer_calibrate` (PIT channel-2 one-shot reference) instead of a fixed constant.
 - **ata** — minimal ATA PIO (LBA28) driver for the primary master (the boot
   disk); polled, so it works identically during early init and inside syscalls.
+  Serialised by a *preemptible* lock (`spin_lock_preempt`, IF left on) — a transfer
+  is slow (each 16-bit word is a VM-exit under KVM; a 128-sector read ≈ 5–7 ms). The
+  timer can preempt it *if it spans a tick*, so long transfers no longer freeze the
+  box — but a short one (a few ms, e.g. an autosave write) still busy-waits the whole
+  desktop for its duration. Still synchronous + per-word PIO; async/DMA is the real fix.
 - **pci** — PCI config-space access (legacy 0xCF8/0xCFC) + a bus scan; `SYS_LSPCI`
   / the `lspci` command list devices. A foundation for real device drivers later.
 - **speaker** — PC speaker via PIT channel 2; `SYS_BEEP` / the `beep` command.
