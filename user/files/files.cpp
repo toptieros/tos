@@ -13,6 +13,7 @@
 #include "manifest.h"
 #include "registry.h"
 #include "textutil.h"      /* tu_ci_contains: the filter-bar substring matcher */
+#include "perm.h"          /* tos_may_write / TOS_UID_*: grey Save in a system-owned folder */
 
 #define NMAX    256
 #define HISTN   32
@@ -362,6 +363,21 @@ struct FilesApp : ui::Window {
     StatusBar    status;
     Popup        menu;
 
+    /* ---- picker mode (#11): Files run as the system Open/Save dialog ---------
+     * When launched with a /tmp/.picker-req pending, Files is a *dialog*: the same
+     * chrome (sidebar, list, breadcrumb, filter, status) plus a footer with a Name
+     * field (save) and Cancel / Open·Save buttons, returning the chosen path over
+     * /tmp/.picker-res. See design/file-picker.md. */
+    bool             picker = false;
+    struct pick_req  preq;                       /* the parsed request (mode/dir/name/ext/title) */
+    ui::Panel        footer;                      /* the picker-only bottom bar  */
+    ui::Label        nameLbl;                     /* "Name:" (save mode)         */
+    ui::TextField    nameFld;                     /* the filename field (save)   */
+    ui::Button       okBtn, cancelBtn;            /* Open/Save + Cancel          */
+    ui::ConfirmDialog overwrite;                  /* save: Replace / Keep Both / Cancel */
+    char             pending_save[256] = {0};     /* save target awaiting the overwrite answer */
+    int              FTH = 0;                     /* footer height (0 outside picker mode) */
+
     char          path[256] = HOMEDIR;
     struct dirent ents[NMAX];
     int           nents = 0;
@@ -457,7 +473,11 @@ struct FilesApp : ui::Window {
         nview = 0;
         for (int i = 0; i < nents; i++) {
             char label[64]; disp_name(ents[i].name, label, sizeof label);
-            if (tu_ci_contains(label, q)) view[nview++] = i;
+            if (!tu_ci_contains(label, q)) continue;
+            /* picker mode: directories always navigable; files only if their extension
+             * is in the request's allowed list (empty list = all). */
+            if (picker && ents[i].type == FT_FILE && !pickreq_ext_match(ents[i].name, preq.ext)) continue;
+            view[nview++] = i;
         }
         list.count = nview + has_up();
         list.sel = -1; list.top = 0;
@@ -551,6 +571,12 @@ struct FilesApp : ui::Window {
         int idx = ent_at(row);
         if (idx < 0) return;
         struct dirent *e = &ents[idx];
+        if (picker) {                                       /* in a picker, never launch apps */
+            if (e->type == FT_DIR) { char t[256]; join(t, sizeof t, path, e->name); nav_to(t); return; }
+            if (preq.mode == PICK_OPEN) { char f[256]; join(f, sizeof f, path, e->name); finish_pick(f); }
+            else { nameFld.set_text(e->name); nameFld.caret = nameFld.length(); do_save(); }  /* save over a file */
+            return;
+        }
         if (is_app_dir(e->type, e->name)) { if (appexec[idx][0]) sys_launch(appexec[idx]); return; }
         if (e->type == FT_DIR) { char t[256]; join(t, sizeof t, path, e->name); nav_to(t); }
         else open_file(e->name);
@@ -560,8 +586,11 @@ struct FilesApp : ui::Window {
      * only refresh the list. Repaint the whole window (selection is low-frequency). */
     void select_row(int row) {
         int idx = ent_at(row);
-        if (idx < 0) { details.has = false; update_status(); invalidate(); return; }
+        if (idx < 0) { details.has = false; update_status(); update_pick_btn(); invalidate(); return; }
         struct dirent *e = &ents[idx];
+        if (picker && preq.mode == PICK_SAVE && e->type == FT_FILE) {    /* click a file -> its name into the field */
+            nameFld.set_text(e->name); nameFld.caret = nameFld.length();
+        }
         disp_name(e->name, details.name, sizeof details.name);
         details.kind = kind_for(e->type, e->name);
         details.is_file = (e->type == FT_FILE);
@@ -571,6 +600,7 @@ struct FilesApp : ui::Window {
         join(details.where, sizeof details.where, path, e->name);
         details.has = true;
         update_status();
+        update_pick_btn();
         invalidate();
     }
     static void rmrf(const char *p) {
@@ -644,6 +674,59 @@ struct FilesApp : ui::Window {
         }
     }
 
+    /* ---- picker mode helpers (#11) ----------------------------------------- */
+    /* may the user create/overwrite in the current folder? (system-owned => no) */
+    bool dir_writable() const {
+        struct fstat st;
+        if (stat_(path, &st) != 0) return true;            /* unknown -> let the write decide */
+        return tos_may_write(getuid(), (int)st.owner) != 0;
+    }
+    /* "Keep Both": build a non-colliding "<stem> (N)<ext>" sibling of `full` (mirrors
+     * the FileDialog dedup the picker replaces; the dot is only a suffix in the basename). */
+    void dedup_path(char *out, int cap, const char *full) {
+        int n = (int)strlen(full), slash = -1, dot = -1;
+        for (int i = 0; i < n; i++) if (full[i] == '/') slash = i;
+        for (int i = slash + 1; i < n; i++) if (full[i] == '.') dot = i;
+        char dir[256] = {0}, stem[128] = {0}, ext[40] = {0};
+        int di = 0; for (int i = 0; i <= slash && di < (int)sizeof dir - 1; i++) dir[di++] = full[i]; dir[di] = 0;
+        int stem_end = (dot > slash) ? dot : n;
+        int si = 0; for (int i = slash + 1; i < stem_end && si < (int)sizeof stem - 1; i++) stem[si++] = full[i]; stem[si] = 0;
+        int ei = 0; if (dot > slash) for (int i = dot; i < n && ei < (int)sizeof ext - 1; i++) ext[ei++] = full[i]; ext[ei] = 0;
+        for (int k = 2; k < 1000; k++) { snprintf(out, cap, "%s%s (%d)%s", dir, stem, k, ext); if (!sys_exists(out, 0)) return; }
+        snprintf(out, cap, "%s%s (copy)%s", dir, stem, ext);
+    }
+    /* hand a chosen path back to the caller and quit: write /tmp/.picker-res (read by
+     * sys_pick_poll) then end the event loop so the process exits and the caller reaps it. */
+    void finish_pick(const char *p) {
+        sys_spit("/tmp/.picker-res", p, (int)strlen(p));   /* PICKER_RES in sys.c */
+        print("[files] picked "); print(p); print("\r\n");
+        running = false;
+    }
+    /* Cancel / close: leave no result file (sys_pick_begin already unlinked it), so the
+     * caller's poll reports -1. */
+    void cancel_pick() { print("[files] pick cancel\r\n"); running = false; }
+    /* Save: validate the name + folder, warn on overwrite, else finish. */
+    void do_save() {
+        const char *nm = nameFld.text();
+        if (!nm[0] || !dir_writable()) return;             /* nothing typed / not writable here */
+        char target[256]; join(target, sizeof target, path, nm);
+        struct fstat st;
+        if (stat_(target, &st) == 0 && st.type == FT_FILE) {
+            strncpy(pending_save, target, sizeof pending_save - 1); pending_save[sizeof pending_save - 1] = 0;
+            char msg[160]; snprintf(msg, sizeof msg, "\"%s\" already exists in this folder.", nm);
+            overwrite.show("Replace file?", msg, "Replace", "Keep Both", "Cancel");
+            invalidate(); return;
+        }
+        finish_pick(target);
+    }
+    /* enable Open/Save when the action is valid (a row picked / a name typed in a
+     * writable folder); the footer button greys otherwise. */
+    void update_pick_btn() {
+        if (!picker) return;
+        if (preq.mode == PICK_SAVE) okBtn.enabled = (nameFld.length() > 0 && dir_writable());
+        else                        okBtn.enabled = (list.sel >= 0);
+    }
+
     static void render_row(void *ctx, int i, ui::Rect cell, bool sel) {
         FilesApp *a = (FilesApp *)ctx;
         if (!sel && (i & 1)) ugfx_fill(cell.x, cell.y, cell.w, cell.h, C_ZEBRA);
@@ -688,21 +771,51 @@ struct FilesApp : ui::Window {
         int FBH = filter_open ? fh + 16 : 0;             /* the live-filter bar band       */
         filterfld.visible = filter_open;
         filterfld.r = { mainx + 10, loc_bottom + 3, mainw - 20, fh + 8 };
+        FTH = picker ? fh + 26 : 0;                      /* the picker footer band         */
         listy = loc_bottom + FBH;
-        int lh = h - listy - STH; if (lh < fh) lh = fh;
+        int lh = h - listy - STH - FTH; if (lh < fh) lh = fh;
         list.r = { mainx, listy, mainw, lh }; list.row_h = fh + 12;
-        status.r = { mainx, h - STH, mainw, STH };
+        status.r = { mainx, h - STH - FTH, mainw, STH };
         details.r = { w - DPW, TBH, DPW, h - TBH };
+
+        if (picker) {                                    /* footer: [Name: ___]  Cancel  Open/Save */
+            int fy = h - FTH, pad = 8, bh = FTH - 12, by2 = fy + 6;
+            footer.r = { 0, fy, w, FTH };
+            const char *oklbl = preq.mode == PICK_SAVE ? "Save" : "Open";
+            int okw = ugfx_text_w(oklbl) + 30; if (okw < 72) okw = 72;
+            int caw = ugfx_text_w("Cancel") + 24; if (caw < 72) caw = 72;
+            okBtn.text = oklbl;     okBtn.r     = { w - okw - pad, by2, okw, bh };
+            cancelBtn.text = "Cancel"; cancelBtn.r = { w - okw - caw - pad - 8, by2, caw, bh };
+            if (preq.mode == PICK_SAVE) {
+                int lblw = ugfx_text_w("Name:") + 10;
+                nameLbl.r = { mainx + pad, fy + (FTH - fh) / 2, lblw, fh };
+                int nfx = mainx + pad + lblw;
+                int nfw = cancelBtn.r.x - nfx - 12; if (nfw < 80) nfw = 80;
+                nameFld.r = { nfx, by2, nfw, bh };
+            }
+        }
     }
 
     bool build() {
+        /* picker mode (#11): if a /tmp/.picker-req is pending we are the system Open/Save
+         * dialog, not the normal manager. Detect it FIRST so the window is sized + titled
+         * for a dialog. (Checked before any open-document arg, like the file-picker design.) */
+        picker = (sys_pick_req(&preq) == 1);
+
         struct sysinfo si; sysinfo(&si);
-        int cw = (int)si.fb_w - 150, ch = (int)si.fb_h - 130;
-        if (cw < 640) cw = 640; if (cw > 1000) cw = 1000;
-        if (ch < 420) ch = 420; if (ch > 720) ch = 720;
+        int cw, ch;
+        if (picker) {
+            cw = 560; ch = 420; details_open = false;       /* dialog-shaped; no Details pane */
+        } else {
+            cw = (int)si.fb_w - 150; ch = (int)si.fb_h - 130;
+            if (cw < 640) cw = 640; if (cw > 1000) cw = 1000;
+            if (ch < 420) ch = 420; if (ch > 720) ch = 720;
+        }
         if (cw > (int)si.fb_w - 20) cw = (int)si.fb_w - 20;
         if (ch > (int)si.fb_h - 60) ch = (int)si.fb_h - 60;
-        if (!create(cw, ch, "Files")) return false;
+        const char *title = "Files";
+        if (picker) title = preq.title[0] ? preq.title : (preq.mode == PICK_SAVE ? "Save As" : "Open");
+        if (!create(cw, ch, title)) return false;
 
         reg_load();
         load_apps();
@@ -710,6 +823,7 @@ struct FilesApp : ui::Window {
         bar.color = C_TOOLBAR; bar.sep_bottom = true;
         list.bg = C_LIST; list.sel_bg = C_SELROW;
         pathlbl.fg = TH_MUTED;
+        footer.color = C_TOOLBAR; nameLbl.text = "Name:"; nameLbl.fg = TH_MUTED;
 
         side.ctx = this; side.on_pick = [](void *c, const char *p) { ((FilesApp *)c)->nav_to(p); };
         side.add_item("Home",         HOMEDIR,              0);
@@ -741,21 +855,61 @@ struct FilesApp : ui::Window {
         menu.ctx = this;
         menu.on_pick = [](void *c, int tag) { ((FilesApp *)c)->menu_pick(tag); };
 
+        /* picker footer widgets (#11) */
+        okBtn.ctx = cancelBtn.ctx = overwrite.ctx = this;
+        okBtn.on_click = [](void *c) {
+            auto *a = (FilesApp *)c;
+            if (a->preq.mode == PICK_SAVE) a->do_save();
+            else if (a->list.sel >= 0) a->enter(a->list.sel);   /* Open: navigate a dir / pick a file */
+        };
+        cancelBtn.on_click = [](void *c) { ((FilesApp *)c)->cancel_pick(); };
+        nameFld.ctx = this;
+        nameFld.on_change = [](void *c) { ((FilesApp *)c)->update_pick_btn(); };
+        nameFld.on_submit = [](void *c) { ((FilesApp *)c)->do_save(); };  /* Enter in the name field = Save */
+        overwrite.on_choice = [](void *c, int idx) {
+            auto *a = (FilesApp *)c;
+            if (idx == 0) a->finish_pick(a->pending_save);                /* Replace   */
+            else if (idx == 1) { char dup[256]; a->dedup_path(dup, sizeof dup, a->pending_save); a->finish_pick(dup); }  /* Keep Both */
+            else a->invalidate();                                        /* Cancel: stay */
+        };
+
+        /* picker-only widgets show only in picker mode; del/Info/Details hide there */
+        footer.visible = okBtn.visible = cancelBtn.visible = picker;
+        nameLbl.visible = nameFld.visible = (picker && preq.mode == PICK_SAVE);
+        del.visible = info.visible = !picker;
+        details.visible = details_open && !picker;
+
         layout_widgets();
         add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info);
-        add(&pathlbl); add(&list); add(&details); add(&status); add(&menu);   /* menu last = on top + modal */
-        focus = &list;
-        details.visible = details_open;
+        add(&pathlbl); add(&list); add(&details); add(&status);
+        add(&footer); add(&nameLbl); add(&nameFld); add(&cancelBtn); add(&okBtn);
+        add(&menu); add(&overwrite);                  /* menu + overwrite last = on top + modal */
+        focus = picker && preq.mode == PICK_SAVE ? (ui::Widget *)&nameFld : (ui::Widget *)&list;
 
-        menu_begin();                                 /* app menus #6: a real File/Edit/Go bar */
-        int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "Refresh", 0);
-        int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
-                                   menu_item(me, "Paste", 'V'); menu_item(me, "Delete", 0);
-        int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
-        menu_commit();
+        if (!picker) {                                /* app menus #6: File/Edit/Go bar (normal mode only) */
+            menu_begin();
+            int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "Refresh", 0);
+            int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
+                                       menu_item(me, "Paste", 'V'); menu_item(me, "Delete", 0);
+            int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
+            menu_commit();
+        }
 
+        /* start folder: the request's dir (if a real folder) in picker mode, else Home */
         struct fstat st;
-        nav_to(sys_exists(HOMEDIR, &st) ? HOMEDIR : "/");
+        const char *start = HOMEDIR;
+        if (picker && preq.dir[0] && sys_exists(preq.dir, &st) && st.type == FT_DIR) start = preq.dir;
+        else if (!sys_exists(HOMEDIR, &st)) start = "/";
+        nav_to(start);
+
+        if (picker) {
+            if (preq.mode == PICK_SAVE) {             /* pre-fill the suggested name */
+                nameFld.set_text(preq.name[0] ? preq.name : "untitled.txt");
+                nameFld.caret = nameFld.length();
+            }
+            update_pick_btn();
+            print("[files] picker "); print(preq.mode == PICK_SAVE ? "save " : "open "); print(path); print("\r\n");
+        }
         return true;
     }
 
@@ -793,6 +947,11 @@ struct FilesApp : ui::Window {
         menu_mode = 0; menu.reset();
         int hu = has_up();
         int real = (list.sel >= 0 && !(hu && list.sel == 0)) ? list.sel - hu : -1;
+        if (picker) {                                          /* picker mode: no Delete / Open With */
+            menu.add("New Folder", PK_ACTION, 4, 0, 0, 0);
+            menu.add("Refresh",    PK_ACTION, 5, 0, 0, 0);
+            menu.show(x, y); invalidate(); return;
+        }
         if (real >= 0) {
             struct dirent *e = &ents[real];
             if (e->type == FT_DIR || is_app_dir(e->type, e->name)) menu.add("Open", PK_ACTION, 1, 0, 0, 0);
@@ -810,8 +969,11 @@ struct FilesApp : ui::Window {
         invalidate();
     }
     void on_resize(int, int) override { layout_widgets(); if (menu.open && menu.win) menu.r = { 0, 0, w, h }; }
+    /* the compositor close button: in picker mode, closing == Cancel (empty result). */
+    bool on_close() override { if (picker) print("[files] pick cancel\r\n"); return true; }
     void on_key(int key) override {
         if (menu.open) { if (key == ui::UK_ESC) { menu.dismiss(); invalidate(); } return; }
+        if (picker && key == ui::UK_ESC) { cancel_pick(); return; }   /* Esc cancels the picker */
         if (key == ui::UK_BACK) go_up();
         else if (key == 0x03) copy_sel(false);   /* Ctrl+C */
         else if (key == 0x18) copy_sel(true);    /* Ctrl+X */
