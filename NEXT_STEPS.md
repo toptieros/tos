@@ -134,6 +134,21 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select,
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Incremental directory flush — kills the notepad-autosave freeze (2026-06-06).** Found the real
+  culprit behind "saving freezes the desktop": `flush_super()` rewrote the *entire* tosfs directory
+  table on every file create/delete/rename/close. On today's 4096-sector disk that table is
+  **378 sectors / 189 KB**, so each `close()` blasted 189 KB through polled PIO (≈97k VM-exits under
+  KVM, ~15-20 ms on the single core) just to record one changed entry — and a single notepad autosave
+  closes one draft file *per open tab* plus a session file, i.e. several × 189 KB per idle pause.
+  This dwarfs the file data itself and is what the preemptible-syscall work (2026-06-05) couldn't
+  cure: it made the write *preemptible* but not *smaller*. **Fix:** `flush_super_ent(slot)` writes
+  only the 1-2 sectors that hold the one entry a mutating op changed (every op flushes a single slot
+  immediately, so this is byte-identical on disk) — a save's metadata I/O drops ~190× (189 KB → ≤1 KB),
+  making an autosave imperceptible. Pure kernel change in `fs.c`; build clean, unit 62/62, e2e 37/37
+  (the 4 fails were pre-existing load flakes, all green re-run alone). Caveat: this does not make I/O
+  *async*, so a very large file's *data* write still scales with its size — the async/DMA + write-back
+  cache cure in Known issues remains the full fix for big writes.
+
 - **Preemptible syscalls — long disk ops no longer freeze the machine; short writes still hitch (2026-06-05).** The
   "typing in notepad freezes the entire OS / the mouse locks up" report. Root cause (measured on
   KVM, where each 16-bit `rep insw/outsw` word is a VM-exit, so a 128-sector PIO read ≈ 20M cycles
@@ -400,14 +415,15 @@ Read [`roadmap.md`](design/roadmap.md) first — the strategic plan and current-
   OVMF+TCG; the harness now retries (`t_mouse` re-injects, `line_for` retypes). Environmental.
 - **tmpfs scratch leak — FIXED.** `Tos.stop()` removes the per-run scratch disk / OVMF-vars / serial
   log it created (a caller-supplied scratch is left alone).
-- **Synchronous disk I/O still freezes the desktop on short writes — OPEN (2026-06-05).** The
-  preemptible-syscall fix makes *long* disk ops (app launches, large reads) preemptible so they no
-  longer freeze the machine — but a syscall is only preempted if it spans a **10 ms** timer tick, and
-  a short synchronous write finishes *inside* one tick, so **the whole desktop incl. the cursor still
-  freezes for its duration** (user-confirmed: notepad's autosave, ~a few ms of small writes, still
-  freezes the cursor on every save). It's polled PIO, so the task busy-waits the transfer and nothing
-  else runs; PIO under KVM is the killer (every transferred word is a VM-exit). Raising `TIMER_HZ`
-  wouldn't really help (a 3 ms write still freezes ~3 ms even at 1 kHz). Real cures, in order of payoff: **(a)** an **async / DMA**
+- **Synchronous disk I/O can still freeze the desktop on *large* writes — MOSTLY FIXED for the
+  everyday case (2026-06-06).** The headline symptom (notepad autosave freezes the cursor) is fixed:
+  it was dominated not by the file data but by `flush_super()` rewriting the whole **189 KB** directory
+  table on every close — now an incremental per-entry flush of ≤1 KB (see Done). What *remains* is the
+  residual architecture: writes are still **synchronous polled PIO**, and a syscall is only preempted
+  if it spans a **10 ms** timer tick, so writing a genuinely large file's *data* (tens of KB+) still
+  busy-waits the single core for its duration (every transferred word is a VM-exit under KVM; raising
+  `TIMER_HZ` barely helps — a 3 ms write still freezes ~3 ms at 1 kHz). For typical notes this is now
+  imperceptible; the full cure for big writes is still, in order of payoff: **(a)** an **async / DMA**
   block driver (virtio-blk or AHCI+DMA — see the Phase-4 driver item) so a transfer is one descriptor,
   not thousands of `inb`/`outb`; **(b)** a **write-back buffer cache** that returns immediately and
   flushes on idle/sync, so the app never blocks on the platter; **(c)** make the writer not block the

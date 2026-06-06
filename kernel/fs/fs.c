@@ -135,10 +135,20 @@ static int alloc_slot(void) {
     return -1;
 }
 
-/* Persist the whole directory (TOSFS_DIR_SECTORS sectors; the super struct is
- * exactly that size). */
-static int flush_super(void) {
-    return fs_swrite(0, TOSFS_DIR_SECTORS, &super);
+/* Persist just the directory sector(s) holding entry `slot`. Every mutating op
+ * (create/delete/rename/mkdir) changes exactly one entry and flushes it right
+ * away, so there is never a cross-sector batch of unpersisted changes -- writing
+ * only this entry's 1-2 sectors is byte-identical on disk to rewriting the whole
+ * table, but moves ~189 KB (TOSFS_DIR_SECTORS) of PIO per save down to ~1 KB.
+ * On a single core that polled-PIO write is what froze the desktop on every
+ * notepad autosave; bounding it to a sector or two makes a save imperceptible.
+ * (Neighbouring entries that share the sector are rewritten from the in-memory
+ * super, which is authoritative, so they stay consistent.) */
+static int flush_super_ent(int slot) {
+    uint32_t off0 = 8u + (uint32_t)slot * TOSFS_ENT_SZ;     /* entries start past the 8-byte header */
+    uint32_t s0   = off0 / 512u;
+    uint32_t s1   = (off0 + TOSFS_ENT_SZ - 1u) / 512u;      /* an entry spans at most two sectors */
+    return fs_swrite(s0, s1 - s0 + 1u, (const uint8_t *)&super + s0 * 512u);
 }
 
 int fs_mount(void) {
@@ -280,7 +290,7 @@ static int mkdir_l(const char *path) {
     super.ents[s].type      = TOSFS_DIR;
     super.ents[s].owner     = (uint8_t)sched_uid();       /* a new entry is owned by its creator */
     super.ents[s].mode      = 0;
-    return flush_super();
+    return flush_super_ent(s);
 }
 
 int fs_mkdir(const char *path) {
@@ -306,7 +316,7 @@ static int rmdir_l(const char *path) {
     for (int t = 0; t < MAX_TASKS; t++) if (cwd[t] == s) return -1;
     super.ents[s].type   = TOSFS_FREE;
     super.ents[s].name[0] = 0;
-    return flush_super();
+    return flush_super_ent(s);
 }
 
 int fs_rmdir(const char *path) {
@@ -375,7 +385,7 @@ static int rename_l(const char *oldp, const char *newp) {
     if (super.ents[s].type == TOSFS_DIR && is_within(parent, s)) return -1; /* cycle */
     super.ents[s].parent = parent;
     copy_name(super.ents[s].name, leaf);
-    return flush_super();
+    return flush_super_ent(s);
 }
 
 int fs_rename(const char *oldp, const char *newp) {
@@ -458,7 +468,7 @@ static int unlink_slot(int s) {
     super.ents[s].type    = TOSFS_FREE;
     super.ents[s].name[0] = 0;
     super.ents[s].start_lba = super.ents[s].size = 0;
-    return flush_super();
+    return flush_super_ent(s);
 }
 
 static int unlink_l(const char *path) {
@@ -603,7 +613,7 @@ static int close_l(int fd) {
                 super.ents[s].type      = TOSFS_FILE;
                 super.ents[s].owner     = (uint8_t)sched_uid();   /* owned by the writer */
                 super.ents[s].mode      = 0;
-                if (flush_super() < 0) return -1;        /* persist superblock */
+                if (flush_super_ent(s) < 0) return -1;   /* persist just this entry's sector */
             } else {
                 for (uint32_t k = 0; k < f->nsect; k++) bit_clr(f->base_lba + k);
             }
