@@ -38,9 +38,14 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   enters rename immediately (Finder-style); Enter commits (`rename_()` on disk), Esc cancels,
   **click-away commits**; e2e `t_files_rename`, logs `[files] renaming … / rename <old> -> <new>`.
   **Path-bar click-away** — clicking outside the editable path field now reverts it the same as Esc
-  (`[files] pathleave`), checked in `t_files_breadcrumb`. **Left, cheapest-first:** per-folder view
-  memory (registry), Trash §9, rich Get Info + fs timestamps §8, tabs/split §4, column/gallery views
-  §1, search/thumbnails §6, tags/undo §10/§12. → [`files-app.md`](design/files-app.md)
+  (`[files] pathleave`), checked in `t_files_breadcrumb`. **Per-folder view memory §2** — each folder
+  remembers its view mode + sort + zoom in the **registry** (one value per path, `view.<path>`, hashed
+  when too long for `REG_KEYMAX`; a stable `view.default` covers unseen folders); restored on navigate,
+  persisted on every view/sort/zoom change; the menu-check re-sync was **batched into one `win_setmenu`**
+  (was 7/nav, which raced menu clicks). Pure codec `viewmem.h` (unit `t_viewmem`), e2e `t_files_viewmem`,
+  logs `[files] viewmem <path> <mode> zoom <z>`. **Left, cheapest-first:** Trash §9, rich Get Info + fs
+  timestamps §8, tabs/split §4, column/gallery views §1, search/thumbnails §6, tags/undo §10/§12.
+  → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
   `menu_begin/menu_add/menu_item/menu_commit` + `on_menu()` API; twm draws a bar tile per menu
@@ -192,6 +197,14 @@ Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
   stale/black. **Fix:** the resize handler now calls `invalidate()` (whole surface). Fixes every
   toolkit app's fullscreen restore, not just Files. Screenshot-verified (clean full render, cursor
   parked off-window).
+- **Files per-folder view memory §2 (2026-06-06).** Each folder now remembers its view mode + sort +
+  zoom across navigations, stored in the registry as one value per path (`view.<path>`, hashed past
+  `REG_KEYMAX`), with a stable `view.default` for never-visited folders. Restored in `load_path()`,
+  persisted in `set_view`/`set_sort`/`set_zoom`. The on-navigate menu-check re-sync was batched into a
+  **single `win_setmenu`** (`sync_menus()` + `menu_check_local`) — the old per-item `menu_set_checked`
+  re-published 7×/nav and raced menu-open clicks. Pure codec `viewmem.h` (unit `t_viewmem`, 22 checks),
+  e2e `t_files_viewmem`, logs `[files] viewmem <path> <mode> zoom <z>`. Screenshot-verified (icon view
+  restored, clean render).
 - **Files in-place rename + path-bar/rename click-away (2026-06-06).** Inline rename over the selected
   tile in list or icon view (New Folder enters it Finder-style); Enter/click-away commit, Esc cancels.
   Clicking outside the editable path bar now reverts it like Esc. `dispatch_mouse` made virtual so

@@ -16,6 +16,7 @@
 #include "perm.h"          /* tos_may_write / TOS_UID_*: grey Save in a system-owned folder */
 #include "pathbar.h"       /* pathbar_split: the clickable breadcrumb (location bar §3) */
 #include "filesort.h"      /* filesort_cmp: data-driven Sort by Name/Kind/Size (§2) */
+#include "viewmem.h"       /* view_prefs: per-folder view memory in the registry (§2) */
 
 #define NMAX    256
 #define HISTN   32
@@ -600,21 +601,36 @@ struct FilesApp : ui::Window {
         int ad = (a->type == FT_DIR), bd = (b->type == FT_DIR);
         return filesort_cmp(a->name, ad, a->size, b->name, bd, b->size, sort_key, sort_desc, sort_ff);
     }
-    /* reflect the active sort in the View menu's check marks (menu index 3) */
-    void sync_sort_menu() {
+    /* Flip a View/Sort check mark on menu_spec in-place WITHOUT publishing -- so a batch
+     * of updates costs a single win_setmenu (via sync_menus' menu_commit) instead of one
+     * per item. (menu_set_checked re-publishes every call, which thrashed the bar -- and
+     * raced menu clicks -- when re-syncing on every navigation.) */
+    void menu_check_local(int m, int i, bool on) {
+        if (m < 0 || m >= (int)menu_spec.nmenus) return;
+        if (i < 0 || i >= (int)menu_spec.m[m].nitems) return;
+        if (on) menu_spec.m[m].flags[i] |= (uint8_t)WMI_CHECKED;
+        else    menu_spec.m[m].flags[i] &= (uint8_t)~WMI_CHECKED;
+    }
+    /* Reflect the active view mode + sort in the menu check marks (View = index 3, Sort =
+     * index 4) and publish once. Called on navigation (restored prefs) and the setters. */
+    void sync_menus() {
         if (picker) return;                          /* picker mode has no menu bar */
-        menu_set_checked(4, 0, sort_key == FSORT_NAME);   /* the Sort menu is index 4 */
-        menu_set_checked(4, 1, sort_key == FSORT_KIND);
-        menu_set_checked(4, 2, sort_key == FSORT_SIZE);
-        menu_set_checked(4, 3, sort_desc != 0);
-        menu_set_checked(4, 4, sort_ff   != 0);
+        menu_check_local(3, 0, view_mode == 1);      /* View: as Icons */
+        menu_check_local(3, 1, view_mode == 0);      /* View: as List  */
+        menu_check_local(4, 0, sort_key == FSORT_NAME);
+        menu_check_local(4, 1, sort_key == FSORT_KIND);
+        menu_check_local(4, 2, sort_key == FSORT_SIZE);
+        menu_check_local(4, 3, sort_desc != 0);
+        menu_check_local(4, 4, sort_ff   != 0);
+        menu_commit();                               /* single publish for the whole batch */
     }
     /* change the sort, re-read the folder (re-sorted, with icons re-aligned), update
      * the menu checks, and log a canary for the e2e. */
     void set_sort(int key, int desc, int ff) {
         sort_key = key; sort_desc = desc; sort_ff = ff;
-        sync_sort_menu();
+        sync_menus();
         load_dir();
+        persist_view();                              /* remember this folder's sort (§2) */
         const char *kn = key == FSORT_KIND ? "kind" : key == FSORT_SIZE ? "size" : "name";
         print("[files] sort "); print(kn); printc(' '); print(desc ? "desc" : "asc"); printc(' '); printu((unsigned)ff); print("\r\n");
         invalidate();
@@ -756,8 +772,17 @@ struct FilesApp : ui::Window {
         strncpy(path, p, sizeof path - 1); path[sizeof path - 1] = 0;
         if (!path[0]) { path[0] = '/'; path[1] = 0; }
         if (filterfld.length() > 0) { loading = true; filterfld.set_text(""); loading = false; }  /* fresh folder, fresh filter */
-        load_dir();
+        if (!picker) {                                       /* §2: restore this folder's remembered view */
+            struct view_prefs v = load_view_prefs();
+            view_mode = v.mode; sort_key = v.sort_key; sort_desc = v.sort_desc; sort_ff = v.sort_ff; zoom = v.zoom;
+        }
+        load_dir();                                          /* sorts with the restored sort_key */
         crumbbar.set_path(path); side.cur = path;
+        if (!picker) {
+            apply_view_state();                              /* reflect mode/zoom in the widgets + menus */
+            print("[files] viewmem "); print(path); printc(' '); print(view_mode == 1 ? "icons" : "list");
+            print(" zoom "); printu((unsigned)zoom); print("\r\n");   /* restored-view telemetry (§2) */
+        }
         print("[files] cd "); print(path); print("\r\n");   /* navigation telemetry (breadcrumb/sidebar/edit) */
     }
     void update_nav() { back.enabled = hist_i > 0; fwd.enabled = hist_i < hist_n - 1; }
@@ -1068,26 +1093,44 @@ struct FilesApp : ui::Window {
         grid.tile_w = Z[zoom][0]; grid.tile_h = Z[zoom][1]; grid.icon_box = Z[zoom][2];
         grid.clamp_top();
     }
-    /* reflect the view mode + sort in the menu check marks */
-    void sync_view_menu() {
+    /* Reflect view_mode + zoom in the widgets and menu checks WITHOUT persisting -- used
+     * on navigate (where prefs were just restored from the registry) and by the
+     * user-driven setters below (which persist on top). */
+    void apply_view_state() {
+        bool icons = (view_mode == 1) && !picker;
+        grid.visible = icons; list.visible = !icons;
+        grid.sel = list.sel; grid.count = list.count;    /* carry the selection across */
+        focus = icons ? (ui::Widget *)&grid : (ui::Widget *)&list;
+        sync_menus();
+        if (icons) { apply_zoom(); grid.ensure_visible(grid.sel >= 0 ? grid.sel : 0); }
+        layout_widgets();
+    }
+    /* Per-folder view memory (§2): one registry value per folder path. "view.default"
+     * is a stable global fallback for never-visited folders (left at the built-in default
+     * until a future "Use as defaults" action). The picker is transient -- no memory. */
+    void persist_view() {
         if (picker) return;
-        menu_set_checked(3, 0, view_mode == 1);          /* View: as Icons */
-        menu_set_checked(3, 1, view_mode == 0);          /* View: as List  */
+        struct view_prefs v = { view_mode, sort_key, sort_desc, sort_ff, zoom };
+        char val[32]; viewmem_encode(&v, val, sizeof val);
+        char key[VIEWMEM_KEYMAX]; viewmem_key(path, key, sizeof key);
+        reg_set(key, val); reg_save();
+    }
+    struct view_prefs load_view_prefs() {
+        struct view_prefs def = viewmem_decode(reg_get("view.default", ""));
+        char key[VIEWMEM_KEYMAX]; viewmem_key(path, key, sizeof key);
+        const char *s = reg_get(key, "");
+        return s[0] ? viewmem_decode(s) : def;
     }
     void set_view(int mode) {
         view_mode = mode ? 1 : 0;
-        bool icons = (view_mode == 1);
-        grid.visible = icons && !picker; list.visible = !icons || picker;
-        grid.sel = list.sel; grid.count = list.count;    /* carry the selection across */
-        focus = icons ? (ui::Widget *)&grid : (ui::Widget *)&list;
-        sync_view_menu();
-        if (icons) { apply_zoom(); grid.ensure_visible(grid.sel >= 0 ? grid.sel : 0); }
-        layout_widgets();
-        print("[files] view "); print(icons ? "icons" : "list"); print("\r\n");
+        apply_view_state();
+        persist_view();
+        print("[files] view "); print(view_mode == 1 ? "icons" : "list"); print("\r\n");
         invalidate();
     }
     void set_zoom(int z) {
         zoom = z; apply_zoom();
+        persist_view();
         print("[files] zoom "); printu((unsigned)zoom); print("\r\n");
         layout_widgets(); invalidate();
     }

@@ -886,6 +886,32 @@ def t_files_rename(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_viewmem(uefi):
+    # Per-folder view memory (files-app §2): each folder remembers its view mode + zoom +
+    # sort in the registry; an unvisited folder falls back to the default. Make Home an
+    # icon view + Zoom In, navigate Up to /Users (never visited -> default list view), then
+    # Back to Home and confirm the icon+zoom view is restored from the registry. Files logs
+    # "[files] viewmem <path> <mode> zoom <z>" on every navigation. Driven by menu clicks.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        # Home opens with the built-in default (list view, actual size).
+        assert t.wait_for("[files] viewmem /Users/user list zoom 1", 8), "Home did not open in the default list view"
+        _files_menu_click(t, "View", 0)                   # as Icons  -> persisted for Home
+        assert t.wait_for("[files] view icons", 8), "View > as Icons did not apply"
+        _files_menu_click(t, "View", 2)                   # Zoom In    -> persisted for Home
+        assert t.wait_for("[files] zoom 2", 8), "View > Zoom In did not apply"
+        _files_menu_click(t, "Go", 0)                     # Up to /Users (never visited)
+        assert t.wait_for("[files] viewmem /Users list zoom 1", 8), "an unvisited folder did not use the default view"
+        _files_menu_click(t, "Go", 1)                     # Back to Home
+        assert t.wait_for("[files] viewmem /Users/user icons zoom 2", 8), "Home did not restore its remembered icon+zoom view"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_term_menu(uefi):
     # The terminal is a raw-syscall app (not the ui:: toolkit), but it declares a
     # menu the same way via SYS_WIN_SETMENU: an Edit menu with Copy/Paste/Clear (no
@@ -1033,7 +1059,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
