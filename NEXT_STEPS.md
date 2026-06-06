@@ -76,13 +76,13 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   it has been **deleted** and replaced by the **Files app launched as a picker process** (#11 below) so
   the dialog *is* Files (real `icons.h` icons, sidebar, breadcrumb, filter — like a Windows dialog
   resembles Explorer).
-- [~] **File picker → Files-as-picker process (#11).** Retire `ui::FileDialog`; the system Open/Save
+- [x] **File picker → Files-as-picker process (#11) — DONE (2026-06-06).** Retire `ui::FileDialog`; the system Open/Save
   picker becomes the **Files app** run in a *picker mode* with parameters, returning the chosen path
   to the caller. Mechanism extends the existing `/tmp/.open-doc` hand-off (`sys_open_with`): a request
   temp file in, a result temp file out, caller notices the picker exited via `trywait()`. Gets Files'
   whole design + feature set for free and can't visually drift from it. Full design (channels, SDK,
   picker-mode layout, modality, tests, risks) → [`file-picker.md`](design/file-picker.md). Phases,
-  cheapest-first — **(1)–(4) DONE (2026-06-06); (5)–(6) left** (compositor/kernel work):
+  cheapest-first — **all (1)–(6) DONE (2026-06-06)**:
   - [x] **(1) SDK + codec.** `struct pick_req` + the key=value codec (`pickreq_encode`/`pickreq_parse` +
     the `ext`-filter `pickreq_ext_match`) live in pure header `user/lib/pickreq.h`; `sys_pick_begin` /
     `sys_pick_poll` (caller) + `sys_pick_req` (Files) in `user/lib/sys.{h,c}`; `/tmp/.picker-req`
@@ -107,8 +107,12 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
     kernel ABI/pid-mapping change and gives the same modal feel (everything behind dims, not just the
     caller). `ui::Window::modal` → flag; Files sets it in picker mode. e2e: `t_file_picker` now asserts a
     click on the window behind is swallowed; screenshot-verified (parent dimmed, dialog lit on top).
-  - [ ] **(6) Hardening.** Pid-namespace the temp files (`/tmp/.picker-<pid>.req/.res`) for concurrent
-    pickers; add `SYS_GETPID` if userspace lacks it. → [`file-picker.md`](design/file-picker.md)
+  - [x] **(6) Hardening (2026-06-06).** Temp files are now pid-namespaced — `/tmp/.picker-<pid>.req/.res`
+    keyed by the *caller's* pid, so two apps can have a picker open at once without clobbering. Added
+    `SYS_GETPID`/`SYS_GETPPID` (kernel `sched_getpid`/`sched_ppid`, ulib `getpid`/`getppid`): the caller
+    names the files from `getpid()`, the picker (its fork+exec child) derives the same pid from `getppid()`.
+    Path-building centralised in `sys.c` (`picker_path`) + a new `sys_pick_result()` so Files no longer
+    hardcodes the result path. All picker e2e (`t_file_picker`/`t_notepad_*`/`t_app_menu`) green.
 - [x] **Notepad redesign: tabs + session autosave (#5).** **DONE** — Notepad is now a tabbed editor.
   - [x] **Close UX (refined per use)** — closing the **window** never prompts: the session autosave
     already holds every tab + its unsaved contents, so `on_close` just flushes the latest draft and
@@ -201,6 +205,13 @@ Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
   stale/black. **Fix:** the resize handler now calls `invalidate()` (whole surface). Fixes every
   toolkit app's fullscreen restore, not just Files. Screenshot-verified (clean full render, cursor
   parked off-window).
+- **Picker hardening — pid-namespaced temp files + `getpid`/`getppid` (2026-06-06).** The picker handoff
+  files moved from the fixed `/tmp/.picker-req/.res` to `/tmp/.picker-<callerpid>.req/.res`, so concurrent
+  pickers from different apps can't clobber each other. Added `SYS_GETPID`/`SYS_GETPPID` (67/68) with
+  `sched_getpid`/`sched_ppid` in the kernel and `getpid`/`getppid` in ulib: the caller names the files from
+  its own pid, and the picker — a `sys_launch` (fork+exec) child of the caller — derives the *same* pid via
+  `getppid()`. Naming centralised in `sys.c` `picker_path()`; new `sys_pick_result()` retires the hardcoded
+  path in Files' `finish_pick`. Completes the picker (#11) track. All picker e2e green.
 - **Picker modality — `WIN_MODAL` (2026-06-06).** The Files Open/Save picker is now a real modal: a new
   `WIN_MODAL` window flag (kernel `syscall.h`, SDK `ui::Window::modal`, set by Files in picker mode) tells
   twm to keep it topmost + focused, paint a full-screen dim scrim behind it (the `modal_slot()`/`modal_on`

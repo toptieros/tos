@@ -59,6 +59,8 @@ void notify_to(const char *title, const char *body, const char *target); /* ...r
 int  wm_poll_notify(struct notif *out);     /* SYS_WM_NOTIFY: compositor dequeues one; 1 if got   */
 int  setuid(int uid);                       /* SYS_SETUID: set/drop the caller's owner uid; 0/-1  */
 int  getuid(void);                          /* SYS_GETUID: the caller's owner uid (0=system,1=user) */
+int  getpid(void);                          /* SYS_GETPID: the caller's process id                 */
+int  getppid(void);                         /* SYS_GETPPID: the caller's parent process id         */
 int  win_setmenu(int id, const struct winmenu *m); /* SYS_WIN_SETMENU: declare a window's menu bar */
 int  wm_getmenu(int id, struct winmenu *out);      /* SYS_WM_GETMENU: compositor reads it; 1 if any */
 unsigned kbd_mods(void);                    /* SYS_KBD_MODS: live keyboard modifier bitmask (KMOD_*) */

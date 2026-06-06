@@ -1019,7 +1019,7 @@ struct FilesApp : ui::Window {
     /* hand a chosen path back to the caller and quit: write /tmp/.picker-res (read by
      * sys_pick_poll) then end the event loop so the process exits and the caller reaps it. */
     void finish_pick(const char *p) {
-        sys_spit("/tmp/.picker-res", p, (int)strlen(p));   /* PICKER_RES in sys.c */
+        sys_pick_result(p);                                /* write the pid-namespaced result temp file */
         print("[files] picked "); print(p); print("\r\n");
         running = false;
     }

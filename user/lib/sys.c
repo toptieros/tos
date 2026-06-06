@@ -71,35 +71,62 @@ int sys_open_arg(char *out, int cap) {
 }
 
 /* ---- the system file picker (design/file-picker.md) ------------------------- */
-#define PICKER_REQ "/tmp/.picker-req"
-#define PICKER_RES "/tmp/.picker-res"
 #define FILES_BIN  "/Apps/Files.app/bin/files"
 
+/* The request/result temp files are namespaced by the *caller's* pid so two apps can
+ * have a picker open at once without clobbering each other (#11 step 6). The caller
+ * derives the pid from getpid(); the picker -- a fork+exec child of the caller -- derives
+ * the same number from getppid(). Builds "/tmp/.picker-<pid>.req" / ".res". */
+static void picker_path(char *out, int cap, int pid, const char *suffix) {
+    char num[16]; int n = 0;
+    if (pid < 0) pid = 0;
+    if (pid == 0) num[n++] = '0';
+    else { char t[16]; int m = 0; while (pid && m < 15) { t[m++] = (char)('0' + pid % 10); pid /= 10; } while (m) num[n++] = t[--m]; }
+    num[n] = 0;
+    int o = 0; const char *pfx = "/tmp/.picker-";
+    for (int i = 0; pfx[i] && o < cap - 1; i++) out[o++] = pfx[i];
+    for (int i = 0; num[i]  && o < cap - 1; i++) out[o++] = num[i];
+    out[o < cap - 1 ? o++ : o] = '.';
+    for (int i = 0; suffix[i] && o < cap - 1; i++) out[o++] = suffix[i];
+    out[o] = 0;
+}
+
 int sys_pick_begin(const struct pick_req *r) {
+    int me = getpid();
+    char req[64], res[64];
+    picker_path(req, sizeof req, me, "req");
+    picker_path(res, sizeof res, me, "res");
     char blob[512];
     int n = pickreq_encode(r, blob, sizeof blob);
-    if (sys_spit(PICKER_REQ, blob, n) < 0) return -1;
-    funlink(PICKER_RES);             /* so a previous run's result can't be read as this one's */
+    if (sys_spit(req, blob, n) < 0) return -1;
+    funlink(res);                    /* so a previous run's result can't be read as this one's */
     return sys_launch(FILES_BIN);    /* fork+exec Files; it sees the request via sys_pick_req() */
 }
 
 int sys_pick_poll(int pid, char *out, int cap) {
     if (cap > 0) out[0] = 0;
     if (trywait() != pid) return 0;  /* the picker (child `pid`) hasn't exited yet */
-    int n = 0; char *res = sys_slurp(PICKER_RES, &n);
-    funlink(PICKER_RES);             /* consume the result either way */
-    if (!res) return -1;             /* no result file: Cancel / close / crash */
-    int i = 0; for (; i < n && i < cap - 1 && res[i] && res[i] != '\n' && res[i] != '\r'; i++) out[i] = res[i];
+    char res[64]; picker_path(res, sizeof res, getpid(), "res");
+    int n = 0; char *r = sys_slurp(res, &n);
+    funlink(res);                    /* consume the result either way */
+    if (!r) return -1;               /* no result file: Cancel / close / crash */
+    int i = 0; for (; i < n && i < cap - 1 && r[i] && r[i] != '\n' && r[i] != '\r'; i++) out[i] = r[i];
     out[i] = 0;
-    free(res);
+    free(r);
     return out[0] ? 1 : -1;          /* empty result also means cancelled */
 }
 
 int sys_pick_req(struct pick_req *out) {
-    int n = 0; char *b = sys_slurp(PICKER_REQ, &n);
+    char req[64]; picker_path(req, sizeof req, getppid(), "req");
+    int n = 0; char *b = sys_slurp(req, &n);
     if (!b) return 0;
-    funlink(PICKER_REQ);             /* consume it so a later launch won't re-enter picker mode */
+    funlink(req);                    /* consume it so a later launch won't re-enter picker mode */
     int ok = pickreq_parse(b, out);
     free(b);
     return ok;
+}
+
+int sys_pick_result(const char *path) {
+    char res[64]; picker_path(res, sizeof res, getppid(), "res");
+    return sys_spit(res, path, (int)strlen(path));
 }

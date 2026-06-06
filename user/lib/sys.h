@@ -48,9 +48,14 @@ int   sys_pick_begin(const struct pick_req *r);
 int   sys_pick_poll(int pid, char *out, int cap);
 
 /* Files-side mirror of sys_open_arg: if a picker request is pending, fill *out and
- * return 1 (consuming /tmp/.picker-req); else 0. Call once at startup, before
+ * return 1 (consuming the request temp file); else 0. Call once at startup, before
  * sys_open_arg, so a launch-as-picker isn't mistaken for an open-document launch. */
 int   sys_pick_req(struct pick_req *out);
+
+/* Files-side: hand the chosen absolute path back to the caller by writing the result
+ * temp file (the picker then exits and the caller's sys_pick_poll reads it). The path
+ * is namespaced by the caller's pid, derived here from getppid(). 0 on success / -1. */
+int   sys_pick_result(const char *path);
 
 #ifdef __cplusplus
 }
