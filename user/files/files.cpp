@@ -681,8 +681,8 @@ struct FilesApp : ui::Window {
         if (stat_(path, &st) != 0) return true;            /* unknown -> let the write decide */
         return tos_may_write(getuid(), (int)st.owner) != 0;
     }
-    /* "Keep Both": build a non-colliding "<stem> (N)<ext>" sibling of `full` (mirrors
-     * the FileDialog dedup the picker replaces; the dot is only a suffix in the basename). */
+    /* "Keep Both": build a non-colliding "<stem> (N)<ext>" sibling of `full`
+     * (picked.txt -> "picked (2).txt"; the dot is only a suffix in the basename). */
     void dedup_path(char *out, int cap, const char *full) {
         int n = (int)strlen(full), slash = -1, dot = -1;
         for (int i = 0; i < n; i++) if (full[i] == '/') slash = i;

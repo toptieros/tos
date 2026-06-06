@@ -48,33 +48,35 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   greys when the folder isn't user-writable) and raises a nested `ui::ConfirmDialog` **Replace /
   Cancel** when overwriting. Notepad wired it up: **File > Open…** (`^O`) and **File > Save As…**
   drive it; e2e `t_file_dialog`. The overwrite warning is **Replace / Keep Both / Cancel** — Keep
-  Both dedupes to `name (N).ext` (`fd_dedup`) rather than clobbering. **Superseded (2026-06-06):** the
-  in-process modal looks *plain* (hand-drawn `fd_folder`/`fd_file` shapes, a re-implemented sidebar) —
-  we're replacing it with the **Files app launched as a picker process** so the dialog *is* Files
-  (real `icons.h` icons, sidebar, breadcrumb, filter — like a Windows dialog resembles Explorer). New
-  tracked item below; `ui::FileDialog` gets deleted once notepad is migrated.
-- [ ] **File picker → Files-as-picker process (#11).** Retire `ui::FileDialog`; the system Open/Save
+  Both dedupes to `name (N).ext` (`fd_dedup`) rather than clobbering. **Retired (2026-06-06):** the
+  in-process modal looked *plain* (hand-drawn `fd_folder`/`fd_file` shapes, a re-implemented sidebar);
+  it has been **deleted** and replaced by the **Files app launched as a picker process** (#11 below) so
+  the dialog *is* Files (real `icons.h` icons, sidebar, breadcrumb, filter — like a Windows dialog
+  resembles Explorer).
+- [~] **File picker → Files-as-picker process (#11).** Retire `ui::FileDialog`; the system Open/Save
   picker becomes the **Files app** run in a *picker mode* with parameters, returning the chosen path
   to the caller. Mechanism extends the existing `/tmp/.open-doc` hand-off (`sys_open_with`): a request
   temp file in, a result temp file out, caller notices the picker exited via `trywait()`. Gets Files'
   whole design + feature set for free and can't visually drift from it. Full design (channels, SDK,
   picker-mode layout, modality, tests, risks) → [`file-picker.md`](design/file-picker.md). Phases,
-  cheapest-first:
-  - [ ] **(1) SDK + codec.** `struct pick_req` + `sys_pick_begin` / `sys_pick_poll` (caller) and
-    `sys_pick_req` (Files) in `user/lib/sys.{h,c}`; `/tmp/.picker-req` (key=value) in, `/tmp/.picker-res`
-    (path or empty) out; begin unlinks stale res, poll wraps `trywait()`. **Host unit-test** the req
-    encode/parse round-trip + the `ext`-filter predicate (pure logic — pyramid base).
-  - [ ] **(2) Files picker mode.** On startup check `sys_pick_req()` before `sys_open_arg()`; if set,
-    smaller dialog-shaped window + a picker footer (Name field on save, Cancel / Open·Save), extension
-    filter (dirs always shown), ownership-greyed Save (reuse `tos_may_write`), overwrite via the
-    existing `ui::ConfirmDialog`, New Folder kept / Delete·Open-With hidden. Write result + exit on
-    pick/cancel/close. Log `[files] picker …` / `[files] picked …`. Do **open** mode first, then save.
-  - [ ] **(3) Migrate notepad + tests.** `open_open()`/`save_as()` → `sys_pick_begin`; `on_tick` →
-    `sys_pick_poll`; drop the embedded `ui::FileDialog`. New e2e `t_file_picker` (open + save, drive by
-    **click** not the Ctrl accel); rewrite `t_notepad_edit_save`/`t_notepad_undo`/`t_file_dialog`
-    assertions from `[filedialog] …` to `[files] picker/picked …` (keep the read-back persistence checks).
-  - [ ] **(4) Delete `ui::FileDialog`** + its `fd_*` glyph helpers once (3) is green — one picker, no
-    dead code.
+  cheapest-first — **(1)–(4) DONE (2026-06-06); (5)–(6) left** (compositor/kernel work):
+  - [x] **(1) SDK + codec.** `struct pick_req` + the key=value codec (`pickreq_encode`/`pickreq_parse` +
+    the `ext`-filter `pickreq_ext_match`) live in pure header `user/lib/pickreq.h`; `sys_pick_begin` /
+    `sys_pick_poll` (caller) + `sys_pick_req` (Files) in `user/lib/sys.{h,c}`; `/tmp/.picker-req`
+    (key=value) in, `/tmp/.picker-res` (path or empty) out; begin unlinks stale res, poll wraps
+    `trywait()`. Host unit test `tests/unit/t_pickreq.c` (encode/parse round-trip + ext predicate).
+  - [x] **(2) Files picker mode.** Startup checks `sys_pick_req()` first; if set, a 560×420 dialog-shaped
+    window + a picker footer (Name field on save, Cancel / Open·Save), extension filter (dirs always
+    shown — `pickreq_ext_match`), ownership-greyed Save (`tos_may_write`+`getuid`), overwrite via the
+    existing `ui::ConfirmDialog` (Replace / Keep Both / Cancel), New Folder kept / Delete·Open-With
+    hidden, no menu bar. Writes the result + exits on pick/cancel/close. Logs `[files] picker …` /
+    `[files] picked …` / `[files] pick cancel`. Open + save both done.
+  - [x] **(3) Migrate notepad + tests.** `open_open()`/`save_as()` → `sys_pick_begin` (`start_pick`);
+    `on_tick` polls `sys_pick_poll`; the embedded `ui::FileDialog` is gone. New e2e `t_file_picker`
+    (save-with-rename + overwrite/Keep-Both in the picker window + open-mode round-trip);
+    `t_notepad_edit_save`/`t_notepad_undo`/`t_notepad_guard`/`t_app_menu` rewired via `_accept_save_picker`
+    to the `[files] picker/picked …` markers (read-back persistence checks kept).
+  - [x] **(4) Delete `ui::FileDialog`** + its `fd_*` glyph/dedup helpers — done; one picker, no dead code.
   - [ ] **(5) Modality polish.** Compositor `WIN_MODAL` + `wininfo.parent`: keep the picker above its
     parent, dim the parent with the Launchpad-style scrim, route input to the modal, restore focus on
     close. (v1 ships as an ordinary top-level window; this only stops clicking the caller underneath.)
