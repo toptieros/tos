@@ -92,8 +92,10 @@ struct Notepad : ui::Window {
     ui::Label     status;
     ui::TextField editor;        /* the active document body */
     ui::ConfirmDialog confirm;   /* the unsaved-changes guard (#5) */
-    ui::FileDialog dlg;          /* the reusable Open / Save-As picker (#4) */
-    int           dlg_mode = ui::FD_OPEN;
+    /* The Open/Save picker is now the Files app run as a *picker process* (#11):
+     * sys_pick_begin launches it, on_tick polls sys_pick_poll for the result. */
+    int           pick_pid = -1;        /* the live picker child (-1 = none)        */
+    int           pick_mode = PICK_OPEN;/* what the in-flight pick is doing          */
 
     Tab           tabs[MAXTABS];
     int           ntabs = 0, active = 0;
@@ -227,13 +229,26 @@ struct Notepad : ui::Window {
         else                  set_status("Save failed");
         invalidate();
     }
-    /* Open / Save As via the reusable file picker (#4), both rooted at ~/Documents. */
-    void open_open() { dlg_mode = ui::FD_OPEN; dlg.open_dialog(ui::FD_OPEN, "/Users/user/Documents"); }
-    void save_as()   { dlg_mode = ui::FD_SAVE; dlg.open_dialog(ui::FD_SAVE, "/Users/user/Documents", basename_of(cur().name)); }
+    /* Open / Save As via the Files-as-picker process (#11), both rooted at ~/Documents.
+     * sys_pick_begin launches Files in picker mode; on_tick polls for the result. */
+    void start_pick(int mode, const char *suggest) {
+        struct pick_req r{};                                  /* value-init = all-zero */
+        r.mode = mode;
+        strncpy(r.dir, "/Users/user/Documents", sizeof r.dir - 1);
+        if (mode == PICK_SAVE) {
+            const char *bn = (suggest && suggest[0]) ? suggest : "untitled.txt";
+            strncpy(r.name, bn, sizeof r.name - 1);
+        }
+        pick_mode = mode;
+        pick_pid  = sys_pick_begin(&r);
+        if (pick_pid < 0) set_status("Could not open the file picker");
+    }
+    void open_open() { start_pick(PICK_OPEN, nullptr); }
+    void save_as()   { start_pick(PICK_SAVE, basename_of(cur().name)); }
     bool pristine(const Tab &t) const { return !t.named && !t.dirty; }
     void on_picked(const char *path) {
         if (!path) { close_after_pick = -1; return; }   /* cancelled: keep the tab open */
-        if (dlg_mode == ui::FD_OPEN) {
+        if (pick_mode == PICK_OPEN) {
             /* open into the current tab if it's pristine, else a fresh tab */
             if (!pristine(cur())) {
                 if (ntabs >= MAXTABS) { set_status("Maximum tabs open"); return; }
@@ -321,6 +336,11 @@ struct Notepad : ui::Window {
      * flush once the user has paused (NP_IDLE_TICKS since the last edit), or -- as a
      * backstop during nonstop typing -- once NP_AUTOSAVE_TICKS have elapsed. */
     void on_tick(unsigned t) override {
+        if (pick_pid >= 0) {                              /* a Files picker is open: poll for its result */
+            char path[256];
+            int r = sys_pick_poll(pick_pid, path, sizeof path);
+            if (r != 0) { pick_pid = -1; on_picked(r == 1 ? path : nullptr); }
+        }
         if (ntabs == 0 || !session_changed) return;
         bool idle   = (t - last_edit)     >= NP_IDLE_TICKS;
         bool forced = (t - last_autosave) >= NP_AUTOSAVE_TICKS;
@@ -397,8 +417,6 @@ struct Notepad : ui::Window {
         };
         confirm.ctx = this;
         confirm.on_choice = [](void *c, int idx) { ((Notepad *)c)->resolve_guard(idx); };
-        dlg.ctx = this;
-        dlg.on_pick = [](void *c, const char *p) { ((Notepad *)c)->on_picked(p); };
 
         /* first tab: an opened document (Files "Open With") wins; else restore the
          * autosaved session (#5); else a fresh untitled note. */
@@ -420,7 +438,7 @@ struct Notepad : ui::Window {
 
         layout();
         add(&tabbar); add(&status); add(&editor);
-        add(&confirm); add(&dlg);                     /* last = drawn on top + grab input when shown */
+        add(&confirm);                                /* last = drawn on top + grab input when shown */
         focus = &editor;
 
         menu_begin();

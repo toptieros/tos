@@ -903,9 +903,10 @@ struct FilesApp : ui::Window {
         nav_to(start);
 
         if (picker) {
-            if (preq.mode == PICK_SAVE) {             /* pre-fill the suggested name */
+            if (preq.mode == PICK_SAVE) {             /* pre-fill + select the suggested name */
                 nameFld.set_text(preq.name[0] ? preq.name : "untitled.txt");
                 nameFld.caret = nameFld.length();
+                nameFld.on_key(0x01);                 /* ^A select-all: the first keystroke replaces it */
             }
             update_pick_btn();
             print("[files] picker "); print(preq.mode == PICK_SAVE ? "save " : "open "); print(path); print("\r\n");

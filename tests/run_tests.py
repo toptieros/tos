@@ -209,13 +209,15 @@ def _notepad_file_menu(t, idx):
 
 
 def _accept_save_picker(t, start="/Users/user/Documents", name=None):
-    """A never-saved note's Save (or close-with-Save) opens the file picker to pick a
-    location. Wait for it, optionally replace the select-all'd suggested name, then
-    Enter to confirm."""
-    assert t.wait_for("[filedialog] open save " + start, 8), "Save did not open the file picker"
+    """A never-saved note's Save (or close-with-Save) opens the Files app as a *picker
+    process* (#11) -- a separate window. Wait for it to come up + take focus, optionally
+    replace the pre-selected suggested name, then Enter (the name field has focus; Enter
+    submits = Save)."""
+    assert t.wait_for("[files] picker save " + start, 12), "Save did not open the Files picker"
+    assert t.wait_for("[twm] focus Save As", 8), "the picker window did not take focus"
     if name is not None:
-        t.type(name, delay=0.05)
-    t.key("ret", delay=0.12)
+        t.type(name, delay=0.05)            # the suggested name opens selected -> typing replaces it
+    t.key("ret", delay=0.15)                # Enter in the name field = Save
 
 
 def t_notepad_guard(uefi):
@@ -267,50 +269,67 @@ def t_notepad_guard(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
-def t_file_dialog(uefi):
-    # Reusable file picker (#4): Notepad's File > Save As... opens a modal ui::FileDialog
-    # (a Favorites sidebar + an Up button + the directory list + a name field). It starts
-    # in ~/Documents; we replace the suggested name (it opens select-all'd) by typing a new
-    # one, Enter confirms, the dialog reports the chosen path, Notepad saves there, and we
-    # read it back off disk through the terminal to prove it persisted.
+def t_file_picker(uefi):
+    # The system Open/Save dialog IS the Files app launched in a picker mode (#11): a
+    # separate process that hands the chosen path back over /tmp/.picker-res (notepad's
+    # on_tick polls sys_pick_poll). Notepad's File > Save As... launches it; we replace
+    # the pre-selected suggested name, Save, and read the file back off disk. A same-name
+    # Save As then exercises the overwrite -> Keep Both dedupe -- whose ConfirmDialog now
+    # lives in the PICKER window. Finally File > Open... reopens the file through the
+    # picker (open mode) to prove that path round-trips too.
     with Tos(uefi=uefi) as t:
         assert t.open_terminal(), "desktop/terminal did not come up"
         t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
         t.type("note", delay=0.06); t.key("ret", delay=0.1)
         assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
         assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
-        wr = t.win_rect("Notepad"); assert wr, "Notepad window rect not reported"
-        wx, wy = wr[0], wr[1]
         t.type("viapicker", delay=0.05)                  # 9 bytes into the editor
+        # --- Save As "picked.txt" through the picker process ---
         _notepad_file_menu(t, 3)                          # File > Save As...
         assert t.wait_for("[notepad] menu 0 3", 6), "File > Save As was not delivered"
-        assert t.wait_for("[filedialog] open save /Users/user/Documents", 8), \
-            "Save As did not open the picker in ~/Documents"
-        # the name field opens pre-filled + select-all'd, so typing replaces it
-        t.type("picked.txt", delay=0.05)
-        t.key("ret", delay=0.12)                          # Enter = the primary (Save) button
-        assert t.wait_for("[filedialog] pick /Users/user/Documents/picked.txt", 8), \
+        assert t.wait_for("[files] picker save /Users/user/Documents", 12), \
+            "Save As did not launch the Files picker in ~/Documents"
+        assert t.wait_for("[twm] focus Save As", 8), "the picker window did not take focus"
+        t.type("picked.txt", delay=0.05)                  # replaces the pre-selected name
+        t.key("ret", delay=0.15)                          # Enter in the name field = Save
+        assert t.wait_for("[files] picked /Users/user/Documents/picked.txt", 8), \
             "the picker did not report the chosen path"
         assert t.wait_for("[notepad] saved /Users/user/Documents/picked.txt (9 bytes)", 8), \
             "Notepad did not save to the picked path"
-        # --- overwrite -> Keep Both: Save As the same name, then dedupe to "picked (2).txt" ---
+        # --- Save As the same name -> overwrite warning -> Keep Both -> "picked (2).txt" ---
         _notepad_file_menu(t, 3)                          # File > Save As... again
-        time.sleep(0.6)                                   # let the picker open + grab focus (same name pre-filled)
-        t.key("ret", delay=0.15)                          # Enter on "picked.txt" -> the file exists
+        assert t.wait_for("[files] picker save /Users/user/Documents", 12), \
+            "the second Save As did not relaunch the picker"
+        assert t.wait_for("[twm] focus Save As", 8), "the picker did not take focus"
+        pr = t.win_rect("Save As"); assert pr, "picker window rect not reported"
+        pwx, pwy = pr[0], pr[1]
+        t.key("ret", delay=0.15)                          # Enter on the pre-selected "picked.txt" -> it exists
         d = None
         for _ in range(40):
-            d = re.search(r"\[ui\] dlgbtn 1 (\d+) (\d+)", t.serial())   # button 1 = Keep Both
+            d = re.search(r"\[ui\] dlgbtn 1 (\d+) (\d+)", t.serial())   # button 1 = Keep Both (in the picker window)
             if d:
                 break
             time.sleep(0.1)
         assert d, "the overwrite warning's Keep Both button was not reported"
-        t.click(wx + int(d.group(1)), wy + int(d.group(2)))
+        t.click(pwx + int(d.group(1)), pwy + int(d.group(2)))
         assert t.wait_for("[ui] confirm 1", 6), "clicking Keep Both did not register"
-        assert t.wait_for("[filedialog] pick /Users/user/Documents/picked (2).txt", 8), \
+        assert t.wait_for("[files] picked /Users/user/Documents/picked (2).txt", 8), \
             "Keep Both did not dedupe the colliding name"
         assert t.wait_for("[notepad] saved /Users/user/Documents/picked (2).txt (9 bytes)", 8), \
             "Notepad did not save the deduped file"
-        # prove both persisted: read picked.txt back + list the deduped sibling
+        # --- Open the saved file back through the picker (open mode) ---
+        _notepad_file_menu(t, 1)                          # File > Open...
+        assert t.wait_for("[files] picker open /Users/user/Documents", 12), \
+            "File > Open did not launch the picker in open mode"
+        assert t.wait_for("[twm] focus Open", 8), "the open picker did not take focus"
+        t.key("down", delay=0.15)                         # row 0 = ".."
+        t.key("down", delay=0.15)                         # row 1 = "picked (2).txt" (space sorts before '.')
+        t.key("ret", delay=0.15)                          # Enter opens the selected file
+        assert t.wait_for("[files] picked /Users/user/Documents/picked (2).txt", 8), \
+            "the open picker did not report the chosen file"
+        assert t.wait_for("[notepad] opened /Users/user/Documents/picked (2).txt", 8), \
+            "Notepad did not open the file the picker returned"
+        # prove both saved files persisted, read back through the terminal
         t.key("alt-tab", delay=0.1)
         assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
         t.line("cat Documents/picked.txt")
@@ -833,7 +852,7 @@ BIOS_TESTS = [
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
     t_app_menu, t_files_menu, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
-    t_notepad_guard, t_file_dialog, t_notepad_session, t_spotlight,
+    t_notepad_guard, t_file_picker, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]
