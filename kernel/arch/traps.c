@@ -250,6 +250,12 @@ static struct regs *syscall_dispatch(struct regs *r) {
     case SYS_GETUID:
         r->rax = (uint64_t)(int64_t)sched_uid();
         return r;
+    case SYS_GETPID:
+        r->rax = (uint64_t)(int64_t)sched_getpid();
+        return r;
+    case SYS_GETPPID:
+        r->rax = (uint64_t)(int64_t)sched_ppid();
+        return r;
     case SYS_WIN_SETMENU:
         BUF(r->rsi, sizeof(struct winmenu));
         r->rax = (uint64_t)(int64_t)win_set_menu((int)r->rdi, (const struct winmenu *)r->rsi);

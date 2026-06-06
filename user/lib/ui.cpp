@@ -490,7 +490,7 @@ Window::Window() { bg = TH_CHROME; }
 bool Window::create(int cw, int ch, const char *t) {
     struct wininfo wi;
     wi.w = (uint32_t)cw; wi.h = (uint32_t)ch;
-    wi.flags = ((popup || overlay) ? WIN_POPUP : 0) | (overlay ? WIN_OVERLAY : 0);
+    wi.flags = ((popup || overlay) ? WIN_POPUP : 0) | (overlay ? WIN_OVERLAY : 0) | (modal ? WIN_MODAL : 0);
     int i = 0; for (; t && t[i] && i < 31; i++) { title[i] = t[i]; wi.title[i] = t[i]; }
     title[i] = 0; wi.title[i] = 0;
     id = win_create(&wi);

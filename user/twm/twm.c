@@ -51,7 +51,7 @@ static int gtr, gtg, gtb, gbr, gbg, gbb;
 
 struct cwin { int used, id, wx, wy; uint32_t w, h, seq; uint64_t vaddr; char title[32];
               int min, maxed, sx, sy; uint32_t sw, sh;     /* min/max flags + pre-maximize geometry */
-              int popup, overlay; };                       /* WIN_POPUP / WIN_OVERLAY (dim, above dock) */
+              int popup, overlay, modal; };                /* WIN_POPUP / WIN_OVERLAY (dim, above dock) / WIN_MODAL (input-locked dialog) */
 static struct cwin cw[MAXW];
 static int zo[MAXW], nz;         /* z-order: zo[nz-1] is topmost == focused */
 
@@ -1130,12 +1130,19 @@ static int overlay_slot(void) {
     for (int i = 0; i < MAXW; i++) if (cw[i].used && cw[i].overlay && !cw[i].min) return i;
     return -1;
 }
+/* A visible WIN_MODAL window (the Files Open/Save picker) -> kept topmost + focused with
+ * a dim scrim behind it; input outside it is swallowed. -1 if none. */
+static int modal_slot(void) {
+    for (int i = 0; i < MAXW; i++) if (cw[i].used && cw[i].modal && !cw[i].min) return i;
+    return -1;
+}
 static void compose(struct rect r) {
     cur_clip = r;
     ugfx_set_clip(r.x, r.y, r.w, r.h);
     draw_desk(r.x, r.y, r.w, r.h);
     int ov = overlay_slot();
-    for (int i = 0; i < nz; i++) if (zo[i] != ov) draw_window(zo[i]);   /* back to front (overlay drawn last) */
+    int md = modal_slot();
+    for (int i = 0; i < nz; i++) if (zo[i] != ov && zo[i] != md) draw_window(zo[i]);   /* back to front (overlay + modal drawn last) */
     struct rect barr = { 0, 0, W, bar_h };
     /* the dock hit-test must include its shadow halo, else a rect that clips only
      * the halo (a window edge or the cursor sliding past) repaints the desktop over
@@ -1156,6 +1163,10 @@ static void compose(struct rect r) {
         ugfx_blit_round_key(ox, oy, (const uint32_t *)o->vaddr, (int)o->w, (int)o->h,
                             (int)o->w, TH_RADIUS, TH_FROST_KEY);        /* content; sentinel bg lets the frost show */
         ugfx_rrect_border(ox, oy, ow, oh, TH_RADIUS, 1, TH_BORDER);
+    }
+    if (md >= 0) {                                      /* modal dialog (picker): dim everything, dialog on top */
+        ugfx_fill_a(r.x, r.y, r.w, r.h, ARGB(120, 6, 8, 12));           /* scrim over windows + bar + dock */
+        draw_window(md);                                                /* the decorated dialog, full chrome, above the scrim */
     }
     draw_switcher();                                    /* Alt-Tab switcher card, above windows + dock */
     draw_toast();                                       /* notification toast, above windows/dock */
@@ -1628,6 +1639,7 @@ void _ustart(void) {
     int last_focus = -1;
     int last_focus_id = -1;          /* focus tracked by id too: a freed slot reused by a new window in the same frame keeps the index but changes id */
     int overlay_on = 0;              /* Launchpad-overlay presence; a full repaint on each edge paints/clears the scrim */
+    int modal_on = 0;                /* modal-dialog (picker) presence; same paint/clear-the-scrim repaint on each edge */
     int drag = -1, drag_dx = 0, drag_dy = 0;
     int rsz = -1, rsz_ox = 0, rsz_oy = 0;
     int cdrag = -1;                  /* a button-held drag inside a window's client area */
@@ -1664,6 +1676,7 @@ void _ustart(void) {
                 cw[k].min = 0; cw[k].maxed = 0;                  /* a reused slot must start clean */
                 cw[k].popup = (snap[j].flags & WIN_POPUP) != 0;  /* borderless centred overlay */
                 cw[k].overlay = (snap[j].flags & WIN_OVERLAY) != 0;  /* Launchpad: dim, above dock */
+                cw[k].modal = (snap[j].flags & WIN_MODAL) != 0;  /* picker: input-locked dialog, scrim behind */
                 for (int q = 0; q < 32; q++) cw[k].title[q] = snap[j].title[q];
                 cw[k].wx = (W - owf(&cw[k])) / 2;
                 cw[k].wy = bar_h + (H - bar_h - ohf(&cw[k])) / 2;
@@ -1738,11 +1751,20 @@ void _ustart(void) {
          * is painted over (or cleared from) the whole screen, not just its rect --- */
         int ov_now = overlay_slot() >= 0;
         if (ov_now != overlay_on) { overlay_on = ov_now; add_dirty(0, 0, W, H); }
+        int md_now = modal_slot() >= 0;
+        if (md_now != modal_on) { modal_on = md_now; add_dirty(0, 0, W, H); }   /* paint/clear the modal scrim */
 
         /* --- input: keys to the focused window ------------------------------- */
         if (pending_until && frame >= pending_until) pending_until = 0;   /* in-flight launch gave up */
         int key, f = focus_slot();
         while ((key = twm_getkey()) >= 0) {
+            /* While a WIN_MODAL dialog (picker) is up, swallow the keys that would steal
+             * its focus or stack another overlay over it (the launchers + Alt-Tab), so it
+             * stays truly modal. Keys that act on the focused window (Esc/menu accels) and
+             * Super+Q (= cancel the dialog) still pass through to it below. */
+            if (modal_slot() >= 0 &&
+                (key == KEY_SUPER_V || key == KEY_SUPER_SPACE || key == KEY_LAUNCHPAD || key == KEY_ALT_TAB))
+                continue;
             if (key == KEY_SUPER_V)     { dismiss_launchers("Clipboard"); summon("Clipboard", "clipboard", frame); continue; }  /* clipboard manager */
             if (key == KEY_SUPER_SPACE) { dismiss_launchers("Spotlight"); summon("Spotlight", "spotlight", frame); continue; }  /* Spotlight search  */
             if (key == KEY_LAUNCHPAD) {                 /* Launchpad: toggle -- a second Super tap dismisses it */
@@ -1857,6 +1879,21 @@ void _ustart(void) {
         if (down && !last_b) {                          /* press edge */
             int handled = 0;
             if (sw_overlay) { switch_click(ms.x, ms.y); handled = 1; }   /* Alt-Tab card grabs the click */
+            /* A WIN_MODAL dialog (the picker) locks input: a click anywhere OUTSIDE it is
+             * swallowed (the dialog stays up + topmost), so the dimmed windows behind it
+             * are inert -- a real modal. A click inside falls through to the window loop
+             * below, which forwards it to the (topmost) dialog. */
+            if (!handled) {
+                int md = modal_slot();
+                if (md >= 0) {
+                    int ox, oy, ow, oh; outer_rect(&cw[md], &ox, &oy, &ow, &oh);
+                    int inside = ms.x >= ox && ms.x < ox + ow && ms.y >= oy && ms.y < oy + oh;
+                    if (!inside) {
+                        if (focus_slot() != md) { zo_raise(md); dirty_win(&cw[md]); add_dirty(0, 0, W, bar_h); }
+                        handled = 1;                    /* swallow: no bar/dock/other-window interaction */
+                    }
+                }
+            }
             /* A focused popup overlay (clipboard/Spotlight) is modal-lite: a click
              * OUTSIDE it dismisses it and is consumed; a click inside falls through
              * to the window loop, which forwards it to the popup's client. */

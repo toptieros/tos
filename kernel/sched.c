@@ -473,6 +473,13 @@ struct regs *sched_reap_killed(struct regs *r) {
 }
 
 int sched_pid(int slot) { return (slot > 0 && slot < MAX_TASKS) ? tasks[slot].pid : -1; }
+/* The running task's pid and its parent's pid (SYS_GETPID/SYS_GETPPID). The picker
+ * uses getppid() == the caller's getpid() to namespace its /tmp handoff files. */
+int sched_getpid(void) { return sched_pid(cur_task()); }
+int sched_ppid(void) {
+    int me = cur_task();
+    return (me > 0 && me < MAX_TASKS) ? sched_pid(tasks[me].parent) : -1;
+}
 
 /* The owner identity of the running task -- consulted by the fs syscalls. */
 int sched_uid(void) { return tasks[cur_task()].uid; }

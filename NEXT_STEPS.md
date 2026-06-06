@@ -100,9 +100,13 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
     `t_notepad_edit_save`/`t_notepad_undo`/`t_notepad_guard`/`t_app_menu` rewired via `_accept_save_picker`
     to the `[files] picker/picked …` markers (read-back persistence checks kept).
   - [x] **(4) Delete `ui::FileDialog`** + its `fd_*` glyph/dedup helpers — done; one picker, no dead code.
-  - [ ] **(5) Modality polish.** Compositor `WIN_MODAL` + `wininfo.parent`: keep the picker above its
-    parent, dim the parent with the Launchpad-style scrim, route input to the modal, restore focus on
-    close. (v1 ships as an ordinary top-level window; this only stops clicking the caller underneath.)
+  - [x] **(5) Modality polish (2026-06-06).** New `WIN_MODAL` flag: twm keeps the picker topmost +
+    focused, draws a full-screen dim scrim behind it (reusing the Launchpad scrim path) and **swallows
+    input outside it** (mouse clicks + the focus-stealing keys Alt-Tab / clipboard / Spotlight / Launchpad),
+    so the windows behind are inert. Implemented **without** `wininfo.parent` — a system-wide scrim needs no
+    kernel ABI/pid-mapping change and gives the same modal feel (everything behind dims, not just the
+    caller). `ui::Window::modal` → flag; Files sets it in picker mode. e2e: `t_file_picker` now asserts a
+    click on the window behind is swallowed; screenshot-verified (parent dimmed, dialog lit on top).
   - [ ] **(6) Hardening.** Pid-namespace the temp files (`/tmp/.picker-<pid>.req/.res`) for concurrent
     pickers; add `SYS_GETPID` if userspace lacks it. → [`file-picker.md`](design/file-picker.md)
 - [x] **Notepad redesign: tabs + session autosave (#5).** **DONE** — Notepad is now a tabbed editor.
@@ -197,6 +201,14 @@ Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
   stale/black. **Fix:** the resize handler now calls `invalidate()` (whole surface). Fixes every
   toolkit app's fullscreen restore, not just Files. Screenshot-verified (clean full render, cursor
   parked off-window).
+- **Picker modality — `WIN_MODAL` (2026-06-06).** The Files Open/Save picker is now a real modal: a new
+  `WIN_MODAL` window flag (kernel `syscall.h`, SDK `ui::Window::modal`, set by Files in picker mode) tells
+  twm to keep it topmost + focused, paint a full-screen dim scrim behind it (the `modal_slot()`/`modal_on`
+  path next to the Launchpad overlay), and **swallow input outside it** — mouse clicks on other windows/bar/
+  dock and the focus-stealing keys (Alt-Tab, clipboard, Spotlight, Launchpad) are dropped so the dimmed
+  windows are inert. Deliberately skipped `wininfo.parent`: a system-wide scrim needs no kernel ABI change
+  and looks better (everything behind dims). e2e `t_file_picker` gained a click-behind-is-swallowed
+  assertion; `t_launchers_exclusive`/`t_alt_tab` still green. Screenshot-verified.
 - **Files per-folder view memory §2 (2026-06-06).** Each folder now remembers its view mode + sort +
   zoom across navigations, stored in the registry as one value per path (`view.<path>`, hashed past
   `REG_KEYMAX`), with a stable `view.default` for never-visited folders. Restored in `load_path()`,

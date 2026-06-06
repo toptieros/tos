@@ -1218,6 +1218,7 @@ struct FilesApp : ui::Window {
         if (ch > (int)si.fb_h - 60) ch = (int)si.fb_h - 60;
         const char *title = "Files";
         if (picker) title = preq.title[0] ? preq.title : (preq.mode == PICK_SAVE ? "Save As" : "Open");
+        modal = picker;                                  /* picker = a modal dialog: scrim + input-lock (#11 step 5) */
         if (!create(cw, ch, title)) return false;
 
         reg_load();

@@ -39,6 +39,8 @@ struct regs *sched_kill(struct regs *r);        /* current task faulted -> kill 
 int  sched_request_kill(int slot);              /* async kill: flag a task to die (Super+Shift+Q) */
 struct regs *sched_reap_killed(struct regs *r); /* kernel-entry hook: reap a flagged current task */
 int  sched_pid(int slot);                       /* a task's process id (for diagnostics) */
+int  sched_getpid(void);                        /* SYS_GETPID: the running task's pid              */
+int  sched_ppid(void);                          /* SYS_GETPPID: the running task's parent's pid    */
 void          sched_wake_readers(void);         /* a key arrived: unblock     */
 
 int  sched_get_tty(int slot);                   /* pty bound to a task's stdio, or -1 */

@@ -81,6 +81,8 @@
 #define SYS_WIN_SETMENU 64 /* (id, struct winmenu*) -> app declares its menu bar; 0/-1        */
 #define SYS_WM_GETMENU  65 /* (id, struct winmenu*) -> compositor reads a window's menu; 1/0   */
 #define SYS_WIN_PRESENT_RECT 66 /* (id, xy, wh) -> present only a damage rect (packed 16:16)   */
+#define SYS_GETPID      67 /* ()                 -> the caller's process id                     */
+#define SYS_GETPPID     68 /* ()                 -> the caller's parent process id (0 if none)  */
 
 /* Keyboard modifier bitmask (SYS_KBD_MODS, and packed into WEV_KEY -- see below). */
 #define KMOD_SHIFT 1
@@ -193,6 +195,11 @@ struct fstat {
 /* WIN_OVERLAY: a popup the compositor draws ABOVE the dock with a full-screen dim
  * scrim behind it (the Launchpad grid). Set together with WIN_POPUP. */
 #define WIN_OVERLAY 2
+/* WIN_MODAL: an ordinary decorated window the compositor keeps topmost + focused with
+ * a dim scrim over everything behind it; input outside it is swallowed so the windows
+ * it covers are inert (the Files Open/Save picker). Unlike WIN_OVERLAY it is NOT a
+ * popup -- it keeps its title bar and is dialog-shaped, not full-screen. */
+#define WIN_MODAL 4
 
 struct wininfo {              /* SYS_WIN_CREATE: in = w,h,title,flags; out = id,vaddr,pitch */
     uint32_t w, h;            /* in:  surface size in pixels        */

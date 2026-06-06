@@ -169,6 +169,12 @@ normal window — *not* a fork of the app:
 
 ## Compositor — modality (phased polish, optional for v1)
 
+> **Status: done (2026-06-06).** Shipped as a system-wide `WIN_MODAL` instead of the
+> parent-linked design below: twm keeps the modal topmost + focused, dims the *whole*
+> screen behind it (full-screen scrim, reusing the Launchpad path), and swallows input
+> outside it. No `wininfo.parent` field / pid→window mapping was needed — see the
+> NEXT_STEPS entry. The parent-only-dim variant below is left as the original idea.
+
 For a real modal feel (parent dimmed + inert, picker on top + focused):
 
 * Add `WIN_MODAL` to the window flags and a `parent` field to `struct wininfo`

@@ -335,6 +335,7 @@ public:
     Rect      dmg{0, 0, 0, 0};
     bool      popup = false;        /* WIN_POPUP: borderless centred overlay (set before create()) */
     bool      overlay = false;      /* WIN_OVERLAY: drawn above the dock with a dim scrim (Launchpad) */
+    bool      modal = false;        /* WIN_MODAL: decorated dialog kept topmost + input-locked, dim scrim behind (the picker) */
     unsigned  ticks = 0;
 
     Window();

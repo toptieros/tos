@@ -314,6 +314,18 @@ def t_file_picker(uefi):
         assert t.wait_for("[files] picker save /Users/user/Documents", 12), \
             "Save As did not launch the Files picker in ~/Documents"
         assert t.wait_for("[twm] focus Save As", 8), "the picker window did not take focus"
+        # modality (#11 step 5): the picker is a WIN_MODAL dialog -- a click on the window
+        # behind it (the terminal, in the strip left of the centred dialog) is swallowed by
+        # the compositor, so focus stays on the picker and nothing behind it activates.
+        tr = t.win_rect("Terminal"); pr = t.win_rect("Save As")
+        assert tr and pr, "window rects for the modality check were not reported"
+        bx, by = tr[0] + 6, pr[1] + 40
+        if bx < pr[0] - 8:                                # a real point on the terminal, left of the picker
+            mark = len(t.serial())
+            t.click(bx, by)
+            time.sleep(0.4)
+            assert "[twm] focus Terminal" not in t.serial()[mark:], \
+                "a click behind the modal picker stole focus from it"
         t.type("picked.txt", delay=0.05)                  # replaces the pre-selected name
         t.key("ret", delay=0.15)                          # Enter in the name field = Save
         assert t.wait_for("[files] picked /Users/user/Documents/picked.txt", 8), \
