@@ -48,11 +48,38 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   greys when the folder isn't user-writable) and raises a nested `ui::ConfirmDialog` **Replace /
   Cancel** when overwriting. Notepad wired it up: **File > Open…** (`^O`) and **File > Save As…**
   drive it; e2e `t_file_dialog`. The overwrite warning is **Replace / Keep Both / Cancel** — Keep
-  Both dedupes to `name (N).ext` (`fd_dedup`) rather than clobbering. **Left:** (a) the chosen design
-  was the **in-process modal**, not a standalone picker **process** returning a path over IPC —
-  revisit the process variant only when a non-toolkit app (e.g. the raw-syscall terminal) needs a
-  picker; (b) once the Files suite's shared `ui::FileView` lands (#10), refactor the dialog's
-  hand-rolled list onto it so there's one directory-view component. → ties into [`files-and-desktop.md`](design/files-and-desktop.md)
+  Both dedupes to `name (N).ext` (`fd_dedup`) rather than clobbering. **Superseded (2026-06-06):** the
+  in-process modal looks *plain* (hand-drawn `fd_folder`/`fd_file` shapes, a re-implemented sidebar) —
+  we're replacing it with the **Files app launched as a picker process** so the dialog *is* Files
+  (real `icons.h` icons, sidebar, breadcrumb, filter — like a Windows dialog resembles Explorer). New
+  tracked item below; `ui::FileDialog` gets deleted once notepad is migrated.
+- [ ] **File picker → Files-as-picker process (#11).** Retire `ui::FileDialog`; the system Open/Save
+  picker becomes the **Files app** run in a *picker mode* with parameters, returning the chosen path
+  to the caller. Mechanism extends the existing `/tmp/.open-doc` hand-off (`sys_open_with`): a request
+  temp file in, a result temp file out, caller notices the picker exited via `trywait()`. Gets Files'
+  whole design + feature set for free and can't visually drift from it. Full design (channels, SDK,
+  picker-mode layout, modality, tests, risks) → [`file-picker.md`](design/file-picker.md). Phases,
+  cheapest-first:
+  - [ ] **(1) SDK + codec.** `struct pick_req` + `sys_pick_begin` / `sys_pick_poll` (caller) and
+    `sys_pick_req` (Files) in `user/lib/sys.{h,c}`; `/tmp/.picker-req` (key=value) in, `/tmp/.picker-res`
+    (path or empty) out; begin unlinks stale res, poll wraps `trywait()`. **Host unit-test** the req
+    encode/parse round-trip + the `ext`-filter predicate (pure logic — pyramid base).
+  - [ ] **(2) Files picker mode.** On startup check `sys_pick_req()` before `sys_open_arg()`; if set,
+    smaller dialog-shaped window + a picker footer (Name field on save, Cancel / Open·Save), extension
+    filter (dirs always shown), ownership-greyed Save (reuse `tos_may_write`), overwrite via the
+    existing `ui::ConfirmDialog`, New Folder kept / Delete·Open-With hidden. Write result + exit on
+    pick/cancel/close. Log `[files] picker …` / `[files] picked …`. Do **open** mode first, then save.
+  - [ ] **(3) Migrate notepad + tests.** `open_open()`/`save_as()` → `sys_pick_begin`; `on_tick` →
+    `sys_pick_poll`; drop the embedded `ui::FileDialog`. New e2e `t_file_picker` (open + save, drive by
+    **click** not the Ctrl accel); rewrite `t_notepad_edit_save`/`t_notepad_undo`/`t_file_dialog`
+    assertions from `[filedialog] …` to `[files] picker/picked …` (keep the read-back persistence checks).
+  - [ ] **(4) Delete `ui::FileDialog`** + its `fd_*` glyph helpers once (3) is green — one picker, no
+    dead code.
+  - [ ] **(5) Modality polish.** Compositor `WIN_MODAL` + `wininfo.parent`: keep the picker above its
+    parent, dim the parent with the Launchpad-style scrim, route input to the modal, restore focus on
+    close. (v1 ships as an ordinary top-level window; this only stops clicking the caller underneath.)
+  - [ ] **(6) Hardening.** Pid-namespace the temp files (`/tmp/.picker-<pid>.req/.res`) for concurrent
+    pickers; add `SYS_GETPID` if userspace lacks it. → [`file-picker.md`](design/file-picker.md)
 - [x] **Notepad redesign: tabs + session autosave (#5).** **DONE** — Notepad is now a tabbed editor.
   - [x] **Close UX (refined per use)** — closing the **window** never prompts: the session autosave
     already holds every tab + its unsaved contents, so `on_close` just flushes the latest draft and

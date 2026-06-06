@@ -4,6 +4,7 @@
 #pragma once
 #include <stddef.h>
 #include "syscall.h"
+#include "pickreq.h"      /* struct pick_req + the request key=value codec */
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,6 +33,24 @@ int   sys_open_with(const char *prog, const char *path);
  * return 1 (consuming the request so a later launch won't see it); else 0. Call
  * once at startup. */
 int   sys_open_arg(char *out, int cap);
+
+/* The system file picker (design/file-picker.md): the Open/Save dialog *is* the
+ * Files app, launched in a picker mode, returning the chosen path over temp files.
+ *
+ * sys_pick_begin writes the request to /tmp/.picker-req, unlinks any stale result,
+ * then fork+execs Files; returns the picker's child pid (or -1). The caller polls
+ * each event-loop tick with sys_pick_poll, which reaps the picker when it exits:
+ *    1 = a path was picked (absolute path copied into out[cap]),
+ *    0 = still open (poll again next tick),
+ *   -1 = cancelled / window-closed / crashed (no result).
+ * This extends the existing /tmp/.open-doc hand-off (sys_open_with). */
+int   sys_pick_begin(const struct pick_req *r);
+int   sys_pick_poll(int pid, char *out, int cap);
+
+/* Files-side mirror of sys_open_arg: if a picker request is pending, fill *out and
+ * return 1 (consuming /tmp/.picker-req); else 0. Call once at startup, before
+ * sys_open_arg, so a launch-as-picker isn't mistaken for an open-document launch. */
+int   sys_pick_req(struct pick_req *out);
 
 #ifdef __cplusplus
 }

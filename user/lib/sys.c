@@ -69,3 +69,37 @@ int sys_open_arg(char *out, int cap) {
     free(d);
     return out[0] ? 1 : 0;
 }
+
+/* ---- the system file picker (design/file-picker.md) ------------------------- */
+#define PICKER_REQ "/tmp/.picker-req"
+#define PICKER_RES "/tmp/.picker-res"
+#define FILES_BIN  "/Apps/Files.app/bin/files"
+
+int sys_pick_begin(const struct pick_req *r) {
+    char blob[512];
+    int n = pickreq_encode(r, blob, sizeof blob);
+    if (sys_spit(PICKER_REQ, blob, n) < 0) return -1;
+    funlink(PICKER_RES);             /* so a previous run's result can't be read as this one's */
+    return sys_launch(FILES_BIN);    /* fork+exec Files; it sees the request via sys_pick_req() */
+}
+
+int sys_pick_poll(int pid, char *out, int cap) {
+    if (cap > 0) out[0] = 0;
+    if (trywait() != pid) return 0;  /* the picker (child `pid`) hasn't exited yet */
+    int n = 0; char *res = sys_slurp(PICKER_RES, &n);
+    funlink(PICKER_RES);             /* consume the result either way */
+    if (!res) return -1;             /* no result file: Cancel / close / crash */
+    int i = 0; for (; i < n && i < cap - 1 && res[i] && res[i] != '\n' && res[i] != '\r'; i++) out[i] = res[i];
+    out[i] = 0;
+    free(res);
+    return out[0] ? 1 : -1;          /* empty result also means cancelled */
+}
+
+int sys_pick_req(struct pick_req *out) {
+    int n = 0; char *b = sys_slurp(PICKER_REQ, &n);
+    if (!b) return 0;
+    funlink(PICKER_REQ);             /* consume it so a later launch won't re-enter picker mode */
+    int ok = pickreq_parse(b, out);
+    free(b);
+    return ok;
+}
