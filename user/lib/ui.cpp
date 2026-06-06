@@ -753,7 +753,10 @@ int Window::run() {
                 if (nw > 0 && nh > 0 && win_resize(id, nw, nh) == 0) {
                     w = nw; h = nh;                       /* win_resize keeps the same vaddr */
                     on_resize(w, h);
-                    dirty = true;
+                    invalidate();   /* whole new surface, not just dirty widgets: a partial
+                                     * damage rect from another event in this same frame drain
+                                     * (e.g. a hover while exiting fullscreen) would otherwise
+                                     * leave the rest of the resized surface black until hover */
                 }
                 break;
             }

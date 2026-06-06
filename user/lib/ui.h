@@ -389,7 +389,7 @@ public:
 protected:
     struct winmenu menu_spec;                    /* built by menu_*(), sent by menu_commit() */
     void redraw();
-    void dispatch_mouse(int x, int y, int btn);
+    virtual void dispatch_mouse(int x, int y, int btn);   /* apps may hook click routing (e.g. click-away dismiss) */
     void dispatch_hover(int x, int y);          /* pointer move (btn==0) from the compositor */
     void dispatch_scroll(int x, int y, int delta);   /* wheel: route to the widget under the cursor */
     void feed_key(int byte);

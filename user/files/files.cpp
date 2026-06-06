@@ -15,6 +15,7 @@
 #include "textutil.h"      /* tu_ci_contains: the filter-bar substring matcher */
 #include "perm.h"          /* tos_may_write / TOS_UID_*: grey Save in a system-owned folder */
 #include "pathbar.h"       /* pathbar_split: the clickable breadcrumb (location bar §3) */
+#include "filesort.h"      /* filesort_cmp: data-driven Sort by Name/Kind/Size (§2) */
 
 #define NMAX    256
 #define HISTN   32
@@ -310,6 +311,8 @@ public:
                 print("[files] crumb "); printu((unsigned)(slot_x[s] + slot_w[s] / 2)); printc(' ');
                 printu((unsigned)cy); printc(' '); print(crumbs[slot_idx[s]].path); print("\r\n");
             }
+            int endx = nslot ? slot_x[nslot - 1] + slot_w[nslot - 1] + 16 : r.x + 8;   /* empty area past the crumbs */
+            print("[files] crumbend "); printu((unsigned)endx); printc(' '); printu((unsigned)cy); print("\r\n");
         }
         ugfx_set_clip(r.x, r.y, r.w, r.h);
         int fh = ugfx_font_h(), ty = r.y + (r.h - fh) / 2;
@@ -345,6 +348,93 @@ public:
         if (s >= 0 && slot_idx[s] >= 0) { if (on_nav) on_nav(ctx, crumbs[slot_idx[s]].path); return true; }
         if (on_edit) on_edit(ctx);                            /* empty space / ellipsis -> edit the path */
         return true;
+    }
+};
+
+/* ----------------------------------------------------------------- IconGrid */
+/* The icon (grid) view (design/files-app.md §1): the same directory model as the
+ * list, rendered as a wrapping grid of large icons with a centred name below. Items
+ * are addressed by the same index as the list (0 = the ".." row when present), so
+ * selection + activation reuse the app's select_row/enter. The app draws each tile
+ * via render_tile; the grid owns layout, scrolling, hit-testing and the zoom box. */
+class IconGrid : public ui::Widget {
+public:
+    int count = 0, sel = -1, top = 0;                /* top = pixel scroll offset      */
+    int tile_w = 100, tile_h = 90, icon_box = 56;    /* set from the zoom level         */
+    int hover_i = -1;
+    uint32_t bg = C_LIST, sel_bg = C_SELROW;
+    void *ctx = nullptr;
+    void (*render_tile)(void *, int idx, ui::Rect cell, bool sel, int icon_box) = nullptr;
+    void (*on_select)(void *, int) = nullptr;
+    void (*on_activate)(void *, int) = nullptr;
+    ui::ScrollBar sb;
+    unsigned last_tick = 0; int last_i = -1;
+    IconGrid() { focusable = true; }
+    int cols()    const { int c = tile_w > 0 ? r.w / tile_w : 1; return c < 1 ? 1 : c; }
+    int nrows()   const { int c = cols(); return (count + c - 1) / c; }
+    int content_h() const { return nrows() * tile_h; }
+    int maxtop()  const { int m = content_h() - r.h; return m < 0 ? 0 : m; }
+    void clamp_top() { if (top < 0) top = 0; if (top > maxtop()) top = maxtop(); }
+    void ensure_visible(int i) {
+        int c = cols(), row = i / c, y = row * tile_h;
+        if (y < top) top = y; else if (y + tile_h > top + r.h) top = y + tile_h - r.h;
+        clamp_top();
+    }
+    int index_at(int x, int y) const {
+        if (x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) return -1;
+        int c = cols(), col = (x - r.x) / tile_w; if (col >= c) col = c - 1;
+        int row = (y - r.y + top) / tile_h, i = row * c + col;
+        return (i >= 0 && i < count) ? i : -1;
+    }
+    void draw() override {
+        if (!visible) return;
+        ugfx_fill(r.x, r.y, r.w, r.h, bg);
+        ugfx_set_clip(r.x, r.y, r.w, r.h);
+        int c = cols();
+        for (int i = 0; i < count; i++) {
+            int col = i % c, row = i / c;
+            int x = r.x + col * tile_w, y = r.y + row * tile_h - top;
+            if (y + tile_h <= r.y || y >= r.y + r.h) continue;           /* offscreen row */
+            ui::Rect cell = { x, y, tile_w, tile_h };
+            if (i == sel)          ugfx_rrect_a(cell.x + 4, cell.y + 3, cell.w - 8, cell.h - 6, TH_R_SM, sel_bg);
+            else if (i == hover_i) ugfx_state_layer(cell.x + 4, cell.y + 3, cell.w - 8, cell.h - 6, TH_R_SM, TH_HOVER_A);
+            if (render_tile) render_tile(ctx, i, cell, i == sel, icon_box);
+        }
+        ugfx_clip_none();
+        sb.set(r, top, content_h(), r.h); sb.draw();                    /* pixel-unit scroll thumb */
+    }
+    bool on_mouse(int x, int y, int) override {
+        if (sb.hit(x)) { sb.dragging = true; top = sb.top_from_y(y); if (win) win->invalidate(); return true; }
+        int i = index_at(x, y);
+        if (i < 0) return true;
+        sel = i;
+        if (on_select) on_select(ctx, i);
+        unsigned now = win ? win->ticks : 0;
+        if (i == last_i && now - last_tick < 26) { if (on_activate) on_activate(ctx, i); last_i = -1; }
+        else { last_i = i; last_tick = now; }
+        return true;
+    }
+    bool on_hover(int x, int y) override {
+        int i = sb.hit(x) ? -1 : index_at(x, y);
+        if (i == hover_i) return false;
+        hover_i = i; return true;
+    }
+    void on_leave() override { hovered = false; hover_i = -1; }
+    bool on_scroll(int delta) override {
+        int nt = top - delta * 36; if (nt < 0) nt = 0; if (nt > maxtop()) nt = maxtop();
+        if (nt == top) return false;
+        top = nt; return true;
+    }
+    void on_drag(int x, int y) override { (void)x; if (sb.dragging) { top = sb.top_from_y(y); clamp_top(); if (win) win->invalidate(); } }
+    void on_button_up() override { sb.dragging = false; }
+    bool on_key(int key, bool shift) override {
+        (void)shift; int c = cols();
+        if (key == ui::UK_LEFT  && sel > 0)            { sel--;     ensure_visible(sel); if (on_select) on_select(ctx, sel); return true; }
+        if (key == ui::UK_RIGHT && sel + 1 < count)    { sel++;     ensure_visible(sel); if (on_select) on_select(ctx, sel); return true; }
+        if (key == ui::UK_UP    && sel - c >= 0)       { sel -= c;  ensure_visible(sel); if (on_select) on_select(ctx, sel); return true; }
+        if (key == ui::UK_DOWN  && sel + c < count)    { sel += c;  ensure_visible(sel); if (on_select) on_select(ctx, sel); return true; }
+        if (key == ui::UK_ENTER || key == '\n')        { if (sel >= 0 && on_activate) on_activate(ctx, sel); return true; }
+        return false;
     }
 };
 
@@ -451,8 +541,14 @@ struct FilesApp : ui::Window {
     Breadcrumb   crumbbar;                    /* the clickable location bar (§3)       */
     ui::TextField pathfld;                    /* editable path mode (Ctrl+L / click empty) */
     bool         editing_path = false;
+    ui::TextField renamefld;                  /* in-place rename overlay               */
+    bool         renaming = false;
+    int          rename_idx = -1;             /* ents[] index being renamed            */
     ui::TextField filterfld;                 /* the "/" live name-filter field */
     ui::ListView list;
+    IconGrid     grid;                        /* the icon (grid) view (§1)             */
+    int          view_mode = 0;               /* 0 = list, 1 = icons                   */
+    int          zoom = 1;                    /* icon-view zoom level (0..2)           */
     Sidebar      side;
     DetailsPanel details;
     StatusBar    status;
@@ -493,16 +589,35 @@ struct FilesApp : ui::Window {
     char          ow_ext[16] = {0};
     char          cut_src[256] = {0};            /* full path of a cut file, pending a paste-move */
     bool          have_cut = false;              /* the active clipboard file came from a Cut (Ctrl+X) */
+    int           sort_key = FSORT_NAME, sort_desc = 0, sort_ff = 1;  /* the Sort menu state (§2) */
 
     int at_root()  const { return path[0] == '/' && path[1] == 0; }
     int has_up()   const { return at_root() ? 0 : 1; }
     int dpw_now()  const { return details_open ? DPW : 0; }
 
-    static int cmp(const struct dirent *a, const struct dirent *b) {
-        if ((a->type == FT_DIR) != (b->type == FT_DIR)) return a->type == FT_DIR ? -1 : 1;
-        const char *x = a->name, *y = b->name;
-        while (*x && *y) { if (*x != *y) return (int)(unsigned char)*x - (int)(unsigned char)*y; x++; y++; }
-        return *x - *y;
+    /* the readdir comparator, driven by the user's Sort menu choice (§2) */
+    int ent_cmp(const struct dirent *a, const struct dirent *b) const {
+        int ad = (a->type == FT_DIR), bd = (b->type == FT_DIR);
+        return filesort_cmp(a->name, ad, a->size, b->name, bd, b->size, sort_key, sort_desc, sort_ff);
+    }
+    /* reflect the active sort in the View menu's check marks (menu index 3) */
+    void sync_sort_menu() {
+        if (picker) return;                          /* picker mode has no menu bar */
+        menu_set_checked(4, 0, sort_key == FSORT_NAME);   /* the Sort menu is index 4 */
+        menu_set_checked(4, 1, sort_key == FSORT_KIND);
+        menu_set_checked(4, 2, sort_key == FSORT_SIZE);
+        menu_set_checked(4, 3, sort_desc != 0);
+        menu_set_checked(4, 4, sort_ff   != 0);
+    }
+    /* change the sort, re-read the folder (re-sorted, with icons re-aligned), update
+     * the menu checks, and log a canary for the e2e. */
+    void set_sort(int key, int desc, int ff) {
+        sort_key = key; sort_desc = desc; sort_ff = ff;
+        sync_sort_menu();
+        load_dir();
+        const char *kn = key == FSORT_KIND ? "kind" : key == FSORT_SIZE ? "size" : "name";
+        print("[files] sort "); print(kn); printc(' '); print(desc ? "desc" : "asc"); printc(' '); printu((unsigned)ff); print("\r\n");
+        invalidate();
     }
 
     /* scan /Apps once for the Open With chooser */
@@ -535,7 +650,7 @@ struct FilesApp : ui::Window {
         if (nents < 0) nents = 0;
         for (int i = 0; i < nents; i++)
             for (int j = i + 1; j < nents; j++)
-                if (cmp(&ents[j], &ents[i]) < 0) { struct dirent t = ents[i]; ents[i] = ents[j]; ents[j] = t; }
+                if (ent_cmp(&ents[j], &ents[i]) < 0) { struct dirent t = ents[i]; ents[i] = ents[j]; ents[j] = t; }
         for (int i = 0; i < nents; i++) {
             if (!is_app_dir(ents[i].type, ents[i].name)) continue;
             char base[256]; join(base, sizeof base, path, ents[i].name);
@@ -576,6 +691,7 @@ struct FilesApp : ui::Window {
         }
         list.count = nview + has_up();
         list.sel = -1; list.top = 0;
+        grid.count = list.count; grid.sel = -1; grid.top = 0;   /* keep the icon view in sync */
         details.has = false;
         update_status();
         if (q[0]) { print("[files] filter "); printu((unsigned)nview); print("\r\n"); }
@@ -620,12 +736,14 @@ struct FilesApp : ui::Window {
         pathfld.set_text(path); pathfld.caret = pathfld.length();
         pathfld.on_key(0x01);                 /* select-all so a fresh path replaces it */
         focus = &pathfld;
+        print("[files] pathedit\r\n");
         layout_widgets(); invalidate();
     }
     void leave_path_edit() {
         if (!editing_path) return;
         editing_path = false; pathfld.visible = false; crumbbar.visible = true;
         focus = &list;
+        print("[files] pathleave\r\n");          /* editor closed (Esc / click-away / before a commit's cd) */
         layout_widgets(); invalidate();
     }
     void commit_path_edit() {
@@ -703,6 +821,7 @@ struct FilesApp : ui::Window {
      * list's own rect; without a repaint request the damage-tracked frame would
      * only refresh the list. Repaint the whole window (selection is low-frequency). */
     void select_row(int row) {
+        list.sel = grid.sel = row;                       /* single selection, shared by both views */
         int idx = ent_at(row);
         if (idx < 0) { details.has = false; update_status(); update_pick_btn(); invalidate(); return; }
         struct dirent *e = &ents[idx];
@@ -782,15 +901,74 @@ struct FilesApp : ui::Window {
         print("[files] paste "); print(dst); print("\r\n");
         load_dir(); invalidate();
     }
+    /* select the visible entry named `name` (after a load_dir) and return its row, or -1 */
+    int select_named(const char *name) {
+        for (int v = 0; v < nview; v++) if (eqn(ents[view[v]].name, name)) {
+            int row = v + has_up(); select_row(row);
+            if (view_mode == 1) grid.ensure_visible(row); else list.ensure_visible(row);
+            return row;
+        }
+        return -1;
+    }
     void make_folder() {
         char name[40], child[256];
         for (int k = 0; k < 1000; k++) {
             if (k == 0) strncpy(name, "newfolder", sizeof name); else snprintf(name, sizeof name, "newfolder%d", k);
             join(child, sizeof child, path, name);
             struct fstat st;
-            if (stat_(child, &st) < 0) { mkdir(child); load_dir(); return; }
+            if (stat_(child, &st) < 0) {
+                mkdir(child); load_dir();
+                if (select_named(name) >= 0) start_rename();   /* Finder-style: name the new folder now */
+                return;
+            }
         }
     }
+
+    /* ---- in-place rename ---------------------------------------------------- */
+    /* screen rect for the rename field over the focused item in the active view */
+    ui::Rect rename_rect() {
+        if (view_mode == 1) {                                /* icon view: over the tile's name */
+            int sel = grid.sel; if (sel < 0) return { 0, 0, 0, 0 };
+            int c = grid.cols(), col = sel % c, row = sel / c;
+            int x = grid.r.x + col * grid.tile_w, y = grid.r.y + row * grid.tile_h - grid.top;
+            return { x + 3, y + 8 + grid.icon_box + 2, grid.tile_w - 6, fh + 6 };
+        }
+        int row = list.sel; if (row < 0) return { 0, 0, 0, 0 };   /* list view: over the row's name */
+        int y = list.r.y + (row - list.top) * list.row_h;
+        return { list.r.x + 42, y + 3, list.r.w - 84, list.row_h - 6 };
+    }
+    void start_rename() {
+        if (picker || editing_path || filter_open) return;
+        int sel = (view_mode == 1) ? grid.sel : list.sel;
+        int idx = ent_at(sel);
+        if (idx < 0) return;                                 /* can't rename the ".." row */
+        if (view_mode == 1) grid.ensure_visible(sel); else list.ensure_visible(sel);
+        rename_idx = idx; renaming = true; renamefld.visible = true;
+        renamefld.r = rename_rect();
+        renamefld.set_text(ents[idx].name);
+        renamefld.caret = renamefld.length();
+        renamefld.on_key(0x01);                              /* select-all so a fresh name replaces it */
+        focus = &renamefld;
+        print("[files] renaming "); print(ents[idx].name); print("\r\n");
+        invalidate();
+    }
+    void end_rename() {
+        renaming = false; renamefld.visible = false;
+        focus = (view_mode == 1) ? (ui::Widget *)&grid : (ui::Widget *)&list;
+    }
+    void commit_rename() {
+        if (!renaming) return;
+        int idx = rename_idx; end_rename();
+        if (idx < 0 || idx >= nents) { invalidate(); return; }
+        char oldn[256]; strncpy(oldn, ents[idx].name, sizeof oldn - 1); oldn[sizeof oldn - 1] = 0;
+        char nn[256]; strncpy(nn, renamefld.text(), sizeof nn - 1); nn[sizeof nn - 1] = 0;
+        if (!nn[0] || eqn(nn, oldn)) { invalidate(); return; }   /* empty or unchanged */
+        char oldp[512], newp[512]; join(oldp, sizeof oldp, path, oldn); join(newp, sizeof newp, path, nn);
+        if (sys_exists(newp, 0)) { invalidate(); return; }       /* don't clobber an existing name */
+        if (rename_(oldp, newp) == 0) { print("[files] rename "); print(oldn); print(" -> "); print(nn); print("\r\n"); }
+        load_dir(); invalidate();
+    }
+    void cancel_rename() { if (renaming) { end_rename(); invalidate(); } }
 
     /* ---- picker mode helpers (#11) ----------------------------------------- */
     /* may the user create/overwrite in the current folder? (system-owned => no) */
@@ -862,6 +1040,58 @@ struct FilesApp : ui::Window {
         }
     }
 
+    /* icon-view tile: a large icon centred in the cell with a centred, width-clamped
+     * name below. Same item indexing as the rows (0 = ".." when present). */
+    static void render_tile(void *ctx, int i, ui::Rect cell, bool sel, int icon_box) {
+        FilesApp *a = (FilesApp *)ctx;
+        const char *name; int type; int idx = -1;
+        if (a->has_up() && i == 0) { name = ".."; type = FT_DIR; }
+        else { idx = a->ent_at(i); if (idx < 0) return; struct dirent *e = &a->ents[idx]; name = e->name; type = e->type; }
+        char label[64]; disp_name(name, label, sizeof label);
+        int cx = cell.x + cell.w / 2, iy = cell.y + 8;
+        if (idx >= 0 && is_app_dir(type, name) && a->appicon[idx])
+            blit_scaled(cx - icon_box / 2, iy, icon_box, icon_box, a->appicon[idx], a->appiw[idx], a->appih[idx]);
+        else
+            blit_scaled(cx - icon_box / 2, iy, icon_box, icon_box, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
+        char trunc[64];                                  /* clamp the name to the tile width */
+        int maxc = a->fw > 0 ? (cell.w - 8) / a->fw : 8; if (maxc < 1) maxc = 1; if (maxc > 63) maxc = 63;
+        int ll = (int)strlen(label);
+        if (ll <= maxc) { int j = 0; for (; label[j]; j++) trunc[j] = label[j]; trunc[j] = 0; }
+        else { int k = maxc - 1; if (k < 1) k = 1; for (int j = 0; j < k; j++) trunc[j] = label[j]; trunc[k] = '.'; trunc[k + 1] = 0; }
+        int tw = ugfx_text_w(trunc), ty = iy + icon_box + 5;
+        ugfx_text(cx - tw / 2, ty, trunc, sel ? RGB(255, 255, 255) : TH_TEXT, UGFX_TRANSPARENT);
+    }
+    /* zoom presets: {tile_w, tile_h, icon_box} per level */
+    void apply_zoom() {
+        static const int Z[3][3] = { { 80, 78, 44 }, { 100, 92, 56 }, { 128, 110, 76 } };
+        if (zoom < 0) zoom = 0; if (zoom > 2) zoom = 2;
+        grid.tile_w = Z[zoom][0]; grid.tile_h = Z[zoom][1]; grid.icon_box = Z[zoom][2];
+        grid.clamp_top();
+    }
+    /* reflect the view mode + sort in the menu check marks */
+    void sync_view_menu() {
+        if (picker) return;
+        menu_set_checked(3, 0, view_mode == 1);          /* View: as Icons */
+        menu_set_checked(3, 1, view_mode == 0);          /* View: as List  */
+    }
+    void set_view(int mode) {
+        view_mode = mode ? 1 : 0;
+        bool icons = (view_mode == 1);
+        grid.visible = icons && !picker; list.visible = !icons || picker;
+        grid.sel = list.sel; grid.count = list.count;    /* carry the selection across */
+        focus = icons ? (ui::Widget *)&grid : (ui::Widget *)&list;
+        sync_view_menu();
+        if (icons) { apply_zoom(); grid.ensure_visible(grid.sel >= 0 ? grid.sel : 0); }
+        layout_widgets();
+        print("[files] view "); print(icons ? "icons" : "list"); print("\r\n");
+        invalidate();
+    }
+    void set_zoom(int z) {
+        zoom = z; apply_zoom();
+        print("[files] zoom "); printu((unsigned)zoom); print("\r\n");
+        layout_widgets(); invalidate();
+    }
+
     void layout_widgets() {
         fw = ugfx_font_w(); fh = ugfx_font_h();
         TBH = fh + 20;
@@ -897,6 +1127,12 @@ struct FilesApp : ui::Window {
         listy = loc_bottom + FBH;
         int lh = h - listy - STH - FTH; if (lh < fh) lh = fh;
         list.r = { mainx, listy, mainw, lh }; list.row_h = fh + 12;
+        grid.r = list.r;                                 /* the icon view shares the content area */
+        bool icons = (view_mode == 1) && !picker;
+        list.visible = !icons; grid.visible = icons;
+        grid.clamp_top();
+        renamefld.visible = renaming;                    /* the in-place rename overlay tracks the item */
+        if (renaming) renamefld.r = rename_rect();
         status.r = { mainx, h - STH - FTH, mainw, STH };
         details.r = { w - DPW, TBH, DPW, h - TBH };
 
@@ -950,6 +1186,7 @@ struct FilesApp : ui::Window {
         crumbbar.on_nav  = [](void *c, const char *p) { ((FilesApp *)c)->nav_to(p); };
         crumbbar.on_edit = [](void *c) { ((FilesApp *)c)->enter_path_edit(); };
         pathfld.on_submit = [](void *c) { ((FilesApp *)c)->commit_path_edit(); };
+        renamefld.ctx = this; renamefld.on_submit = [](void *c) { ((FilesApp *)c)->commit_rename(); };
         footer.color = C_TOOLBAR; nameLbl.text = "Name:"; nameLbl.fg = TH_MUTED;
 
         side.ctx = this; side.on_pick = [](void *c, const char *p) { ((FilesApp *)c)->nav_to(p); };
@@ -966,6 +1203,12 @@ struct FilesApp : ui::Window {
         list.ctx = this; list.render_row = render_row;
         list.on_select   = [](void *c, int i) { ((FilesApp *)c)->select_row(i); };
         list.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter(i); };
+
+        grid.ctx = this; grid.bg = C_LIST; grid.sel_bg = C_SELROW;
+        grid.render_tile = render_tile;
+        grid.on_select   = [](void *c, int i) { ((FilesApp *)c)->select_row(i); };
+        grid.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter(i); };
+        apply_zoom();
 
         back.ctx = fwd.ctx = up.ctx = newf.ctx = del.ctx = info.ctx = this;
         back.on_click = [](void *c) { ((FilesApp *)c)->go_back(); };
@@ -1008,7 +1251,7 @@ struct FilesApp : ui::Window {
 
         layout_widgets();
         add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info);
-        add(&crumbbar); add(&pathfld); add(&list); add(&details); add(&status);
+        add(&crumbbar); add(&pathfld); add(&list); add(&grid); add(&renamefld); add(&details); add(&status);
         add(&footer); add(&nameLbl); add(&nameFld); add(&cancelBtn); add(&okBtn);
         add(&menu); add(&overwrite);                  /* menu + overwrite last = on top + modal */
         focus = picker && preq.mode == PICK_SAVE ? (ui::Widget *)&nameFld : (ui::Widget *)&list;
@@ -1018,7 +1261,20 @@ struct FilesApp : ui::Window {
             int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "Refresh", 0);
             int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
                                        menu_item(me, "Paste", 'V'); menu_item(me, "Delete", 0);
+                                       menu_item(me, "Rename", 0);
             int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
+            int mv = menu_add("View");                          /* view mode + zoom (§1) */
+            menu_item(mv, "as Icons", 0, view_mode == 1 ? WMI_CHECKED : 0);
+            menu_item(mv, "as List",  0, view_mode == 0 ? WMI_CHECKED : 0);
+            menu_item(mv, "Zoom In",     0);
+            menu_item(mv, "Zoom Out",    0);
+            menu_item(mv, "Actual Size", 0);
+            int ms = menu_add("Sort");                          /* Sort by … (§2) */
+            menu_item(ms, "Sort by Name", 0, sort_key == FSORT_NAME ? WMI_CHECKED : 0);
+            menu_item(ms, "Sort by Kind", 0, sort_key == FSORT_KIND ? WMI_CHECKED : 0);
+            menu_item(ms, "Sort by Size", 0, sort_key == FSORT_SIZE ? WMI_CHECKED : 0);
+            menu_item(ms, "Reversed",      0, sort_desc ? WMI_CHECKED : 0);
+            menu_item(ms, "Folders First", 0, sort_ff   ? WMI_CHECKED : 0);
             menu_commit();
         }
 
@@ -1062,6 +1318,7 @@ struct FilesApp : ui::Window {
         case 6: copy_sel(false); break;                   /* Copy a file's bytes to the clipboard */
         case 7: copy_sel(true);  break;                   /* Cut: copy + mark the source for a move */
         case 8: paste();         break;                   /* Paste the clipboard file here */
+        case 9: start_rename();  break;                   /* in-place rename */
         }
         invalidate();
     }
@@ -1069,8 +1326,9 @@ struct FilesApp : ui::Window {
     /* right-click: select the row under the cursor (if any), then open a menu */
     void on_context(int x, int y) override {
         if (x >= list.r.x && x < list.r.x + list.r.w && y >= list.r.y && y < list.r.y + list.r.h) {
-            int row = list.top + (y - list.r.y) / list.row_h;
-            if (row >= 0 && row < list.count) { list.sel = row; select_row(row); }
+            int row = (view_mode == 1) ? grid.index_at(x, y)              /* hit-test the active view */
+                                       : list.top + (y - list.r.y) / list.row_h;
+            if (row >= 0 && row < list.count) select_row(row);           /* sets list.sel + grid.sel */
         }
         menu_mode = 0; menu.reset();
         int hu = has_up();
@@ -1085,6 +1343,7 @@ struct FilesApp : ui::Window {
             if (e->type == FT_DIR || is_app_dir(e->type, e->name)) menu.add("Open", PK_ACTION, 1, 0, 0, 0);
             else { menu.add("Open", PK_ACTION, 1, 0, 0, 0); menu.add("Open With...", PK_ACTION, 2, 0, 0, 0);
                    menu.add("Copy", PK_ACTION, 6, 0, 0, 0); menu.add("Cut", PK_ACTION, 7, 0, 0, 0); }
+            menu.add("Rename", PK_ACTION, 9, 0, 0, 0);
             menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
             menu.add("", PK_SEP, 0, 0, 0, 0);
         }
@@ -1097,10 +1356,20 @@ struct FilesApp : ui::Window {
         invalidate();
     }
     void on_resize(int, int) override { layout_widgets(); if (menu.open && menu.win) menu.r = { 0, 0, w, h }; }
+    /* Click-away dismisses an inline editor, the same way Esc/Enter do (#11): a click
+     * outside the path bar reverts it (matching its Esc), and one outside an in-place
+     * rename commits it (Finder behaviour). The click then routes on as usual, so e.g.
+     * clicking a row both ends the edit and selects that row. */
+    void dispatch_mouse(int x, int y, int btn) override {
+        if (editing_path && !pathfld.r.has(x, y))      leave_path_edit();
+        else if (renaming && !renamefld.r.has(x, y))   commit_rename();
+        ui::Window::dispatch_mouse(x, y, btn);
+    }
     /* the compositor close button: in picker mode, closing == Cancel (empty result). */
     bool on_close() override { if (picker) print("[files] pick cancel\r\n"); return true; }
     void on_key(int key) override {
         if (menu.open) { if (key == ui::UK_ESC) { menu.dismiss(); invalidate(); } return; }
+        if (renaming) { if (key == ui::UK_ESC) cancel_rename(); return; }         /* Esc cancels the rename */
         if (editing_path) { if (key == ui::UK_ESC) leave_path_edit(); return; }  /* Esc reverts the path edit */
         if (key == 0x0c) { enter_path_edit(); return; }              /* Ctrl+L: edit the path literally */
         if (picker && key == ui::UK_ESC) { cancel_pick(); return; }   /* Esc cancels the picker */
@@ -1120,8 +1389,21 @@ struct FilesApp : ui::Window {
         else if (menu == 1) {                                                                 /* Edit */
             if (item == 0) copy_sel(false); else if (item == 1) copy_sel(true);
             else if (item == 2) paste(); else if (item == 3) do_delete();
+            else if (item == 4) start_rename();
         } else if (menu == 2) {                                                               /* Go */
             if (item == 0) go_up(); else if (item == 1) go_back(); else if (item == 2) go_fwd();
+        } else if (menu == 3) {                                                               /* View: mode + zoom */
+            if      (item == 0) set_view(1);                       /* as Icons   */
+            else if (item == 1) set_view(0);                       /* as List    */
+            else if (item == 2) set_zoom(zoom + 1);                /* Zoom In     */
+            else if (item == 3) set_zoom(zoom - 1);                /* Zoom Out    */
+            else if (item == 4) set_zoom(1);                       /* Actual Size */
+        } else if (menu == 4) {                                                               /* Sort by … */
+            if      (item == 0) set_sort(FSORT_NAME, sort_desc, sort_ff);
+            else if (item == 1) set_sort(FSORT_KIND, sort_desc, sort_ff);
+            else if (item == 2) set_sort(FSORT_SIZE, sort_desc, sort_ff);
+            else if (item == 3) set_sort(sort_key, !sort_desc, sort_ff);
+            else if (item == 4) set_sort(sort_key, sort_desc, !sort_ff);
         }
         invalidate();
     }

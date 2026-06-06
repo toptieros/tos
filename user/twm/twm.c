@@ -1674,10 +1674,11 @@ void _ustart(void) {
                 /* report the placed client rect so tests can drive a window by its
                  * real on-screen geometry (same idea as the "[twm] icon" dock trace);
                  * x/y are the client-area top-left (below the title bar). */
+                int rcx, rcy, rcw, rch; client_rect(&cw[k], &rcx, &rcy, &rcw, &rch);   /* fullscreen-aware */
                 print("[twm] win "); print(cw[k].title);
-                printc(' '); printu((unsigned)cw[k].wx);
-                printc(' '); printu((unsigned)(cw[k].wy + wth(&cw[k])));
-                printc(' '); printu(cw[k].w); printc(' '); printu(cw[k].h);
+                printc(' '); printu((unsigned)rcx);
+                printc(' '); printu((unsigned)rcy);
+                printc(' '); printu((unsigned)rcw); printc(' '); printu((unsigned)rch);
                 print("\r\n");
                 dirty_win(&cw[k]);
                 add_dirty(0, 0, W, bar_h);
@@ -1696,16 +1697,22 @@ void _ustart(void) {
                     if (snap[j].seq != cw[k].seq) {     /* the app redrew its surface */
                         cw[k].seq = snap[j].seq;
                         if (!cw[k].min) {               /* a minimized window is off-screen */
-                            int sx = cw[k].wx, sy = cw[k].wy + wth(&cw[k]);
+                            /* map the surface-relative damage to the screen via the
+                             * fullscreen-aware client origin: a maximized window's client
+                             * is blitted at (0,0) with NO title offset, so adding wth here
+                             * (as the old code did) shoved the dirty band a title-bar's
+                             * worth too low -- the real change (e.g. the top ".." row's
+                             * hover) never got repainted and the offset band smeared. */
+                            int sx, sy, scw, sch; client_rect(&cw[k], &sx, &sy, &scw, &sch);
                             int dw = (int)snap[j].dmgw, dh = (int)snap[j].dmgh;
                             int full = dw <= 0 || dh <= 0 ||                 /* no partial info */
                                        (snap[j].dmgx == 0 && snap[j].dmgy == 0 &&
-                                        dw >= (int)cw[k].w && dh >= (int)cw[k].h);
-                            if (full) add_dirty(sx, sy, (int)cw[k].w, (int)cw[k].h);
+                                        dw >= scw && dh >= sch);
+                            if (full) add_dirty(sx, sy, scw, sch);
                             else {                                            /* composite only the damaged sub-rect */
                                 int dx = (int)snap[j].dmgx, dy = (int)snap[j].dmgy;
-                                if (dx + dw > (int)cw[k].w) dw = (int)cw[k].w - dx;
-                                if (dy + dh > (int)cw[k].h) dh = (int)cw[k].h - dy;
+                                if (dx + dw > scw) dw = scw - dx;
+                                if (dy + dh > sch) dh = sch - dy;
                                 if (dw > 0 && dh > 0) add_dirty(sx + dx, sy + dy, dw, dh);
                             }
                         }

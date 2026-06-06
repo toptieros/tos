@@ -728,12 +728,32 @@ def t_files_menu(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def _files_menu_click(t, name, idx):
+    """Open Files' menu-bar menu `name` and click item `idx` (a click, not the Ctrl
+    accelerator, which races the modifier release -- see the project notes)."""
+    m = None
+    for _ in range(50):
+        m = re.search(r"\[twm\] appmenu \d+ %s (\d+) (\d+)" % name, t.serial())
+        if m:
+            break
+        time.sleep(0.1)
+    assert m, "Files' %s menu tile was not shown" % name
+    fx, fw = int(m.group(1)), int(m.group(2))
+    t.click(fx + fw // 2, 12)
+    assert t.wait_for("[twm] menu app %s" % name, 6), "the %s menu did not open" % name
+    g = re.search(r"\[twm\] menu app %s y (\d+) row (\d+) x (\d+)" % name, t.serial())
+    assert g, "%s menu geometry not reported" % name
+    ry, row, mx = int(g.group(1)), int(g.group(2)), int(g.group(3))
+    t.click(mx + 20, ry + idx * row + row // 2)
+
+
 def t_files_breadcrumb(uefi):
     # The location bar (files-app §3): the static path label is now a clickable
-    # breadcrumb plus an editable path field. We type a deep path via Ctrl+L (editable
-    # mode) and confirm Files navigates there, then click the "/Users" ancestor crumb
-    # and confirm it jumps up. Files logs each crumb's click-centre ("[files] crumb
-    # <cx> <cy> <path>") so the click lands precisely regardless of resolution.
+    # breadcrumb plus an editable path field. We click the breadcrumb's empty area to
+    # open the editable path (Files logs "[files] crumbend <x> <y>" for it + "[files]
+    # pathedit" on entry), type a deep path + Enter to navigate, then click the
+    # "/Users" ancestor crumb (logged as "[files] crumb <cx> <cy> <path>") to jump up.
+    # All driven by click, not the Ctrl+L chord, to avoid the menu-accelerator race.
     with Tos(uefi=uefi) as t:
         assert t.open_terminal(), "desktop/terminal did not come up"
         assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
@@ -741,21 +761,25 @@ def t_files_breadcrumb(uefi):
         t.doubleclick(*xy)
         assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
         assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
-        # --- editable mode: Ctrl+L, type a deep path, Enter navigates there ---
-        t.key("ctrl-l", delay=0.25)
+        assert t.wait_for("[files] cd /Users/user", 8), "Files did not open at home"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        # --- editable mode: click the breadcrumb empty area, type a deep path, Enter ---
+        ce = re.findall(r"\[files\] crumbend (\d+) (\d+)", t.serial())
+        assert ce, "the breadcrumb empty-area click target was not reported"
+        t.click(wr[0] + int(ce[-1][0]), wr[1] + int(ce[-1][1]))
+        assert t.wait_for("[files] pathedit", 6), "clicking the breadcrumb empty area did not open the path editor"
         t.type("/Users/user/Documents", delay=0.03)
         t.key("ret", delay=0.2)
-        assert t.wait_for("[files] cd /Users/user/Documents", 8), "Ctrl+L path edit did not navigate"
+        assert t.wait_for("[files] cd /Users/user/Documents", 8), "the edited path did not navigate"
         # --- click the "/Users" ancestor crumb -> jump up to it ---
         cr = None
         for _ in range(40):
-            cr = re.search(r"\[files\] crumb (\d+) (\d+) /Users[\r\n]", t.serial())
-            if cr:
-                break
+            ms = re.findall(r"\[files\] crumb (\d+) (\d+) /Users[\r\n]", t.serial())
+            if ms:
+                cr = ms[-1]; break
             time.sleep(0.1)
         assert cr, "the /Users breadcrumb crumb geometry was not reported"
-        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
-        t.click(wr[0] + int(cr.group(1)), wr[1] + int(cr.group(2)))
+        t.click(wr[0] + int(cr[0]), wr[1] + int(cr[1]))
         # match "/Users" at end-of-line so it doesn't alias the earlier "/Users/user" load
         jumped = False
         for _ in range(80):
@@ -763,6 +787,102 @@ def t_files_breadcrumb(uefi):
                 jumped = True; break
             time.sleep(0.1)
         assert jumped, "clicking the /Users crumb did not navigate up to /Users"
+        # --- click-away dismisses the path editor too (#11), the same as Esc ---
+        ce2 = None
+        for _ in range(40):
+            ms = re.findall(r"\[files\] crumbend (\d+) (\d+)", t.serial())
+            if ms:
+                ce2 = ms[-1]; break
+            time.sleep(0.1)
+        assert ce2, "the breadcrumb empty-area target was not re-reported after the jump"
+        t.click(wr[0] + int(ce2[0]), wr[1] + int(ce2[1]))
+        assert t.wait_for("[files] pathedit", 6), "could not reopen the path editor"
+        n_leave = len(re.findall(r"\[files\] pathleave", t.serial()))
+        t.click(wr[0] + 250, wr[1] + 250)               # click a list row, well outside the location bar
+        left = False
+        for _ in range(60):
+            if len(re.findall(r"\[files\] pathleave", t.serial())) > n_leave:
+                left = True; break
+            time.sleep(0.1)
+        assert left, "clicking away from the path editor did not dismiss it"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_files_sort(uefi):
+    # Data-driven sort (files-app §2): the View menu drives Sort by Name/Kind/Size +
+    # Reversed + Folders First. The comparator itself is unit-tested (t_filesort); here
+    # we just confirm the View-menu picks re-sort (Files logs "[files] sort <key> <dir>
+    # <ff>"). Driven by menu click, not the accelerator.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        _files_menu_click(t, "Sort", 2)                   # Sort by Size
+        assert t.wait_for("[files] sort size asc 1", 8), "Sort > Sort by Size did not apply"
+        _files_menu_click(t, "Sort", 3)                   # Reversed
+        assert t.wait_for("[files] sort size desc 1", 8), "Sort > Reversed did not flip the direction"
+        _files_menu_click(t, "Sort", 0)                   # Sort by Name
+        assert t.wait_for("[files] sort name desc 1", 8), "Sort > Sort by Name did not switch the key"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_files_iconview(uefi):
+    # Icon (grid) view + zoom (files-app §1): View ▸ as Icons swaps the list for a
+    # wrapping icon grid; Zoom In/Out resize the tiles; as List swaps back. Files logs
+    # "[files] view icons|list" and "[files] zoom <level>". Driven by menu click.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        _files_menu_click(t, "View", 0)                   # as Icons
+        assert t.wait_for("[files] view icons", 8), "View > as Icons did not switch to the grid"
+        _files_menu_click(t, "View", 2)                   # Zoom In
+        assert t.wait_for("[files] zoom 2", 8), "View > Zoom In did not enlarge the tiles"
+        _files_menu_click(t, "View", 4)                   # Actual Size
+        assert t.wait_for("[files] zoom 1", 8), "View > Actual Size did not reset the zoom"
+        _files_menu_click(t, "View", 1)                   # as List
+        assert t.wait_for("[files] view list", 8), "View > as List did not switch back"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_files_rename(uefi):
+    # In-place rename (files-app §foundation #10): File ▸ New Folder makes a folder and
+    # drops straight into a rename field over the new tile (Finder behaviour) with the
+    # name pre-selected. Files logs "[files] renaming <name>" on entry; typing replaces
+    # the selection and Enter commits, logging "[files] rename <old> -> <new>" and doing
+    # the rename_() on disk. We then confirm the new name from the terminal's ls. Driven
+    # by menu click (not Ctrl+N) to dodge the accelerator race.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        _files_menu_click(t, "File", 0)                   # File > New Folder
+        # New Folder lands on disk and Files drops into the rename field over it.
+        nm = None
+        for _ in range(60):
+            m = re.search(r"\[files\] renaming (\S+)", t.serial())
+            if m:
+                nm = m.group(1); break
+            time.sleep(0.1)
+        assert nm, "New Folder did not enter the in-place rename"
+        # the name is pre-selected (Ctrl+A); typing replaces it, Enter commits
+        t.type("keepers", delay=0.04)
+        t.key("ret", delay=0.2)
+        assert t.wait_for("[files] rename %s -> keepers" % nm, 8), "the rename did not commit"
+        # prove it hit disk: the renamed folder shows from the terminal, the old name is gone
+        t.key("alt-tab", delay=0.1)
+        assert t.wait_for("[twm] focus Terminal", 6), "could not return to the terminal"
+        t.line("ls /Users/user")
+        assert t.wait_for("keepers", 6), "the renamed folder is not on disk"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -913,7 +1033,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,

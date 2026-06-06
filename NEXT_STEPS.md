@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **41/41** (30 e2e journeys on BIOS + a UEFI subset 11) + **92 host
+**Status:** `make test` **46/46** (35 e2e journeys on BIOS + a UEFI subset 11) + **135 host
 unit tests** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -23,6 +23,24 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   Ctrl+N new folder, Enter/Ctrl+O open, Delete (or Backspace) remove, Ctrl+A select-all,
   Backspace/Alt+← up a directory, plus the existing Ctrl+C/X/V — surfaced in the context menu and a
   menu bar (#6) so the accelerators show. → [`files-and-desktop.md`](design/files-and-desktop.md)
+- [~] **Files app feature-completeness (files-app.md).** Turning Files from a single-pane lister into
+  a real manager. **Done (2026-06-06):** **filter bar** + **status bar** (earlier); **location bar §3** —
+  the static path label is now a clickable **breadcrumb** (segment chips → ancestor, chevron separators,
+  middle-ellipsis on overflow) with an **editable path** mode (click the empty bar / Ctrl+L → field,
+  Enter = go, Esc = revert); pure split `pathbar.h` (unit `t_pathbar`), e2e `t_files_breadcrumb`.
+  **Data-driven sort §2** — a **View ▸ Sort by Name/Kind/Size + Reversed + Folders First** menu replacing
+  the hardcoded comparator (natural/numeric name compare); pure `filesort.h` (unit `t_filesort`), e2e
+  `t_files_sort` (under a dedicated **Sort** menu). **Icon (grid) view + zoom §1** — a new `IconGrid`
+  renders the same model as a wrapping icon grid (large icon + centred name), toggled via **View ▸ as
+  Icons / as List** with **Zoom In/Out/Actual Size**; selection is shared with the list; e2e
+  `t_files_iconview`. **In-place rename §foundation** — Edit ▸ Rename / context-menu Rename drops an
+  inline field over the selected tile (list *or* icon view) with the name pre-selected; **New Folder**
+  enters rename immediately (Finder-style); Enter commits (`rename_()` on disk), Esc cancels,
+  **click-away commits**; e2e `t_files_rename`, logs `[files] renaming … / rename <old> -> <new>`.
+  **Path-bar click-away** — clicking outside the editable path field now reverts it the same as Esc
+  (`[files] pathleave`), checked in `t_files_breadcrumb`. **Left, cheapest-first:** per-folder view
+  memory (registry), Trash §9, rich Get Info + fs timestamps §8, tabs/split §4, column/gallery views
+  §1, search/thumbnails §6, tags/undo §10/§12. → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
   `menu_begin/menu_add/menu_item/menu_commit` + `on_menu()` API; twm draws a bar tile per menu
@@ -166,6 +184,18 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Exit-fullscreen no longer leaves black areas (2026-06-06).** Toggling a toolkit app out of
+  fullscreen left most of the window black until you hovered around to repaint it piecemeal. Cause:
+  the `WEV_RESIZE` handler in `ui::Window::run` only set `dirty`, not `dmg_full` — so if any other
+  event in the same drain (e.g. a hover while the cursor crossed the shrinking window) set a *partial*
+  damage rect, `redraw()` did a partial paint and the rest of the freshly-resized surface stayed
+  stale/black. **Fix:** the resize handler now calls `invalidate()` (whole surface). Fixes every
+  toolkit app's fullscreen restore, not just Files. Screenshot-verified (clean full render, cursor
+  parked off-window).
+- **Files in-place rename + path-bar/rename click-away (2026-06-06).** Inline rename over the selected
+  tile in list or icon view (New Folder enters it Finder-style); Enter/click-away commit, Esc cancels.
+  Clicking outside the editable path bar now reverts it like Esc. `dispatch_mouse` made virtual so
+  `FilesApp` can hook click-away. e2e `t_files_rename` + extended `t_files_breadcrumb`.
 - **Incremental directory flush — kills the notepad-autosave freeze (2026-06-06).** Found the real
   culprit behind "saving freezes the desktop": `flush_super()` rewrote the *entire* tosfs directory
   table on every file create/delete/rename/close. On today's 4096-sector disk that table is
