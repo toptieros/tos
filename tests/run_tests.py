@@ -188,6 +188,30 @@ def t_notepad_undo(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_notepad_wordedit(uefi):
+    # Regression: Ctrl+Backspace must word-delete in the editor, NOT fire Notepad's
+    # "Close Tab ^W" accelerator. The kernel used to collapse Ctrl+Backspace to the bare
+    # ^W control byte (0x17), which the compositor matched as the Close Tab accelerator
+    # and closed the window; it now emits ESC[127~ (a CSI sequence forwarded to the app,
+    # outside the 1..26 accel range) which the toolkit decodes to a word-delete. We also
+    # confirm a real Ctrl+W still fires Close Tab so the accelerator path is intact.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        t.key("meta_l-spc", delay=0.1); assert t.wait_for("[spotlight] up", 8), "Spotlight did not open"
+        t.type("note", delay=0.06); t.key("ret", delay=0.1)
+        assert t.wait_for("[notepad] up", 12), "Notepad did not launch"
+        assert t.wait_for("[twm] focus Notepad", 8), "Notepad did not take focus"
+        t.type("hello world", delay=0.05)
+        t.key("ctrl-backspace", delay=0.2)
+        assert t.wait_for("[ui] wdel", 6), "Ctrl+Backspace did not word-delete in the editor"
+        assert "[twm] accel W" not in t.serial(), "Ctrl+Backspace wrongly matched the ^W accelerator"
+        assert "[notepad] guard close" not in t.serial(), "Ctrl+Backspace wrongly raised the close guard"
+        # a genuine Ctrl+W still fires Close Tab -- the dirty tab raises the guard
+        t.key("ctrl-w", delay=0.2)
+        assert t.wait_for("[notepad] guard close 0", 8), "Ctrl+W no longer fires the Close Tab accelerator"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def _notepad_file_menu(t, idx):
     """Open Notepad's File menu and click item `idx` (0=New, 1=Open, 2=Save,
     3=Save As). Deterministic (a click, not the Ctrl accelerator, which races the
@@ -704,6 +728,44 @@ def t_files_menu(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_breadcrumb(uefi):
+    # The location bar (files-app §3): the static path label is now a clickable
+    # breadcrumb plus an editable path field. We type a deep path via Ctrl+L (editable
+    # mode) and confirm Files navigates there, then click the "/Users" ancestor crumb
+    # and confirm it jumps up. Files logs each crumb's click-centre ("[files] crumb
+    # <cx> <cy> <path>") so the click lands precisely regardless of resolution.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        # --- editable mode: Ctrl+L, type a deep path, Enter navigates there ---
+        t.key("ctrl-l", delay=0.25)
+        t.type("/Users/user/Documents", delay=0.03)
+        t.key("ret", delay=0.2)
+        assert t.wait_for("[files] cd /Users/user/Documents", 8), "Ctrl+L path edit did not navigate"
+        # --- click the "/Users" ancestor crumb -> jump up to it ---
+        cr = None
+        for _ in range(40):
+            cr = re.search(r"\[files\] crumb (\d+) (\d+) /Users[\r\n]", t.serial())
+            if cr:
+                break
+            time.sleep(0.1)
+        assert cr, "the /Users breadcrumb crumb geometry was not reported"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        t.click(wr[0] + int(cr.group(1)), wr[1] + int(cr.group(2)))
+        # match "/Users" at end-of-line so it doesn't alias the earlier "/Users/user" load
+        jumped = False
+        for _ in range(80):
+            if re.search(r"\[files\] cd /Users[\r\n]", t.serial()):
+                jumped = True; break
+            time.sleep(0.1)
+        assert jumped, "clicking the /Users crumb did not navigate up to /Users"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_term_menu(uefi):
     # The terminal is a raw-syscall app (not the ui:: toolkit), but it declares a
     # menu the same way via SYS_WIN_SETMENU: an Edit menu with Copy/Paste/Clear (no
@@ -851,8 +913,8 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
-    t_notepad_guard, t_file_picker, t_notepad_session, t_spotlight,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]

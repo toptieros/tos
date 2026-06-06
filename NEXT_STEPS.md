@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **41/41** (30 e2e journeys on BIOS + a UEFI subset 11) + **62 host
+**Status:** `make test` **41/41** (30 e2e journeys on BIOS + a UEFI subset 11) + **92 host
 unit tests** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -112,7 +112,10 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
 toolkit app for free. **Done:** blink caret, drag-select, Ctrl+A, double-click word-select,
 Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select, **undo/redo
-(Ctrl+Z / Ctrl+Y)**. **Left:**
+(Ctrl+Z / Ctrl+Y)**. *(2026-06-06: fixed Ctrl+Backspace closing Notepad — the kernel collapsed it
+to the bare ^W byte 0x17, which the compositor matched as Notepad's "Close Tab ^W" accelerator;
+it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t_notepad_wordedit`.)*
+**Left:**
 - [ ] **I-beam cursor over selectable text.** Blocked on an app→compositor cursor-shape protocol
   (twm composites the cursor and doesn't know widget regions).
 - [ ] **Primary selection + cross-app text drag.** Blocked on the DnD protocol.

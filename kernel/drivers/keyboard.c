@@ -136,7 +136,14 @@ static void key_main(uint8_t sc) {
         if (raw == 'v') { emit((char)KEY_TERM_PASTE); return; }
     }
 
-    if (ctrl() && c == '\b') { emit(0x17); return; }               /* Ctrl+Backspace: delete previous word (^W) */
+    /* Ctrl+Backspace: delete the previous word. Emit a CSI sequence (ESC[127~, 127=DEL)
+     * rather than the bare ^W byte (0x17): a lone Ctrl+<letter> control byte is what the
+     * compositor matches against app menu accelerators, so 0x17 was indistinguishable
+     * from Ctrl+W and (e.g.) fired Notepad's "Close Tab ^W". A multi-byte ESC sequence is
+     * forwarded to the focused app untouched (ESC is outside the 1..26 accel range), where
+     * the toolkit decodes it back to the word-delete key. (Ctrl+Delete already works this
+     * way via ESC[3;5~.) */
+    if (ctrl() && c == '\b') { emit_str("\x1b[127~"); return; }
 
     if (c >= 'a' && c <= 'z') {                                     /* letter: Shift XOR Caps */
         if (shift() ^ caps) c -= 32;

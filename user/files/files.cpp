@@ -14,6 +14,7 @@
 #include "registry.h"
 #include "textutil.h"      /* tu_ci_contains: the filter-bar substring matcher */
 #include "perm.h"          /* tos_may_write / TOS_UID_*: grey Save in a system-owned folder */
+#include "pathbar.h"       /* pathbar_split: the clickable breadcrumb (location bar §3) */
 
 #define NMAX    256
 #define HISTN   32
@@ -255,6 +256,98 @@ public:
     }
 };
 
+/* ---------------------------------------------------------------- Breadcrumb */
+/* The location bar (design/files-app.md §3): the path as clickable segment chips
+ * ( / › Users › user › Documents ), each navigating to that ancestor, with a chevron
+ * between. When the whole path is too wide it keeps the root + the trailing folders
+ * that fit and shows a "..." chip for the elided middle. Clicking empty space (or the
+ * ellipsis) switches the bar to an editable path field (handled by the app). The pure
+ * path->crumbs split is pathbar_split() (host-unit-tested in t_pathbar). */
+class Breadcrumb : public ui::Widget {
+public:
+    char path[256] = "/";
+    char printed[256] = {0};                               /* last path whose crumb geometry was logged */
+    struct crumb crumbs[24]; int ncr = 0;
+    int slot_idx[28], slot_x[28], slot_w[28], nslot = 0;   /* drawn slots; idx -1 = ellipsis */
+    int hover = -1;
+    void *ctx = nullptr;
+    void (*on_nav)(void *, const char *) = nullptr;        /* clicked a crumb -> navigate there  */
+    void (*on_edit)(void *) = nullptr;                     /* clicked empty / ellipsis -> edit    */
+    Breadcrumb() { focusable = false; }
+    static const int CPAD = 7, SEPW = 14;
+    void set_path(const char *p) {
+        int i = 0; for (; p[i] && i < 255; i++) path[i] = p[i]; path[i] = 0;
+        if (!path[0]) { path[0] = '/'; path[1] = 0; }
+        ncr = pathbar_split(path, crumbs, 24);
+    }
+    /* lay the crumbs into drawn slots, eliding the middle when they overflow r.w */
+    void rebuild() {
+        int cw[24], total = 0;
+        for (int i = 0; i < ncr; i++) { cw[i] = ugfx_text_w(crumbs[i].label) + 2 * CPAD; total += cw[i]; }
+        total += (ncr - 1) * SEPW;
+        nslot = 0;
+        int x = r.x + 2;
+        if (total <= r.w || ncr <= 2) {
+            for (int i = 0; i < ncr; i++) { slot_idx[nslot] = i; slot_x[nslot] = x; slot_w[nslot] = cw[i]; x += cw[i] + SEPW; nslot++; }
+            return;
+        }
+        int ellw = ugfx_text_w("...") + 2 * CPAD;
+        int avail = r.w - cw[0] - SEPW - ellw - SEPW - 4;     /* room left for trailing crumbs */
+        int start = ncr, used = 0;
+        for (int i = ncr - 1; i >= 1; i--) { int need = cw[i] + (start < ncr ? SEPW : 0); if (used + need > avail) break; used += need; start = i; }
+        if (start < 2) start = 2;                             /* always elide at least one crumb */
+        slot_idx[nslot] = 0;  slot_x[nslot] = x; slot_w[nslot] = cw[0];  x += cw[0]  + SEPW; nslot++;   /* root */
+        slot_idx[nslot] = -1; slot_x[nslot] = x; slot_w[nslot] = ellw;   x += ellw   + SEPW; nslot++;   /* ...  */
+        for (int i = start; i < ncr; i++) { slot_idx[nslot] = i; slot_x[nslot] = x; slot_w[nslot] = cw[i]; x += cw[i] + SEPW; nslot++; }
+    }
+    void draw() override {
+        if (!visible) return;
+        rebuild();
+        if (strcmp(printed, path) != 0) {                  /* log crumb click-centres once per path (e2e) */
+            strncpy(printed, path, sizeof printed - 1); printed[sizeof printed - 1] = 0;
+            int cy = r.y + r.h / 2;
+            for (int s = 0; s < nslot; s++) if (slot_idx[s] >= 0) {
+                print("[files] crumb "); printu((unsigned)(slot_x[s] + slot_w[s] / 2)); printc(' ');
+                printu((unsigned)cy); printc(' '); print(crumbs[slot_idx[s]].path); print("\r\n");
+            }
+        }
+        ugfx_set_clip(r.x, r.y, r.w, r.h);
+        int fh = ugfx_font_h(), ty = r.y + (r.h - fh) / 2;
+        for (int s = 0; s < nslot; s++) {
+            int idx = slot_idx[s], x = slot_x[s], w = slot_w[s];
+            const char *lbl = (idx < 0) ? "..." : crumbs[idx].label;
+            bool last = (idx == ncr - 1);
+            if (s == hover && idx >= 0) ugfx_state_layer(x, r.y + 2, w, r.h - 4, TH_R_SM, TH_HOVER_A);
+            uint32_t col = last ? TH_TEXT : (idx < 0 ? TH_MUTED : RGB(190, 205, 235));
+            ugfx_text(x + CPAD, ty, lbl, col, UGFX_TRANSPARENT);
+            if (s < nslot - 1) {                              /* chevron separator between chips */
+                int cx = x + w + SEPW / 2, cy = r.y + r.h / 2;
+                vline_(cx - 2, cy - 4, cx + 2, cy, 1, TH_MUTED);
+                vline_(cx + 2, cy, cx - 2, cy + 4, 1, TH_MUTED);
+            }
+        }
+        ugfx_clip_none();
+    }
+    int slot_at(int px, int py) const {
+        if (py < r.y || py >= r.y + r.h) return -1;
+        for (int s = 0; s < nslot; s++) if (px >= slot_x[s] && px < slot_x[s] + slot_w[s]) return s;
+        return -1;
+    }
+    bool on_hover(int x, int y) override {
+        int s = slot_at(x, y);
+        if (s >= 0 && slot_idx[s] < 0) s = -1;                /* the ellipsis chip isn't a nav target */
+        if (s == hover) return false;
+        hover = s; return true;
+    }
+    void on_leave() override { hovered = false; hover = -1; }
+    bool on_mouse(int x, int y, int) override {
+        int s = slot_at(x, y);
+        if (s >= 0 && slot_idx[s] >= 0) { if (on_nav) on_nav(ctx, crumbs[slot_idx[s]].path); return true; }
+        if (on_edit) on_edit(ctx);                            /* empty space / ellipsis -> edit the path */
+        return true;
+    }
+};
+
 /* ---------------------------------------------------------------- Popup menu */
 /* Doubles as the right-click context menu and the "Open With" chooser. When open
  * its rect is the whole window so it captures the next click anywhere (modal):
@@ -355,7 +448,9 @@ struct FilesApp : ui::Window {
     ui::Panel    bar;
     IconButton   back, fwd, up, newf, del;
     ui::Button   info;
-    ui::Label    pathlbl;
+    Breadcrumb   crumbbar;                    /* the clickable location bar (§3)       */
+    ui::TextField pathfld;                    /* editable path mode (Ctrl+L / click empty) */
+    bool         editing_path = false;
     ui::TextField filterfld;                 /* the "/" live name-filter field */
     ui::ListView list;
     Sidebar      side;
@@ -517,12 +612,35 @@ struct FilesApp : ui::Window {
         focus = &list;
         apply_filter();
     }
+    /* Location bar edit mode (§3): the breadcrumb becomes a path field (Ctrl+L, or a
+     * click on the bar's empty area / ellipsis). Enter navigates; Esc reverts. */
+    void enter_path_edit() {
+        if (editing_path) { focus = &pathfld; return; }
+        editing_path = true; crumbbar.visible = false; pathfld.visible = true;
+        pathfld.set_text(path); pathfld.caret = pathfld.length();
+        pathfld.on_key(0x01);                 /* select-all so a fresh path replaces it */
+        focus = &pathfld;
+        layout_widgets(); invalidate();
+    }
+    void leave_path_edit() {
+        if (!editing_path) return;
+        editing_path = false; pathfld.visible = false; crumbbar.visible = true;
+        focus = &list;
+        layout_widgets(); invalidate();
+    }
+    void commit_path_edit() {
+        char p[256]; strncpy(p, pathfld.text(), sizeof p - 1); p[sizeof p - 1] = 0;
+        leave_path_edit();
+        struct fstat st;
+        if (p[0] && stat_(p, &st) == 0 && st.type == FT_DIR) nav_to(p);
+    }
     void load_path(const char *p) {
         strncpy(path, p, sizeof path - 1); path[sizeof path - 1] = 0;
         if (!path[0]) { path[0] = '/'; path[1] = 0; }
         if (filterfld.length() > 0) { loading = true; filterfld.set_text(""); loading = false; }  /* fresh folder, fresh filter */
         load_dir();
-        pathlbl.text = path; side.cur = path;
+        crumbbar.set_path(path); side.cur = path;
+        print("[files] cd "); print(path); print("\r\n");   /* navigation telemetry (breadcrumb/sidebar/edit) */
     }
     void update_nav() { back.enabled = hist_i > 0; fwd.enabled = hist_i < hist_n - 1; }
     void nav_to(const char *p) {
@@ -766,8 +884,12 @@ struct FilesApp : ui::Window {
         int iw_ = ugfx_text_w("Info") + 18;
         info.text = "Info"; info.r = { w - iw_ - 8, by, iw_, sz };
 
-        pathlbl.r = { mainx + 12, TBH + 6, mainw - 24, fh };
-        int loc_bottom = TBH + fh + 14;                  /* where the location bar ends   */
+        int locy = TBH + 4, loch = fh + 8;               /* the location-bar band          */
+        crumbbar.r = { mainx + 6, locy, mainw - 12, loch };
+        pathfld.r  = { mainx + 8, locy, mainw - 16, loch };
+        crumbbar.visible = !editing_path;
+        pathfld.visible  = editing_path;
+        int loc_bottom = locy + loch + 2;                /* where the location bar ends   */
         int FBH = filter_open ? fh + 16 : 0;             /* the live-filter bar band       */
         filterfld.visible = filter_open;
         filterfld.r = { mainx + 10, loc_bottom + 3, mainw - 20, fh + 8 };
@@ -805,7 +927,9 @@ struct FilesApp : ui::Window {
         struct sysinfo si; sysinfo(&si);
         int cw, ch;
         if (picker) {
-            cw = 560; ch = 420; details_open = false;       /* dialog-shaped; no Details pane */
+            cw = 560; ch = 380; details_open = false;       /* dialog-shaped; no Details pane.
+                                                             * Kept short so the Cancel/Save footer
+                                                             * clears the dock when twm centres it. */
         } else {
             cw = (int)si.fb_w - 150; ch = (int)si.fb_h - 130;
             if (cw < 640) cw = 640; if (cw > 1000) cw = 1000;
@@ -822,7 +946,10 @@ struct FilesApp : ui::Window {
 
         bar.color = C_TOOLBAR; bar.sep_bottom = true;
         list.bg = C_LIST; list.sel_bg = C_SELROW;
-        pathlbl.fg = TH_MUTED;
+        crumbbar.ctx = pathfld.ctx = this;
+        crumbbar.on_nav  = [](void *c, const char *p) { ((FilesApp *)c)->nav_to(p); };
+        crumbbar.on_edit = [](void *c) { ((FilesApp *)c)->enter_path_edit(); };
+        pathfld.on_submit = [](void *c) { ((FilesApp *)c)->commit_path_edit(); };
         footer.color = C_TOOLBAR; nameLbl.text = "Name:"; nameLbl.fg = TH_MUTED;
 
         side.ctx = this; side.on_pick = [](void *c, const char *p) { ((FilesApp *)c)->nav_to(p); };
@@ -881,7 +1008,7 @@ struct FilesApp : ui::Window {
 
         layout_widgets();
         add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info);
-        add(&pathlbl); add(&list); add(&details); add(&status);
+        add(&crumbbar); add(&pathfld); add(&list); add(&details); add(&status);
         add(&footer); add(&nameLbl); add(&nameFld); add(&cancelBtn); add(&okBtn);
         add(&menu); add(&overwrite);                  /* menu + overwrite last = on top + modal */
         focus = picker && preq.mode == PICK_SAVE ? (ui::Widget *)&nameFld : (ui::Widget *)&list;
@@ -974,6 +1101,8 @@ struct FilesApp : ui::Window {
     bool on_close() override { if (picker) print("[files] pick cancel\r\n"); return true; }
     void on_key(int key) override {
         if (menu.open) { if (key == ui::UK_ESC) { menu.dismiss(); invalidate(); } return; }
+        if (editing_path) { if (key == ui::UK_ESC) leave_path_edit(); return; }  /* Esc reverts the path edit */
+        if (key == 0x0c) { enter_path_edit(); return; }              /* Ctrl+L: edit the path literally */
         if (picker && key == ui::UK_ESC) { cancel_pick(); return; }   /* Esc cancels the picker */
         if (key == ui::UK_BACK) go_up();
         else if (key == 0x03) copy_sel(false);   /* Ctrl+C */

@@ -598,6 +598,7 @@ void Window::feed_key(int b) {
         case 'H': key = UK_HOME;  break;
         case 'F': key = UK_END;   break;
         case '~': if (csi_n >= 1 && csi[0] == '3') key = ctrl ? UK_WORD_DEL : UK_DEL;  /* ESC[3~ Del; ESC[3;5~ Ctrl+Del */
+                  else if (csi_n >= 3 && csi[0] == '1' && csi[1] == '2' && csi[2] == '7') key = 0x17;  /* ESC[127~ Ctrl+Backspace: word-delete back */
                   else return;                                    /* Insert/PgUp/PgDn: ignored for now */
                   break;
         default:  return;
