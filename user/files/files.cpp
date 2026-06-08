@@ -17,11 +17,14 @@
 #include "pathbar.h"       /* pathbar_split: the clickable breadcrumb (location bar §3) */
 #include "filesort.h"      /* filesort_cmp: data-driven Sort by Name/Kind/Size (§2) */
 #include "viewmem.h"       /* view_prefs: per-folder view memory in the registry (§2) */
+#include "trashinfo.h"     /* trashinfo_*: the Trash sidecar codec (§9) */
 
 #define NMAX    256
 #define HISTN   32
 #define MAXAPPS 16
 #define HOMEDIR "/Users/user"
+#define TRASHDIR  HOMEDIR "/.Trash"        /* move-to-trash store (§9) */
+#define TRASHINFO TRASHDIR "/.trashinfo"   /* sidecar: "<trashedname>\t<origpath>" per line */
 
 static const uint32_t C_ZEBRA   = RGB(33, 37, 49);
 static const uint32_t C_SIDEBAR = RGB(27, 31, 43);
@@ -495,6 +498,10 @@ public:
         }
         px = x; py = y; open = true; visible = true;
         if (win) r = { 0, 0, win->w, win->h };               /* modal capture */
+        /* canary so e2e can click a context-menu row deterministically: first item's
+         * centre is (px+12, py+5+rowh/2), each later row +rowh below. */
+        print("[files] ctxmenu "); printu((unsigned)px); printc(' '); printu((unsigned)py);
+        printc(' '); printu((unsigned)rowh); printc(' '); printu((unsigned)n); print("\r\n");
     }
     void dismiss() { open = false; visible = false; }
     void draw() override {
@@ -683,6 +690,11 @@ struct FilesApp : ui::Window {
             free(mbuf);
         }
         apply_filter();                 /* sets list.count, resets sel, refreshes status */
+        /* canary: the list content rect + row height (window-relative), so e2e can click
+         * a given row deterministically -- row r's centre is (list.r.x+_, list.r.y + r*rowh
+         * + rowh/2). Row 0 is the synthetic ".." up-entry when has_up(). */
+        print("[files] listrect "); printu((unsigned)list.r.x); printc(' '); printu((unsigned)list.r.y);
+        printc(' '); printu((unsigned)list.r.w); printc(' '); printu((unsigned)list.row_h); print("\r\n");
     }
     /* map a visible list row to an ents[] index, or -1 for the ".." row / off-list */
     int ent_at(int row) const {
@@ -698,6 +710,7 @@ struct FilesApp : ui::Window {
         const char *q = filter_open ? filterfld.text() : "";
         nview = 0;
         for (int i = 0; i < nents; i++) {
+            if (ents[i].name[0] == '.') continue;            /* hide dotfiles (.Trash, .trashinfo, ...) */
             char label[64]; disp_name(ents[i].name, label, sizeof label);
             if (!tu_ci_contains(label, q)) continue;
             /* picker mode: directories always navigable; files only if their extension
@@ -876,12 +889,93 @@ struct FilesApp : ui::Window {
             rmdir(p);
         } else funlink(p);
     }
+    /* ---- Trash (§9) --------------------------------------------------------- *
+     * Delete in a normal folder MOVES the item to ~/.Trash (a rename, so it's cheap
+     * and works for whole directories); a sidecar (~/.Trash/.trashinfo) records each
+     * item's origin so Put Back can restore it. Delete *inside* the Trash, or Empty
+     * Trash, removes for good. The Trash and its sidecar are hidden dotfiles. */
+    static const char *basename_of(const char *full) {
+        const char *b = full; for (const char *p = full; *p; p++) if (*p == '/') b = p + 1; return b;
+    }
+    void ensure_trash() { struct fstat st; if (stat_(TRASHDIR, &st) != 0) mkdir(TRASHDIR); }
+    /* are we viewing the Trash (or a folder inside it)? */
+    int in_trash() const {
+        int n = (int)strlen(TRASHDIR);
+        return strncmp(path, TRASHDIR, n) == 0 && (path[n] == 0 || path[n] == '/');
+    }
+    /* thin FS wrappers over the pure trashinfo.h codec (read-modify-write the small file) */
+    void trashinfo_append(const char *tname, const char *origpath) {
+        int old = 0; char *cur = sys_slurp(TRASHINFO, &old);
+        int need = old + (int)strlen(tname) + (int)strlen(origpath) + 3;
+        char *buf = (char *)malloc(need);
+        if (buf) { int n = trashinfo_add(buf, need, cur ? cur : "", cur ? old : 0, tname, origpath);
+                   sys_spit(TRASHINFO, buf, n); free(buf); }
+        free(cur);
+    }
+    int trashinfo_lookup(const char *tname, char *out, int cap) {
+        int len = 0; char *cur = sys_slurp(TRASHINFO, &len);
+        if (!cur) { if (cap > 0) out[0] = 0; return 0; }
+        int r = trashinfo_find(cur, len, tname, out, cap);
+        free(cur);
+        return r;
+    }
+    void trashinfo_remove(const char *tname) {
+        int len = 0; char *cur = sys_slurp(TRASHINFO, &len);
+        if (!cur) return;
+        char *buf = (char *)malloc(len + 1);
+        if (buf) { int n = trashinfo_drop(buf, len + 1, cur, len, tname);
+                   if (n == 0) funlink(TRASHINFO); else sys_spit(TRASHINFO, buf, n); free(buf); }
+        free(cur);
+    }
+    /* move `full` into the Trash (deduping its name there) and record where it came from */
+    void move_to_trash(const char *full) {
+        ensure_trash();
+        char dst[256]; join(dst, sizeof dst, TRASHDIR, basename_of(full));
+        if (sys_exists(dst, 0)) { char d2[256]; dedup_path(d2, sizeof d2, dst);
+                                  strncpy(dst, d2, sizeof dst - 1); dst[sizeof dst - 1] = 0; }
+        if (rename_(full, dst) != 0) { rmrf(full); return; }           /* fall back to a hard delete */
+        trashinfo_append(basename_of(dst), full);
+        print("[files] trash "); print(basename_of(full)); print("\r\n");
+    }
     void do_delete() {
         int idx = ent_at(list.sel);
         if (idx < 0) return;
         struct dirent *e = &ents[idx];
         char child[256]; join(child, sizeof child, path, e->name);
-        rmrf(child); load_dir();
+        if (in_trash()) { rmrf(child); trashinfo_remove(e->name); }    /* already trashed: delete for good */
+        else            move_to_trash(child);                          /* normal folder: move to Trash */
+        load_dir();
+    }
+    /* "Put Back": rename a trashed item to its recorded origin (deduping on collision),
+     * dropping its sidecar line. With no record, fall back to dropping it in Home. */
+    void restore_from_trash() {
+        int idx = ent_at(list.sel);
+        if (idx < 0) return;
+        char tname[128]; strncpy(tname, ents[idx].name, sizeof tname - 1); tname[sizeof tname - 1] = 0;
+        char src[256]; join(src, sizeof src, TRASHDIR, tname);
+        char dst[256]; if (!trashinfo_lookup(tname, dst, sizeof dst)) join(dst, sizeof dst, HOMEDIR, tname);
+        if (sys_exists(dst, 0)) { char d2[256]; dedup_path(d2, sizeof d2, dst);
+                                  strncpy(dst, d2, sizeof dst - 1); dst[sizeof dst - 1] = 0; }
+        if (rename_(src, dst) == 0) { trashinfo_remove(tname);
+            print("[files] untrash "); print(tname); print("\r\n"); }
+        load_dir();
+    }
+    /* Empty Trash: hard-remove every item in ~/.Trash and clear the sidecar. */
+    void empty_trash() {
+        ensure_trash();
+        for (;;) {
+            struct dirent e[64]; int n = readdir(TRASHDIR, e, 64);
+            if (n <= 0) break;
+            int did = 0;
+            for (int i = 0; i < n; i++) {
+                if (eqn(e[i].name, ".trashinfo")) continue;            /* keep until the end */
+                char c[256]; join(c, sizeof c, TRASHDIR, e[i].name); rmrf(c); did = 1;
+            }
+            if (!did) break;                                           /* only the sidecar is left */
+        }
+        funlink(TRASHINFO);
+        print("[files] trash empty\r\n");
+        if (in_trash()) load_dir();
     }
     /* Ctrl+C / Ctrl+X: stash the selected file on the clipboard ring; Cut also
      * remembers the source so a later Paste moves it. Files only for now -- copying a
@@ -1242,6 +1336,8 @@ struct FilesApp : ui::Window {
         side.add_item("Applications", "/Apps",              1);
         side.add_item("System",       "/System",            0);
         side.add_item("Computer",     "/",                  0);
+        side.add_item("Trash",        TRASHDIR,             1);   /* §9: set apart at the bottom */
+        if (!picker) ensure_trash();                              /* so the Trash place is always navigable */
         side.cur = path;
 
         list.ctx = this; list.render_row = render_row;
@@ -1303,6 +1399,7 @@ struct FilesApp : ui::Window {
         if (!picker) {                                /* app menus #6: File/Edit/Go bar (normal mode only) */
             menu_begin();
             int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "Refresh", 0);
+                                       menu_item(mf, "Empty Trash", 0);
             int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
                                        menu_item(me, "Paste", 'V'); menu_item(me, "Delete", 0);
                                        menu_item(me, "Rename", 0);
@@ -1363,6 +1460,8 @@ struct FilesApp : ui::Window {
         case 7: copy_sel(true);  break;                   /* Cut: copy + mark the source for a move */
         case 8: paste();         break;                   /* Paste the clipboard file here */
         case 9: start_rename();  break;                   /* in-place rename */
+        case 10: restore_from_trash(); break;             /* Put Back a trashed item (§9) */
+        case 11: empty_trash();        break;             /* Empty Trash (§9) */
         }
         invalidate();
     }
@@ -1382,19 +1481,26 @@ struct FilesApp : ui::Window {
             menu.add("Refresh",    PK_ACTION, 5, 0, 0, 0);
             menu.show(x, y); invalidate(); return;
         }
+        bool trash = in_trash();
         if (real >= 0) {
             struct dirent *e = &ents[real];
-            if (e->type == FT_DIR || is_app_dir(e->type, e->name)) menu.add("Open", PK_ACTION, 1, 0, 0, 0);
-            else { menu.add("Open", PK_ACTION, 1, 0, 0, 0); menu.add("Open With...", PK_ACTION, 2, 0, 0, 0);
-                   menu.add("Copy", PK_ACTION, 6, 0, 0, 0); menu.add("Cut", PK_ACTION, 7, 0, 0, 0); }
-            menu.add("Rename", PK_ACTION, 9, 0, 0, 0);
-            menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
+            if (trash) {                                       /* Trash items: restore or delete for good */
+                menu.add("Put Back", PK_ACTION, 10, 0, 0, 0);
+                menu.add("Delete Immediately", PK_ACTION, 3, 0, 0, 0);
+            } else {
+                if (e->type == FT_DIR || is_app_dir(e->type, e->name)) menu.add("Open", PK_ACTION, 1, 0, 0, 0);
+                else { menu.add("Open", PK_ACTION, 1, 0, 0, 0); menu.add("Open With...", PK_ACTION, 2, 0, 0, 0);
+                       menu.add("Copy", PK_ACTION, 6, 0, 0, 0); menu.add("Cut", PK_ACTION, 7, 0, 0, 0); }
+                menu.add("Rename", PK_ACTION, 9, 0, 0, 0);
+                menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
+            }
             menu.add("", PK_SEP, 0, 0, 0, 0);
         }
-        if (clip_count() > 0) { struct clipinfo ci;             /* offer Paste when a file is on the clipboard */
+        if (clip_count() > 0 && !trash) { struct clipinfo ci;   /* offer Paste when a file is on the clipboard */
             if (clip_info(clip_active(-1), &ci) == 0 && ci.type == CLIP_FILE)
                 menu.add("Paste", PK_ACTION, 8, 0, 0, 0); }
-        menu.add("New Folder", PK_ACTION, 4, 0, 0, 0);
+        if (trash) menu.add("Empty Trash", PK_ACTION, 11, 0, 0, 0);
+        else       menu.add("New Folder",  PK_ACTION, 4, 0, 0, 0);
         menu.add("Refresh",    PK_ACTION, 5, 0, 0, 0);
         menu.show(x, y);
         invalidate();
@@ -1429,7 +1535,8 @@ struct FilesApp : ui::Window {
      * arrive here as WEV_MENU picks (the same actions the toolbar + right-click run). */
     void on_menu(int menu, int item) override {
         print("[files] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
-        if (menu == 0) { if (item == 0) make_folder(); else if (item == 1) load_dir(); }      /* File: New Folder / Refresh */
+        if (menu == 0) { if (item == 0) make_folder(); else if (item == 1) load_dir();
+                         else if (item == 2) empty_trash(); }                                 /* File: New Folder / Refresh / Empty Trash */
         else if (menu == 1) {                                                                 /* Edit */
             if (item == 0) copy_sel(false); else if (item == 1) copy_sel(true);
             else if (item == 2) paste(); else if (item == 3) do_delete();

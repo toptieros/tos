@@ -924,6 +924,127 @@ def t_files_viewmem(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def _dock_focus(t, title):
+    """Raise + focus a running app by clicking its (always-on-top) dock icon, then wait
+    for a NEW "[twm] focus <title>". Reliable where alt-tab is not: an immediate click
+    after alt-tab cancels the switcher before it commits, and a bare wait_for("focus
+    <title>") is fooled by an earlier identical line. Caller must be switching FROM
+    another window (clicking an already-focused app's icon logs nothing)."""
+    xy = t.icon_xy(title); assert xy, "%s dock icon not reported" % title
+    c0 = t.serial().count("[twm] focus %s" % title)
+    t.click(*xy)
+    assert _count_at_least(t, "[twm] focus %s" % title, c0 + 1, 6), "could not focus %s via the dock" % title
+
+
+def _files_nav(t, wr, path):
+    """Navigate Files to `path` via the breadcrumb path editor (the proven-robust route,
+    vs. the Ctrl+L chord that races the modifier release). Counts NEW "[files] pathedit"
+    / "[files] cd <path>" lines so a re-visit isn't satisfied by an earlier identical
+    one (wait_for is a substring search over the whole log)."""
+    cdc = t.serial().count("[files] cd %s\r" % path)
+    for _ in range(3):
+        pe = t.serial().count("[files] pathedit")
+        ms = re.findall(r"\[files\] crumbend (\d+) (\d+)", t.serial())
+        assert ms, "the breadcrumb empty-area target was not reported"
+        t.click(wr[0] + int(ms[-1][0]), wr[1] + int(ms[-1][1]))
+        if _count_at_least(t, "[files] pathedit", pe + 1, 4):
+            break
+    else:
+        assert False, "the Files path editor did not open"
+    t.type(path, delay=0.03)
+    t.key("ret", delay=0.25)
+    assert _count_at_least(t, "[files] cd %s\r" % path, cdc + 1, 8), "Files did not navigate to %s" % path
+
+
+def _files_row_xy(t, wr, row):
+    """Absolute (x, y) of list `row`'s centre, from the latest "[files] listrect x y w
+    rowh" canary. Row 0 is the synthetic ".." up-entry when not at the volume root."""
+    ms = re.findall(r"\[files\] listrect (\d+) (\d+) (\d+) (\d+)", t.serial())
+    assert ms, "the Files list-rect canary was not reported"
+    lx, ly, lw, rh = (int(v) for v in ms[-1])
+    return wr[0] + lx + lw // 2, wr[1] + ly + row * rh + rh // 2
+
+
+def _files_ctx_click(t, wr, idx, before):
+    """After a right-click has opened the context menu (its canary count must exceed
+    `before`), click item `idx`. The "[files] ctxmenu px py rowh n" canary reports the
+    menu's placed (clamped) origin, so the click lands regardless of edge clamping. Only
+    valid for items before any separator (true for Delete / Put Back here)."""
+    assert _count_at_least(t, "[files] ctxmenu", before + 1, 6), "the context menu did not open"
+    ms = re.findall(r"\[files\] ctxmenu (\d+) (\d+) (\d+) (\d+)", t.serial())
+    px, py, rh, _n = (int(v) for v in ms[-1])
+    t.click(wr[0] + px + 14, wr[1] + py + 5 + idx * rh + rh // 2)
+
+
+def t_files_trash(uefi):
+    # Trash (files-app §9): Delete in a normal folder MOVES the item to ~/.Trash (a
+    # rename, recorded in a .trashinfo sidecar) instead of destroying it; "Put Back"
+    # restores it to where it came from; "Empty Trash" removes for good. The sidecar
+    # codec is unit-tested (t_trashinfo); here we drive the real round-trip through the
+    # UI and confirm each move on disk from the terminal. Context-menu rows are clicked
+    # via the "[files] ctxmenu" geometry canary, list rows via "[files] listrect".
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        # stage a deterministic single-item folder from the shell (trashme -> row 1)
+        t.line("mkdir /Users/user/stage")
+        t.line("mkdir /Users/user/stage/trashme")
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        _files_nav(t, wr, "/Users/user/stage")
+        # --- Delete -> move to Trash (right-click the trashme row, pick Delete) ---
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)
+        t.rightclick(rx, ry)
+        _files_ctx_click(t, wr, 2, c_ctx)                 # dir menu: Open(0) Rename(1) Delete(2)
+        assert t.wait_for("[files] trash trashme", 8), "Delete did not move trashme to the Trash"
+        # on disk: it physically moved into ~/.Trash. (The "[files] trash" canary alone
+        # can't prove this -- move_to_trash logs it even on the rmrf fallback -- so we
+        # confirm from the shell, checking the ls output TAIL since "trashme" already
+        # appears earlier in the serial via the canaries.)
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("ls /Users/user/.Trash"); t.line("echo TRASH-A")
+        assert t.wait_for("TRASH-A", 6), "the trash listing did not complete"
+        assert "trashme" in t.serial()[mark:], "trashme is not in ~/.Trash on disk"
+        # --- Put Back -> restore it to where it came from ---
+        _dock_focus(t, "Files")
+        _files_nav(t, wr, "/Users/user/.Trash")
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)
+        t.rightclick(rx, ry)
+        _files_ctx_click(t, wr, 0, c_ctx)                 # trash menu: Put Back(0) Delete Immediately(1)
+        assert t.wait_for("[files] untrash trashme", 8), "Put Back did not restore trashme"
+        # on disk: it physically moved back into the stage folder
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("ls /Users/user/stage"); t.line("echo STAGE-A")
+        assert t.wait_for("STAGE-A", 6), "the stage listing did not complete"
+        assert "trashme" in t.serial()[mark:], "trashme was not restored to its origin on disk"
+        # --- trash it again, then Empty Trash (File menu) clears it for good ---
+        _dock_focus(t, "Files")
+        _files_nav(t, wr, "/Users/user/stage")
+        c_trash = t.serial().count("[files] trash trashme")
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)
+        t.rightclick(rx, ry)
+        _files_ctx_click(t, wr, 2, c_ctx)                 # Delete again
+        assert _count_at_least(t, "[files] trash trashme", c_trash + 1, 8), "re-Delete did not re-trash trashme"
+        _files_menu_click(t, "File", 2)                   # File > Empty Trash
+        assert t.wait_for("[files] trash empty", 8), "Empty Trash did not run"
+        # on disk: the Trash is now empty
+        _dock_focus(t, "Terminal")
+        et_mark = len(t.serial())
+        t.line("ls /Users/user/.Trash")
+        t.line("echo TRASH-CHECKED")
+        assert t.wait_for("TRASH-CHECKED", 6), "the trash listing did not complete"
+        assert "trashme" not in t.serial()[et_mark:], "Empty Trash left trashme on disk"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_term_menu(uefi):
     # The terminal is a raw-syscall app (not the ui:: toolkit), but it declares a
     # menu the same way via SYS_WIN_SETMENU: an Edit menu with Copy/Paste/Clear (no
@@ -1071,7 +1192,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,

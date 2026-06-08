@@ -172,6 +172,13 @@ class Tos:
         self.mon.sendall(b"mouse_button 1\n"); time.sleep(0.05)
         self.mon.sendall(b"mouse_button 0\n"); time.sleep(0.05)
 
+    def rightclick(self, x, y):
+        """Right-click (QEMU button bit 1 = the PS/2 right button), which the toolkit
+        delivers as on_context -> the app's context menu."""
+        self.mouse_to(x, y)
+        self.mon.sendall(b"mouse_button 2\n"); time.sleep(0.05)
+        self.mon.sendall(b"mouse_button 0\n"); time.sleep(0.05)
+
     def screenshot(self, path):
         """Dump the framebuffer to a PPM via the QEMU monitor (for visual checks)."""
         self.mon.sendall(f"screendump {path}\n".encode())
