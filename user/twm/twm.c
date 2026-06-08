@@ -16,85 +16,26 @@
  *
  * With no framebuffer it just exec()s the shell, so a text boot is an ordinary
  * TTY. */
-#include "ulib.h"
-#include "ugfx.h"
-#include "theme.h"
-#include "logo.h"
-#include "winbtns.h"
-#include "cursors.h"
-#include "icons.h"
-#include "statusicons.h"
-#include "manifest.h"
-#include "registry.h"
-#include "textutil.h"
+#include "twm.h"
 
-#define MAXW      8
-#define MAXICON   16             /* dock tiles: launchpad + pinned + running, see rebuild_dock */
-#define MAXAPPS   8              /* catalog of installed /Apps bundles                          */
+/* ----------------------------------------------------------- core-only state
+ * (state nothing outside twm.c touches stays private here; the shared compositor
+ * state is DEFINED below and declared for the feature files in twm.h). */
 #define MAXDIRTY  32
-#define DBL_FRAMES 40            /* double-click window, in event-loop frames */
 #define GRIP      18             /* bottom-right resize-grip hit box          */
 #define CURW      14             /* cursor damage box                         */
 #define CURH      21
-#define DOCK_GAP  16
-#define DOCK_PAD  14
-#define EDGE         4    /* screen-edge reveal zone for auto-hidden chrome (px)   */
-#define HIDE_LINGER  16   /* frames the chrome lingers after the cursor leaves     */
-#define SLIDE        6    /* chrome slide speed (px/frame)                         */
 
-static uint32_t *bb;             /* back buffer (mmap'd, fb_w*fb_h, tightly packed) */
 static uint32_t *wall;           /* precomputed wallpaper (gradient+glow+vignette), W*H */
-static int W, H, fh, bar_h, TH;  /* screen, font height, bar height, title height  */
-
 /* desktop gradient endpoints, split into channels for the per-row lerp */
 static int gtr, gtg, gtb, gbr, gbg, gbb;
 
-struct cwin { int used, id, wx, wy; uint32_t w, h, seq; uint64_t vaddr; char title[32];
-              int min, maxed, sx, sy; uint32_t sw, sh;     /* min/max flags + pre-maximize geometry */
-              int popup, overlay, modal; };                /* WIN_POPUP / WIN_OVERLAY (dim, above dock) / WIN_MODAL (input-locked dialog) */
-static struct cwin cw[MAXW];
-static int zo[MAXW], nz;         /* z-order: zo[nz-1] is topmost == focused */
-
-/* The installed-app catalog: every /Apps/<Name>.app bundle (name, absolute exec
- * path, loaded icon, and whether its manifest pins it to the dock). Loaded once at
- * startup; the dock and the launchpad button draw from it. */
-struct app { char label[24], exec[120]; uint32_t *img; int iw, ih; int pinned; };
-static struct app apps[MAXAPPS];
-static int napps;
-
-/* a dock tile: display name, the absolute exec path, its icon (img==0 -> a generic
- * or, for the launchpad button, a grid glyph), and its on-screen centre. `special`
- * marks the leftmost Launchpad button (single-click summons the launchpad grid).
- * The visible set is rebuilt by rebuild_dock(): launchpad + pinned + running apps. */
-struct icon { char label[24], exec[120]; uint32_t *img; int iw, ih; int cx, cy; uint32_t tint; int special; };
-static struct icon icons[MAXICON];
-static int nicons;
-static int dock_runsep = -1;     /* tile index of the first running-unpinned app (the pinned|running boundary); -1 when no running-unpinned app exists, so no divider is drawn */
-static unsigned dock_sig;        /* signature of the running set; the dock rebuilds when it changes */
-static int dock_x, dock_y, dock_w, dock_h;
-static int dock_y0;              /* dock's shown (base) y; dock_y is the current (animated) y */
-static int bar_y;                /* bar's current top: 0 = shown, -bar_h = hidden            */
-static int bar_linger, dock_linger;   /* reveal-linger counters for auto-hide               */
-
-struct rect { int x, y, w, h; };
-#define WIN_SHADOW_DY   6   /* window drop-shadow downward offset (>= the 5/6 used in draw) */
-#define DOCK_ELEVATION  3   /* the ugfx_elevation level the dock floats at                  */
-/* THE single source for every drop-shadow halo (invalidations AND culls): a rect grown
- * to include a shadow that feathers `spread`px outward and rides `dy`px downward. Keeps
- * the full `spread` on top and adds `dy` to the bottom for the offset, so the box never
- * under-covers the shadow regardless of the offset. `spread` matches ugfx_shadow's
- * feather; ugfx_elevation_extent supplies (spread, dy) for an elevation level. */
-static struct rect shadow_box(int x, int y, int w, int h, int spread, int dy) {
-    struct rect r = { x - spread, y - spread, w + 2 * spread, h + 2 * spread + dy };
-    return r;
-}
 static struct rect dirty[MAXDIRTY];
 static int ndirty;
-static struct rect cur_clip;     /* the rect compose() is currently painting */
-static int cur_x, cur_y;
 static int cur_id = CUR_ARROW;   /* context-aware cursor shape (CUR_*) */
-static uint32_t g_accent;        /* focus accent colour, from the registry (theme.accent) */
 static int busy_until, busy_frame, launch_busy;  /* spinner cursor while an app launches */
+static unsigned dock_sig;        /* signature of the running set; the dock rebuilds when it changes */
+static int bar_linger, dock_linger;   /* reveal-linger counters for auto-hide */
 
 /* A single in-flight window animation: a translucent rounded-rect "ghost" that
  * scales between a window's geometry and its dock tile -- minimize collapses the
@@ -108,116 +49,69 @@ static struct { int kind, slot, frame, nframes; struct rect from, to, cur, prev;
 static int  pending_until;           /* frame deadline for the in-flight launch */
 static char pending_title[32];       /* the window title we expect it to map     */
 
-/* Alt-Tab-style window switcher (interim Super+Tab). A press cycles focus through
- * the open windows in most-recently-used order. Because every focus change in this
- * compositor also raises the window, the z-order list (zo[], top == most recent)
- * IS the MRU stack -- so a switch SESSION snapshots that order once and steps a
- * cursor through the snapshot, raising each window as it goes. Snapshotting keeps
- * the cycle stable while we reorder zo underneath it; the session ends (and the
- * landed window becomes MRU-top for free) once the deadline lapses with no press. */
-#define SWITCH_LINGER 80             /* frames a switch session stays "warm" (~1s) */
-static int sw_order[MAXW], sw_n, sw_pos, sw_until;
-/* macOS-style switcher overlay (#7): Alt+Tab opens a centred card of window tiles
- * (icon + title) with an animated selection highlight. It commits on Alt-release
- * (after a genuine hold), a click on a tile, Enter, or the linger timeout; ESC
- * cancels. Holding Alt keeps it up on real hardware; under the test harness (which
- * can't hold a modifier) the linger timeout commits, so the card is still visible. */
-#define SW_CELL      108             /* per-tile cell width (icon + title)          */
-#define SW_PAD       18
-#define SW_SHADOW_SP 28
-#define SW_SHADOW_DY 8
-static int sw_overlay;               /* 1 while the switcher card is shown          */
-static int sw_alt_frames;            /* consecutive frames Alt seen held this session */
-static int sw_sel_x, sw_target_x;    /* animated highlight centre (px)              */
-static int sw_px, sw_py, sw_pw, sw_ph;  /* card rect (set by switcher_layout)        */
+/* ------------------------------------------------------------- shared state
+ * (the contract in twm.h; defined here, used across the feature files). */
+uint32_t *bb;                    /* back buffer (mmap'd, fb_w*fb_h, tightly packed) */
+int W, H, fh, bar_h, TH;         /* screen, font height, bar height, title height  */
+struct cwin cw[MAXW];
+int zo[MAXW], nz;                /* z-order: zo[nz-1] is topmost == focused */
+struct app apps[MAXAPPS];
+int napps;
+struct icon icons[MAXICON];
+int nicons;
+int dock_x, dock_y, dock_w, dock_h;
+int dock_y0;                     /* dock's shown (base) y; dock_y is the current (animated) y */
+int bar_y;                       /* bar's current top: 0 = shown, -bar_h = hidden */
+struct rect cur_clip;            /* the rect compose() is currently painting */
+int cur_x, cur_y;
+uint32_t g_accent;               /* focus accent colour, from the registry (theme.accent) */
 
-/* Control Center: a quick-settings slide-over opened from a menu-bar status item
- * (design/ui.md). Live toggles for the dock/bar auto-hide (the registry keys
- * update_chrome already reads) + a system summary + power actions. */
-#define CC_PAD 14
-#define CC_RAD       16     /* control-center panel corner radius          */
-#define CC_SHADOW_SP 24     /* control-center drop-shadow feather (px)      */
-#define CC_SHADOW_DY 6      /* control-center shadow vertical offset (px)   */
-/* dirty the whole panel INCLUDING its shadow halo (so opening/closing it leaves no
- * shadow residue) via the single shadow_box() extent. */
-#define dirty_cc() do { struct rect _r = shadow_box(cc_x, cc_y, cc_w, cc_h, CC_SHADOW_SP, CC_SHADOW_DY); \
-                        add_dirty(_r.x, _r.y, _r.w, _r.h); } while (0)
-static int cc_open;
-static int cc_x, cc_y, cc_w = 268, cc_h;          /* panel rect (h computed in cc_layout) */
-static int cc_btn_x, cc_btn_w = 24;               /* the bar status-item hit box           */
-static int cc_row1_y, cc_row2_y, cc_sep_y, cc_info_y, cc_btn_yy;
-static void draw_cc_button(int y);                /* defined below; called from draw_bar */
-static void draw_switcher(void);                  /* Alt-Tab overlay; called from compose */
+/* status cluster slot positions (computed by cc_layout, drawn by draw_bar) */
+int sb_clk_w;
+int sb_net_x, sb_vol_x, sb_bat_x, sb_bell_x;
 
-/* Status cluster (top bar, right side; design/ui.md phase 2): placeholder system
- * glyphs (network / volume / battery) + a registry-driven clock. The glyphs are
- * honest placeholders -- there are no battery/audio/net drivers yet -- so they
- * read as iconic indicators, not as fake readings. Laid out right-to-left in
- * cc_layout() into fixed slots so the cluster never jitters as the clock ticks. */
-#define SB_GLYPH   ARGB(235, 222, 228, 240)   /* status-glyph ink (alpha-aware)      */
-#define SB_NET_W   STATUSICON_SZ              /* all glyphs are the same square Lucide box */
-#define SB_VOL_W   STATUSICON_SZ
-#define SB_BAT_W   STATUSICON_SZ
-#define SB_BELL_W  STATUSICON_SZ
-#define SB_GAP     12
-static int sb_clk_w;                          /* reserved (worst-case) clock width   */
-static int sb_net_x, sb_vol_x, sb_bat_x, sb_bell_x;   /* glyph left edges            */
+/* control center panel */
+int cc_open;
+int cc_x, cc_y, cc_w = 268, cc_h;          /* panel rect (h computed in cc_layout) */
+int cc_btn_x, cc_btn_w = 24;               /* the bar status-item hit box           */
+int cc_row1_y, cc_row2_y, cc_sep_y, cc_info_y, cc_btn_yy;
 
-/* Notifications (design/ui.md phase 3): apps post via notify(); twm drains the
- * kernel queue, ring-buffers the recent ones for the notification center, and
- * slides the newest in as a top-right toast (slide-in / hold / slide-out, no
- * alpha so the dirty-rect math stays simple). The bell status item toggles the
- * center and carries an unseen badge. */
-#define NOTE_KEEP   8                /* recent notifications kept for the center      */
-#define NC_W        300              /* notification-center panel width               */
-#define NC_PAD      14
-#define NC_ROW      (2 * fh + 14)    /* a center row: title + body + padding          */
-#define NC_SHADOW_SP 24
-#define NC_SHADOW_DY 6
-#define TOAST_W     300
-#define TOAST_PAD   12
-#define TOAST_IN    7                /* slide-in frames                               */
-#define TOAST_HOLD  300              /* visible frames (~3.7s at 12ms/frame)          */
-#define TOAST_OUT   9                /* slide-out frames                              */
-#define TOAST_LIFE  (TOAST_IN + TOAST_HOLD + TOAST_OUT)
-#define TOAST_MAXLINES 6             /* max body lines when a toast is expanded       */
-#define NC_SLIDE    8                /* frames to slide a new row into an open center */
-#define NC_MAXLINES 6                /* max body lines when a center row is expanded  */
-static struct notif notes[NOTE_KEEP];
-static unsigned char note_exp[NOTE_KEEP];        /* per-row expanded flag (ring-indexed) */
-static int notes_n, notes_head, notes_unseen;   /* ring of kept notifications        */
-static int nc_open, nc_x, nc_y, nc_h;            /* notification-center panel          */
-static int nc_slide;                             /* >0: animate the newest center row */
-static struct notif toast;                       /* the active toast                  */
-static int toast_live, toast_age;                /* toast_live=0 -> none; else age 0.. */
-static int toast_linger;                          /* frames to keep cleaning the footprint after it dies */
-static int toast_expanded;                       /* body expanded to full (wrapped)   */
-static int toast_paused;                         /* hover/click froze the auto-dismiss */
-static int toast_collapsible;                    /* body was truncated -> chevron      */
+/* notifications: the kept ring, the live toast, the center */
+struct notif notes[NOTE_KEEP];
+unsigned char note_exp[NOTE_KEEP];               /* per-row expanded flag (ring-indexed) */
+int notes_n, notes_head, notes_unseen;          /* ring of kept notifications */
+struct notif toast;                              /* the active toast */
+int toast_live, toast_age;                       /* toast_live=0 -> none; else age 0.. */
+int toast_linger;                                /* frames to keep cleaning the footprint after it dies */
+int toast_expanded;                              /* body expanded to full (wrapped) */
+int toast_paused;                                /* hover/click froze the auto-dismiss */
+int toast_collapsible;                           /* body was truncated -> chevron */
+int nc_open, nc_x, nc_y, nc_h;                   /* notification-center panel */
+int nc_slide;                                    /* >0: animate the newest center row */
 
-/* Menu bar (#6/#8): the logo and the focused app's name are clickable menu tiles
- * that open a dropdown. Today the menus are compositor-owned (the logo's system
- * menu + the app tile's universal About/Quit); an app->WM protocol for apps to add
- * their own File/Edit/Help tiles is the remaining half of #6. */
-#define MENU_MAXI 8                  /* max items in a dropdown (>= WINMENU_ITEMS) */
-#define MENU_ROW  (fh + 12)          /* dropdown row height                */
-#define MENU_PAD  8
-#define MENU_CHECK_W 18              /* left gutter for a check mark (#6)   */
-#define MENU_SHADOW_SP 22
-#define MENU_SHADOW_DY 6
-static int menu_kind;                /* 0 none, 1 logo (system), 2 app (About/Quit), 3 app-declared */
-static int menu_x, menu_y, menu_w, menu_h;
-static const char *menu_items[MENU_MAXI];
-static unsigned char menu_iflags[MENU_MAXI]; /* WMI_* per visible dropdown row (#6)   */
-static char menu_iaccel[MENU_MAXI];          /* Ctrl-accel letter per row, 0 = none   */
-static int menu_nitems;
-static char menu_about[40];          /* dynamic "About <app>" label        */
-static int logo_hit_w;               /* logo click region width (set in draw_bar) */
-static int app_hit_x, app_hit_w;     /* focused-app name click region (set in draw_bar) */
-static struct winmenu cur_menu;      /* the focused window's declared menu bar (#6) */
-static unsigned cur_menu_sig;        /* signature so the bar repaints when it changes */
-static int appmenu_x[WINMENU_MAX], appmenu_w[WINMENU_MAX];  /* per-menu tile hit regions (set in draw_bar) */
-static int menu_app_idx;             /* which cur_menu.m[] the kind-3 dropdown shows */
+/* Alt-Tab switcher: only "is the card up" is shared (the rest is private in switcher.c) */
+int sw_overlay;
+
+/* menu bar: the open dropdown + the focused window's declared menu tiles */
+int menu_kind;                   /* 0 none, 1 logo (system), 2 app (About/Quit), 3 app-declared */
+int menu_x, menu_y, menu_w, menu_h;
+int menu_nitems;
+struct winmenu cur_menu;         /* the focused window's declared menu bar (#6) */
+int menu_app_idx;                /* which cur_menu.m[] the kind-3 dropdown shows */
+int appmenu_x[WINMENU_MAX], appmenu_w[WINMENU_MAX];  /* per-menu tile hit regions (set in draw_bar) */
+int logo_hit_w;                  /* logo click region width (set in draw_bar) */
+int app_hit_x, app_hit_w;        /* focused-app name click region (set in draw_bar) */
+
+/* THE single source for every drop-shadow halo (invalidations AND culls): a rect grown
+ * to include a shadow that feathers `spread`px outward and rides `dy`px downward. Keeps
+ * the full `spread` on top and adds `dy` to the bottom for the offset, so the box never
+ * under-covers the shadow regardless of the offset. `spread` matches ugfx_shadow's
+ * feather; ugfx_elevation_extent supplies (spread, dy) for an elevation level. */
+struct rect shadow_box(int x, int y, int w, int h, int spread, int dy) {
+    struct rect r = { x - spread, y - spread, w + 2 * spread, h + 2 * spread + dy };
+    return r;
+}
+
 
 /* ------------------------------------------------------------------ helpers */
 static int streqz(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
@@ -254,12 +148,12 @@ static int find(int id) { for (int i = 0; i < MAXW; i++) if (cw[i].used && cw[i]
 static int wslot(void)  { for (int i = 0; i < MAXW; i++) if (!cw[i].used) return i; return -1; }
 static int find_snap(struct wmwin *s, int n, int id) { for (int i = 0; i < n; i++) if (s[i].id == id) return i; return -1; }
 
-static int rects_hit(struct rect a, struct rect b) {
+int rects_hit(struct rect a, struct rect b) {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
 /* z-order list ---------------------------------------------------------------*/
-static int focus_slot(void) { return nz ? zo[nz - 1] : -1; }
+int focus_slot(void) { return nz ? zo[nz - 1] : -1; }
 static void zo_remove(int slot) {
     int k = -1; for (int i = 0; i < nz; i++) if (zo[i] == slot) { k = i; break; }
     if (k < 0) return;
@@ -311,7 +205,7 @@ static void expand_to_panels(int *x, int *y, int *w, int *h) {
         if (box_hit(*x, *y, *w, *h, ob.x, ob.y, ob.w, ob.h)) union_box(x, y, w, h, ob.x, ob.y, ob.w, ob.h);
     }
 }
-static void add_dirty(int x, int y, int w, int h) {
+void add_dirty(int x, int y, int w, int h) {
     expand_to_panels(&x, &y, &w, &h);                  /* frosted panels invalidate whole */
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
@@ -419,174 +313,18 @@ static void apply_settings_live(void) {
     if (changed) add_dirty(0, 0, W, H);                 /* repaint the whole desktop with the new look */
 }
 
-/* ------------------------------------------------------------------ top bar */
-static void two(char *p, unsigned v) { p[0] = '0' + (v / 10) % 10; p[1] = '0' + v % 10; }
 
-/* Day-of-week from a date, via Zeller's congruence (no calendar table). */
-static const char *weekday(int y, int m, int d) {
-    static const char *names[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-    if (m < 3) { m += 12; y -= 1; }                 /* Jan/Feb count as months 13/14 of the prior year */
-    int k = y % 100, j = y / 100;
-    int h = (d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;  /* 0=Sat .. 6=Fri */
-    return names[(h + 6) % 7];                       /* remap to 0=Sun .. 6=Sat */
-}
-
-/* --- status-cluster glyphs: crisp Lucide line icons (tools/genstatus.py), blitted
- * as alpha masks recoloured to `col`, centred vertically on cy with left edge x.
- * Replaces the old hand-stacked 1px-rectangle glyphs, which had no anti-aliasing. */
-static void draw_status_glyph(int x, int cy, uint32_t col, int idx) {
-    ugfx_blit_tint(x, cy - STATUSICON_SZ / 2, STATUSICON_SZ, STATUSICON_SZ,
-                   statusicons_argb[idx], col);
-}
-static void draw_net_glyph(int x, int cy, uint32_t col) { draw_status_glyph(x, cy, col, STATUSICON_WIFI); }
-static void draw_vol_glyph(int x, int cy, uint32_t col) { draw_status_glyph(x, cy, col, STATUSICON_VOL); }
-static void draw_bat_glyph(int x, int cy, uint32_t col) { draw_status_glyph(x, cy, col, STATUSICON_BATT); }
-static void draw_bell_glyph(int x, int cy, uint32_t col, int badge) {
-    draw_status_glyph(x, cy, col, STATUSICON_BELL);
-    if (badge) ugfx_rrect_a(x + SB_BELL_W - 4, cy - STATUSICON_SZ / 2 - 1, 6, 6, 3, g_accent);  /* unseen badge */
-}
-
-/* Build the menu-bar clock from the registry: clock.format (24h|12h),
- * clock.seconds (bool), clock.weekday (bool). Read live so settings drive the
- * format. Emits the formatted string to serial once, for the harness. */
-static void build_clock(char *clk, struct rtctime *t) {
-    int sec = reg_bool("clock.seconds", 1);
-    int h24 = streqz(reg_get("clock.format", "24h"), "24h");
-    int wd  = reg_bool("clock.weekday", 1);
-    char *p = clk;
-    if (wd) { const char *w = weekday(t->year, t->month, t->day);
-              *p++ = w[0]; *p++ = w[1]; *p++ = w[2]; *p++ = ' '; }
-    int hh = t->hour;
-    if (!h24) { hh %= 12; if (hh == 0) hh = 12; }
-    two(p, (unsigned)hh); p += 2; *p++ = ':'; two(p, t->min); p += 2;
-    if (sec) { *p++ = ':'; two(p, t->sec); p += 2; }
-    if (!h24) { *p++ = ' '; *p++ = (t->hour < 12) ? 'A' : 'P'; *p++ = 'M'; }
-    *p = 0;
-    static int traced;
-    if (!traced) { traced = 1; print("[twm] clk \""); print(clk); print("\"\r\n"); }
-}
-
-/* The bar is drawn at its current slide offset bar_y (0 shown, -bar_h hidden). The
- * desktop/window behind it is already painted by compose(), so the translucent
- * glass blends over it -- no internal draw_desk needed. */
-static void draw_bar(void) {
-    int y = bar_y;
-    ugfx_frost(0, y, W, bar_h, 0, TH_BAR_FROST);        /* frosted-glass bar         */
-    ugfx_fill_a(0, y, W, 1, ARGB(26, 255, 255, 255));   /* lit top edge (glass)      */
-    ugfx_fill_a(0, y + bar_h - 1, W, 1, TH_BARLINE_A);  /* hairline                  */
-    /* the logo is a menu tile: a hover/active state layer marks it clickable */
-    logo_hit_w = LOGO_W + 16;
-    int logo_hot = cur_y >= y && cur_y < y + bar_h && cur_x >= 8 && cur_x < 8 + logo_hit_w;
-    if (menu_kind == 1 || logo_hot)
-        ugfx_rrect_a(8, y + 3, logo_hit_w, bar_h - 6, TH_R_SM,
-                     menu_kind == 1 ? ARGB(40, 120, 170, 255) : ARGB(28, 255, 255, 255));
-    ugfx_blit_argb(14, y + (bar_h - LOGO_H) / 2, LOGO_W, LOGO_H, logo_argb);
-    int f = focus_slot();
-    const char *app = (f >= 0) ? cw[f].title : "tOS";
-    app_hit_x = 14 + LOGO_W + 12 - 6; app_hit_w = ugfx_text_w(app) + 12;   /* app-name menu tile */
-    { static int last_ax = -1, last_aw = -1;            /* report tile geometry for the harness */
-      if (app_hit_x != last_ax || app_hit_w != last_aw) {
-          last_ax = app_hit_x; last_aw = app_hit_w;
-          print("[twm] menubar logo 8 "); printu((unsigned)logo_hit_w);
-          print(" app "); printu((unsigned)app_hit_x); printc(' '); printu((unsigned)app_hit_w); print("\r\n"); } }
-    int app_hot = (f >= 0) && cur_y >= y && cur_y < y + bar_h && cur_x >= app_hit_x && cur_x < app_hit_x + app_hit_w;
-    if (menu_kind == 2 || app_hot)
-        ugfx_rrect_a(app_hit_x, y + 3, app_hit_w, bar_h - 6, TH_R_SM,
-                     menu_kind == 2 ? ARGB(40, 120, 170, 255) : ARGB(28, 255, 255, 255));
-    ugfx_text(14 + LOGO_W + 12, y + (bar_h - fh) / 2, app, TH_TEXT, UGFX_TRANSPARENT);
-    /* app-declared menu tiles (File / Edit / ... ) to the right of the app name (#6) */
-    int mtx = app_hit_x + app_hit_w + 4;
-    for (int i = 0; i < (int)cur_menu.nmenus && i < WINMENU_MAX; i++) {
-        const char *mt = cur_menu.m[i].title;
-        int mw = ugfx_text_w(mt) + 16;
-        appmenu_x[i] = mtx; appmenu_w[i] = mw;
-        int active = (menu_kind == 3 && menu_app_idx == i);
-        int hot = cur_y >= y && cur_y < y + bar_h && cur_x >= mtx && cur_x < mtx + mw;
-        if (active || hot)
-            ugfx_rrect_a(mtx, y + 3, mw, bar_h - 6, TH_R_SM, active ? ARGB(40, 120, 170, 255) : ARGB(28, 255, 255, 255));
-        ugfx_text(mtx + 8, y + (bar_h - fh) / 2, mt, TH_TEXT, UGFX_TRANSPARENT);
-        mtx += mw + 2;
+/* ----- shared text helper (used by the notification + switcher cards) -------- */
+/* Copy src into dst, hard-truncating with a trailing ".." so it fits maxw px. */
+void fit_text(char *dst, int cap, const char *src, int maxw) {
+    int n = 0; while (src[n] && n < cap - 1) n++;
+    for (int len = n; len >= 0; len--) {
+        int i = 0; for (; i < len && i < cap - 3; i++) dst[i] = src[i];
+        if (len < n) { dst[i++] = '.'; dst[i++] = '.'; }
+        dst[i] = 0;
+        if (ugfx_text_w(dst) <= maxw) return;
     }
-    { static unsigned last_amsig = 0;                   /* report tile geometry for the harness, on change */
-      unsigned s = (unsigned)cur_menu.nmenus;
-      for (int i = 0; i < (int)cur_menu.nmenus && i < WINMENU_MAX; i++) s = s * 131u + (unsigned)appmenu_x[i] * 7u + (unsigned)appmenu_w[i];
-      if (s != last_amsig) { last_amsig = s;
-          for (int i = 0; i < (int)cur_menu.nmenus && i < WINMENU_MAX; i++) {
-              print("[twm] appmenu "); printu((unsigned)i); printc(' '); print(cur_menu.m[i].title);
-              printc(' '); printu((unsigned)appmenu_x[i]); printc(' '); printu((unsigned)appmenu_w[i]); print("\r\n"); } } }
-    int cy = y + bar_h / 2;                             /* status cluster: glyphs + clock */
-    draw_net_glyph(sb_net_x, cy, SB_GLYPH);
-    draw_vol_glyph(sb_vol_x, cy, SB_GLYPH);
-    draw_bat_glyph(sb_bat_x, cy, SB_GLYPH);
-    draw_bell_glyph(sb_bell_x, cy, nc_open ? g_accent : SB_GLYPH, notes_unseen);
-    struct rtctime t; rtc_time(&t);
-    char clk[20]; build_clock(clk, &t);                 /* registry-driven menu-bar clock */
-    ugfx_text(W - ugfx_text_w(clk) - 16, y + (bar_h - fh) / 2, clk, TH_TEXT, UGFX_TRANSPARENT);
-    draw_cc_button(y);                                  /* control-center status item */
-}
-
-/* ------------------------------------------------------------------ dock */
-static int title_is(const char *title, const char *label) {   /* window title starts with label */
-    int i = 0; for (; label[i]; i++) if (title[i] != label[i]) return 0; return 1;
-}
-/* running state of the app behind a dock tile: bit0 = a window is open,
- * bit1 = its window is focused, bit2 = (only) minimized. */
-static int app_state(const char *label) {
-    int st = 0, fs = focus_slot();
-    for (int i = 0; i < MAXW; i++) {
-        if (!cw[i].used || !title_is(cw[i].title, label)) continue;
-        st |= 1;
-        if (i == fs) st |= 2;
-        if (cw[i].min) st |= 4;
-    }
-    if (st & 2) st &= ~4;                           /* focused wins over the minimized hint */
-    return st;
-}
-static int dock_tile_for(const char *title) {       /* dock icon whose label matches a window */
-    for (int i = 0; i < nicons; i++) if (title_is(title, icons[i].label)) return i;
-    return -1;
-}
-static int find_app_window(const char *label) {     /* a matching window slot (prefer minimized) */
-    int any = -1;
-    for (int i = 0; i < MAXW; i++)
-        if (cw[i].used && title_is(cw[i].title, label)) { if (cw[i].min) return i; any = i; }
-    return any;
-}
-static int tile_hovered(struct icon *ic) {
-    return cur_x >= ic->cx - TH_TILE / 2 && cur_x < ic->cx + TH_TILE / 2 &&
-           cur_y >= ic->cy - TH_TILE / 2 && cur_y < ic->cy + TH_TILE / 2;
-}
-static void draw_tile(struct icon *ic) {
-    int x = ic->cx - APPICON_SZ / 2, y = ic->cy - APPICON_SZ / 2;
-    int st = app_state(ic->label);
-    if (tile_hovered(ic))                           /* hover: soft lift */
-        ugfx_rrect_a(x - 6, y - 6, APPICON_SZ + 12, APPICON_SZ + 12, TH_TILE_RAD + 4, ARGB(38, 255, 255, 255));
-    if (st & 2)                                     /* focused: subtle Windows-style highlight */
-        ugfx_rrect_a(x - 5, y - 5, APPICON_SZ + 10, APPICON_SZ + 10, TH_TILE_RAD + 3, ARGB(46, 255, 255, 255));
-    if (ic->special) {                              /* Launchpad button: a card with a 3x3 grid */
-        ugfx_rrect_a(x, y, APPICON_SZ, APPICON_SZ, 11, ARGB(255, 58, 64, 84));
-        int pad = 9, gap = 4, cell = (APPICON_SZ - 2 * pad - 2 * gap) / 3;
-        for (int r = 0; r < 3; r++)
-            for (int c = 0; c < 3; c++)
-                ugfx_rrect_a(x + pad + c * (cell + gap), y + pad + r * (cell + gap), cell, cell, 2,
-                             ARGB(255, 150, 180, 232));
-    }
-    else if (ic->img) ugfx_blit_scaled(x, y, APPICON_SZ, APPICON_SZ, ic->img, ic->iw, ic->ih);  /* hi-res bundle icon -> tile */
-    else              ugfx_blit_argb(x, y, APPICON_SZ, APPICON_SZ, appicons_argb[ICON_APP]);  /* generic fallback */
-    int iy = y + APPICON_SZ + 3;                    /* running indicator under the tile */
-    if (st & 2)        ugfx_rrect_a(ic->cx - 9, iy, 18, 3, 1, g_accent);   /* focused: accent bar */
-    else if (st & 1)   ugfx_rrect_a(ic->cx - 2, iy, 4, 3, 1, ARGB(160, 200, 210, 230));     /* running: dot */
-}
-static void draw_dock(void) {
-    ugfx_elevation(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, DOCK_ELEVATION);  /* float it off the desktop */
-    ugfx_frost(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, TH_DOCK_FROST);  /* frosted-glass panel      */
-    ugfx_rrect_border(dock_x, dock_y, dock_w, dock_h, TH_DOCK_RAD, 1, TH_BORDER_DIM);  /* crisp edge     */
-    ugfx_fill_a(dock_x + TH_DOCK_RAD, dock_y, dock_w - 2 * TH_DOCK_RAD, 1, TH_DOCK_HI_A);  /* top sheen   */
-    if (dock_runsep >= 1 && dock_runsep < nicons) {  /* faint pinned | running separator in the gap before the first running tile */
-        int sx = (icons[dock_runsep - 1].cx + icons[dock_runsep].cx) / 2;
-        ugfx_fill_a(sx, dock_y + DOCK_PAD + 6, 1, TH_TILE - 12, TH_BORDER);
-    }
-    for (int i = 0; i < nicons; i++) draw_tile(&icons[i]);
+    dst[0] = 0;
 }
 
 /* ------------------------------------------------------------------ windows */
@@ -716,413 +454,6 @@ static void anim_step(void) {
     b = anim_ghost_box(); add_dirty(b.x, b.y, b.w, b.h);
 }
 
-/* ------------------------------------------------------------ control center */
-static void cc_layout(void) {
-    cc_x = W - cc_w - 12;
-    cc_y = bar_h + 8;
-    int yy = cc_y + 14 + fh + 12;                 /* below the "Control Center" title */
-    cc_row1_y = yy;
-    cc_row2_y = yy + 36;
-    cc_sep_y  = yy + 72;
-    cc_info_y = cc_sep_y + 12;
-    cc_btn_yy = cc_info_y + 3 * (fh + 4) + 12;
-    cc_h = (cc_btn_yy - cc_y) + 32 + CC_PAD;
-    /* Right-side status cluster, laid out right-to-left into fixed slots so the
-     * glyphs + CC button don't jitter as the clock ticks. Reserve the worst-case
-     * clock width ("Ddd 00:00:00 PM": 12h + weekday + seconds) so a format change
-     * can't push glyphs under the clock. Order L->R: [CC][net][vol][bat][clock]. */
-    sb_clk_w = ugfx_text_w("Ddd 00:00:00 PM");
-    int rx = W - 16 - sb_clk_w - SB_GAP;          /* right edge of the glyph cluster */
-    sb_bell_x = rx - SB_BELL_W; rx = sb_bell_x - SB_GAP;
-    sb_bat_x  = rx - SB_BAT_W;  rx = sb_bat_x - SB_GAP;
-    sb_vol_x  = rx - SB_VOL_W;  rx = sb_vol_x - SB_GAP;
-    sb_net_x  = rx - SB_NET_W;  rx = sb_net_x - SB_GAP;
-    cc_btn_x  = rx - cc_btn_w;                    /* CC button, left of the cluster  */
-    nc_x = W - NC_W - 12; nc_y = bar_h + 8;       /* notification center, right edge */
-    print("[twm] statusbar net "); printu((unsigned)sb_net_x);
-    print(" vol "); printu((unsigned)sb_vol_x);
-    print(" bat "); printu((unsigned)sb_bat_x);
-    print(" bell "); printu((unsigned)sb_bell_x);
-    print(" cc ");  printu((unsigned)cc_btn_x); print("\r\n");
-}
-static void cc_toggle(const char *key) {
-    int v = reg_bool(key, 0);
-    reg_set(key, v ? "false" : "true");           /* update_chrome reads reg_bool live */
-    reg_save();
-}
-static int cc_pt_in(int x, int y, int w, int h) {   /* is the cursor inside this rect? */
-    return cur_x >= x && cur_x < x + w && cur_y >= y && cur_y < y + h;
-}
-static void draw_switch(int rowy, const char *label, int on) {
-    int rx = cc_x + CC_PAD - 6, rw = cc_w - 2 * CC_PAD + 12;     /* full-width hit/hover row */
-    if (cc_pt_in(rx, rowy - 2, rw, 28)) ugfx_state_layer(rx, rowy - 2, rw, 28, TH_R_SM, TH_HOVER_A);
-    ugfx_text(cc_x + CC_PAD, rowy + (24 - fh) / 2, label, TH_TEXT, UGFX_TRANSPARENT);
-    /* An iOS-style switch: an opaque pill track (accent when on, a clearly LIT slate
-     * track when off so it reads as a flippable control, not a flat dark blob) with a
-     * white knob that slides + pops via a soft shadow and a thin rim. */
-    int pw = 46, ph = 24, px = cc_x + cc_w - CC_PAD - pw, py = rowy;
-    ugfx_rrect_aa(px, py, pw, ph, ph / 2, on ? (g_accent & 0xffffff) : RGB(88, 96, 116));
-    ugfx_rrect_border(px, py, pw, ph, ph / 2, 1, ARGB(85, 0, 0, 0));          /* recessed rim */
-    int kr = ph - 6, kx = on ? px + pw - kr - 3 : px + 3, ky = py + 3;
-    ugfx_shadow(kx, ky + 1, kr, kr, kr / 2, 4, TH_SHADOW, 100);               /* knob lift */
-    ugfx_rrect_aa(kx, ky, kr, kr, kr / 2, RGB(255, 255, 255));
-    ugfx_rrect_border(kx, ky, kr, kr, kr / 2, 1, ARGB(45, 0, 0, 0));
-}
-static void cc_button(int bx, int by, int bw, int bh, const char *label, uint32_t col) {
-    ugfx_rrect_a(bx, by, bw, bh, TH_R_SM, col);
-    if (cc_pt_in(bx, by, bw, bh)) ugfx_state_layer(bx, by, bw, bh, TH_R_SM, TH_HOVER_A);
-    ugfx_rrect_border(bx, by, bw, bh, TH_R_SM, 1, TH_BORDER);
-    ugfx_text(bx + (bw - ugfx_text_w(label)) / 2, by + (bh - fh) / 2, label, TH_TEXT, UGFX_TRANSPARENT);
-}
-static void draw_cc(void) {
-    if (!cc_open) return;
-    /* The early-out must cover the SHADOW halo, not just the panel: the shadow
-     * feathers CC_SHADOW_SP px outside the panel (offset CC_SHADOW_DY down), so a
-     * damage rect that clips only the halo (e.g. the cursor gliding past an edge)
-     * still has to repaint it -- otherwise compose() paints the desktop over the
-     * shadow and we never redraw it, leaving a moving "hole" trailing the cursor.
-     * (Same fix draw_window() already applies via its TH_SHADOW_SP-padded box.) */
-    struct rect r = shadow_box(cc_x, cc_y, cc_w, cc_h, CC_SHADOW_SP, CC_SHADOW_DY);
-    if (!rects_hit(cur_clip, r)) return;
-    ugfx_shadow(cc_x, cc_y + CC_SHADOW_DY, cc_w, cc_h, CC_RAD, CC_SHADOW_SP, TH_SHADOW, 130);
-    ugfx_frost(cc_x, cc_y, cc_w, cc_h, CC_RAD, TH_CC_FROST);             /* frosted-glass panel */
-    ugfx_rrect_border(cc_x, cc_y, cc_w, cc_h, CC_RAD, 1, TH_BORDER_DIM);                /* crisp edge */
-    ugfx_fill_a(cc_x + CC_RAD, cc_y, cc_w - 2 * CC_RAD, 1, ARGB(40, 255, 255, 255));    /* top sheen  */
-    ugfx_text(cc_x + CC_PAD, cc_y + 14, "Control Center", TH_TEXT, UGFX_TRANSPARENT);
-    draw_switch(cc_row1_y, "Auto-hide Dock", reg_bool("ui.dock.autohide", 0));
-    draw_switch(cc_row2_y, "Auto-hide Bar",  reg_bool("ui.bar.autohide", 0));
-    ugfx_fill_a(cc_x + CC_PAD, cc_sep_y, cc_w - 2 * CC_PAD, 1, ARGB(46, 150, 170, 230));
-    struct sysinfo si; sysinfo(&si);
-    char buf[48]; int y = cc_info_y;
-    snprintf(buf, sizeof buf, "CPUs: %u", si.ncpu);                      ugfx_text(cc_x + CC_PAD, y, buf, TH_MUTED, UGFX_TRANSPARENT); y += fh + 4;
-    snprintf(buf, sizeof buf, "RAM: %u MB", (unsigned)(si.ram_bytes >> 20)); ugfx_text(cc_x + CC_PAD, y, buf, TH_MUTED, UGFX_TRANSPARENT); y += fh + 4;
-    snprintf(buf, sizeof buf, "Uptime: %us", (unsigned)(si.uptime_ticks / TIMER_HZ)); ugfx_text(cc_x + CC_PAD, y, buf, TH_MUTED, UGFX_TRANSPARENT);
-    int bw = (cc_w - 2 * CC_PAD - 10) / 2, bx = cc_x + CC_PAD, bh = 32;
-    cc_button(bx, cc_btn_yy, bw, bh, "Restart", ARGB(255, 60, 66, 84));
-    cc_button(bx + bw + 10, cc_btn_yy, bw, bh, "Shut Down", ARGB(255, 200, 76, 70));
-}
-static void draw_cc_button(int y) {               /* the menu-bar status item (Lucide sliders) */
-    int cy = y + bar_h / 2;
-    draw_status_glyph(cc_btn_x + (cc_btn_w - STATUSICON_SZ) / 2, cy,
-                      cc_open ? g_accent : SB_GLYPH, STATUSICON_CC);
-}
-static void cc_click(int mx, int my) {            /* a click inside the open panel */
-    if (my >= cc_row1_y && my < cc_row1_y + 24) { cc_toggle("ui.dock.autohide"); return; }
-    if (my >= cc_row2_y && my < cc_row2_y + 24) { cc_toggle("ui.bar.autohide");  return; }
-    if (my >= cc_btn_yy && my < cc_btn_yy + 32) {
-        int bw = (cc_w - 2 * CC_PAD - 10) / 2, bx = cc_x + CC_PAD;
-        if (mx < bx + bw) reboot();
-        else shutdown();
-    }
-}
-
-/* ------------------------------------------------------------ notifications */
-/* Copy src into dst, hard-truncating with a trailing ".." so it fits maxw px. */
-static void fit_text(char *dst, int cap, const char *src, int maxw) {
-    int n = 0; while (src[n] && n < cap - 1) n++;
-    for (int len = n; len >= 0; len--) {
-        int i = 0; for (; i < len && i < cap - 3; i++) dst[i] = src[i];
-        if (len < n) { dst[i++] = '.'; dst[i++] = '.'; }
-        dst[i] = 0;
-        if (ugfx_text_w(dst) <= maxw) return;
-    }
-    dst[0] = 0;
-}
-/* Greedy word-wrap of src to maxw px, capped at TOAST_MAXLINES. When draw, render
- * each line at (x, y0 + i*fh) in col; always returns the line count (>=1). */
-/* the wrap logic itself is the pure tu_wrap (textutil.h, unit-tested); here we
- * only supply the pixel-width measurer and a draw-emit callback. */
-struct toast_emit_ctx { int x, y0; uint32_t col; };
-static void toast_emit(void *vc, const char *line, int idx) {
-    struct toast_emit_ctx *c = (struct toast_emit_ctx *)vc;
-    ugfx_text(c->x, c->y0 + idx * fh, line, c->col, UGFX_TRANSPARENT);
-}
-static int toast_wrap(const char *src, int maxw, int x, int y0, uint32_t col, int draw) {
-    if (!draw) return tu_wrap(src, maxw, TOAST_MAXLINES, ugfx_text_w, 0, 0);
-    struct toast_emit_ctx c = { x, y0, col };
-    return tu_wrap(src, maxw, TOAST_MAXLINES, ugfx_text_w, toast_emit, &c);
-}
-static int toast_body_lines(void) {
-    return toast_expanded ? toast_wrap(toast.body, TOAST_W - 2 * TOAST_PAD, 0, 0, 0, 0) : 1;
-}
-static int toast_height(void) { return TOAST_PAD * 2 + fh + 4 + toast_body_lines() * fh; }
-/* The active toast slides in from the right edge, holds, then slides back out. */
-static void toast_box(int *x, int *y, int *w, int *h) {
-    *w = TOAST_W;
-    *h = toast_height();
-    int base_x = W - TOAST_W - 12, travel = TOAST_W + 24, off = 0;
-    if (toast_age < TOAST_IN)
-        off = travel * (TOAST_IN - toast_age) / TOAST_IN;
-    else if (toast_age >= TOAST_IN + TOAST_HOLD)
-        off = travel * (toast_age - (TOAST_IN + TOAST_HOLD)) / TOAST_OUT;
-    *x = base_x + off; *y = bar_h + 10;
-}
-static void dirty_toast(void) {                         /* the toast's full travel band + shadow halo */
-    int base_x = W - TOAST_W - 12, y = bar_h + 10;
-    int hmax = TOAST_PAD * 2 + fh + 4 + TOAST_MAXLINES * fh;   /* worst-case expanded height */
-    /* the drop-shadow (draw_toast: ugfx_shadow spread 18, dy +4) bleeds ~18px LEFT
-     * and ~14px ABOVE the card -- the old 8/4px margins left that strip uncleaned, so
-     * a hover smeared a shadow ghost that lingered after the toast was gone. Cover the
-     * full halo on every side (the band already runs to the right screen edge). */
-    int sp = 20;
-    add_dirty(base_x - sp, y - sp, (W - base_x) + sp, hmax + 2 * sp + 8);
-}
-/* Retire the toast, then keep re-cleaning its footprint for a few frames. The
- * soft drop-shadow is the one thing that has repeatedly smeared (the halo bleeds
- * past the card and any single dirty rect that misses it leaves a ghost); lingering
- * the footprint in the dirty set for several frames after death makes residue
- * impossible regardless of how the cursor was moving when it vanished. */
-static void toast_kill(void) { toast_live = 0; toast_linger = 4; dirty_toast(); }
-static void draw_toast(void) {
-    if (!toast_live) return;
-    int x, y, w, h; toast_box(&x, &y, &w, &h);
-    char buf[96];
-    ugfx_shadow(x, y + 4, w, h, TH_R_MD, 18, TH_SHADOW, 120);   /* solid card (animates safely) */
-    ugfx_rrect_aa(x, y, w, h, TH_R_MD, TH_SURF_3);
-    ugfx_rrect_border(x, y, w, h, TH_R_MD, 1, TH_BORDER);
-    ugfx_rrect_a(x + TOAST_PAD, y + TOAST_PAD + 2, 5, fh - 2, 2, g_accent);   /* accent stripe */
-    int xbtn_x = x + w - TOAST_PAD - STATUSICON_SZ;         /* dismiss (X), top-right corner */
-    int chev_x = xbtn_x - STATUSICON_SZ - 4;                /* expand chevron, left of the X */
-    int btns = STATUSICON_SZ + 6 + (toast_collapsible ? STATUSICON_SZ + 4 : 0);
-    fit_text(buf, sizeof buf, toast.title, w - 2 * TOAST_PAD - 12 - btns);
-    ugfx_text(x + TOAST_PAD + 12, y + TOAST_PAD, buf, TH_TEXT, UGFX_TRANSPARENT);
-    int gy = y + TOAST_PAD + fh / 2;
-    if (toast_collapsible)                                  /* baked Lucide expand/collapse chevron */
-        draw_status_glyph(chev_x, gy, TH_MUTED, toast_expanded ? STATUSICON_CHEVRON_UP : STATUSICON_CHEVRON_DOWN);
-    draw_status_glyph(xbtn_x, gy, TH_MUTED, STATUSICON_X);  /* dismiss button -- instant close */
-    int by = y + TOAST_PAD + fh + 4;
-    if (toast_expanded) {
-        toast_wrap(toast.body, w - 2 * TOAST_PAD, x + TOAST_PAD, by, TH_MUTED, 1);
-    } else {
-        fit_text(buf, sizeof buf, toast.body, w - 2 * TOAST_PAD);
-        ugfx_text(x + TOAST_PAD, by, buf, TH_MUTED, UGFX_TRANSPARENT);
-    }
-}
-/* A center row is "collapsible" when its body is too wide to fit one line, so it
- * earns a chevron; expanding it wraps the body and grows the row (and the panel). */
-static int nc_collapsible(int idx) { return ugfx_text_w(notes[idx].body) > NC_W - 2 * NC_PAD - 4; }
-static int nc_row_h(int idx) {
-    if (note_exp[idx] && nc_collapsible(idx)) {
-        int n = tu_wrap(notes[idx].body, NC_W - 2 * NC_PAD, NC_MAXLINES, ugfx_text_w, 0, 0);
-        return NC_ROW + (n - 1) * fh;                   /* extra wrapped body lines */
-    }
-    return NC_ROW;
-}
-static void nc_layout(void) {
-    int rows_h = 0;
-    for (int k = 0; k < notes_n; k++)
-        rows_h += nc_row_h((notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP);
-    if (!notes_n) rows_h = NC_ROW;                       /* "No notifications" reserves one row */
-    nc_h = NC_PAD + fh + 10 + rows_h + NC_PAD;
-}
-#define dirty_nc() do { nc_layout(); struct rect _r = shadow_box(nc_x, nc_y, NC_W, nc_h, NC_SHADOW_SP, NC_SHADOW_DY); \
-                        add_dirty(_r.x, _r.y, _r.w, _r.h); } while (0)
-static void draw_nc(void) {
-    if (!nc_open) return;
-    nc_layout();
-    struct rect r = shadow_box(nc_x, nc_y, NC_W, nc_h, NC_SHADOW_SP, NC_SHADOW_DY);
-    if (!rects_hit(cur_clip, r)) return;
-    ugfx_shadow(nc_x, nc_y + NC_SHADOW_DY, NC_W, nc_h, CC_RAD, NC_SHADOW_SP, TH_SHADOW, 130);
-    ugfx_frost(nc_x, nc_y, NC_W, nc_h, CC_RAD, TH_CC_FROST);
-    ugfx_rrect_border(nc_x, nc_y, NC_W, nc_h, CC_RAD, 1, TH_BORDER_DIM);
-    ugfx_fill_a(nc_x + CC_RAD, nc_y, NC_W - 2 * CC_RAD, 1, ARGB(40, 255, 255, 255));   /* top sheen */
-    ugfx_text(nc_x + NC_PAD, nc_y + NC_PAD, "Notifications", TH_TEXT, UGFX_TRANSPARENT);
-    if (notes_n) {                                      /* Clear button, header right */
-        int cwid = ugfx_text_w("Clear");
-        ugfx_text(nc_x + NC_W - NC_PAD - cwid, nc_y + NC_PAD, "Clear", g_accent, UGFX_TRANSPARENT);
-    }
-    int y = nc_y + NC_PAD + fh + 10;
-    char buf[96];
-    if (!notes_n) { ugfx_text(nc_x + NC_PAD, y, "No notifications", TH_MUTED, UGFX_TRANSPARENT); return; }
-    for (int k = 0; k < notes_n; k++) {                 /* newest first */
-        int idx = (notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP;
-        struct notif *nn = &notes[idx];
-        int rh = nc_row_h(idx), coll = nc_collapsible(idx), exp = note_exp[idx] && coll;
-        int sx = (k == 0 && nc_slide > 0) ? (NC_W - 2 * NC_PAD) * nc_slide / NC_SLIDE : 0;  /* slide newest in */
-        ugfx_rrect_a(nc_x + NC_PAD - 4 + sx, y - 3, NC_W - 2 * NC_PAD + 8, rh - 6, TH_R_SM, ARGB(40, 60, 68, 90));
-        ugfx_rrect_a(nc_x + NC_PAD + 2 + sx, y + 2, 4, fh - 2, 2, g_accent);
-        fit_text(buf, sizeof buf, nn->title, NC_W - 2 * NC_PAD - 14 - (coll ? STATUSICON_SZ + 4 : 0));
-        ugfx_text(nc_x + NC_PAD + 12 + sx, y, buf, TH_TEXT, UGFX_TRANSPARENT);
-        if (coll)                                       /* per-row expand chevron */
-            draw_status_glyph(nc_x + NC_W - NC_PAD - STATUSICON_SZ + sx, y + fh / 2,
-                              TH_MUTED, exp ? STATUSICON_CHEVRON_UP : STATUSICON_CHEVRON_DOWN);
-        if (exp) {                                       /* wrapped full body */
-            struct toast_emit_ctx ec = { nc_x + NC_PAD + sx, y + fh + 2, TH_MUTED };
-            tu_wrap(nn->body, NC_W - 2 * NC_PAD, NC_MAXLINES, ugfx_text_w, toast_emit, &ec);
-        } else {
-            fit_text(buf, sizeof buf, nn->body, NC_W - 2 * NC_PAD - 4);
-            ugfx_text(nc_x + NC_PAD + sx, y + fh + 2, buf, TH_MUTED, UGFX_TRANSPARENT);
-        }
-        y += rh;
-    }
-}
-/* A click inside the open center: toggle a row's expand if its chevron was hit.
- * Returns 1 if a chevron toggled (caller keeps the center open), else 0. */
-static int nc_click_row(int mx, int my) {
-    int y = nc_y + NC_PAD + fh + 10;
-    for (int k = 0; k < notes_n; k++) {
-        int idx = (notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP;
-        int rh = nc_row_h(idx);
-        if (nc_collapsible(idx)) {
-            int cxr = nc_x + NC_W - NC_PAD, cxl = cxr - STATUSICON_SZ - 6;
-            if (mx >= cxl && mx < cxr + 2 && my >= y - 2 && my < y + fh + 4) {
-                dirty_nc();                             /* OLD panel + halo before the height changes */
-                note_exp[idx] = !note_exp[idx];
-                dirty_nc();                             /* then the NEW (taller/shorter) panel */
-                print("[twm] nc row expand "); printu((unsigned)note_exp[idx]); print("\r\n");
-                return 1;
-            }
-        }
-        y += rh;
-    }
-    return 0;
-}
-/* The note index under a click in the open center body, or -1. Used to route a
- * row click to its sender (the row background spans the panel width). */
-static int nc_row_at(int mx, int my) {
-    if (mx < nc_x + NC_PAD - 4 || mx >= nc_x + NC_W - NC_PAD + 4) return -1;
-    int y = nc_y + NC_PAD + fh + 10;
-    for (int k = 0; k < notes_n; k++) {
-        int idx = (notes_head - 1 - k + 2 * NOTE_KEEP) % NOTE_KEEP;
-        int rh = nc_row_h(idx);
-        if (my >= y - 3 && my < y - 3 + rh - 6) return idx;
-        y += rh;
-    }
-    return -1;
-}
-/* Drain the kernel notification queue: ring-buffer each for the center and start
- * a toast for the newest. Returns 1 if anything arrived (so the loop can repaint). */
-static int poll_notifications(void) {
-    struct notif nn; int got = 0;
-    while (wm_poll_notify(&nn)) {
-        notes[notes_head] = nn;
-        note_exp[notes_head] = 0;                       /* a fresh note starts collapsed */
-        notes_head = (notes_head + 1) % NOTE_KEEP;
-        if (notes_n < NOTE_KEEP) notes_n++;
-        print("[twm] notify "); print(nn.title); print("\r\n");   /* harness hook */
-        if (nc_open) {                                  /* center open: slide into the list, no toast */
-            nc_slide = NC_SLIDE;
-            print("[twm] notif slide\r\n");
-        } else {                                        /* otherwise pop a top-right toast */
-            notes_unseen++;
-            toast = nn; toast_live = 1; toast_age = 0;
-            toast_expanded = 0; toast_paused = 0;
-            toast_collapsible = ugfx_text_w(nn.body) > TOAST_W - 2 * TOAST_PAD;
-            print("[twm] toast at "); printu((unsigned)(W - TOAST_W - 12)); print(" ");
-            printu((unsigned)(bar_h + 10)); print(" "); printu(TOAST_W); print(" ");
-            printu((unsigned)(TOAST_PAD * 2 + fh + 4 + fh)); print("\r\n");
-        }
-        got = 1;
-    }
-    if (got) {
-        nc_layout();
-        if (nc_open) dirty_nc(); else dirty_toast();
-        add_dirty(sb_bell_x - 4, 0, SB_BELL_W + 12, bar_h);
-    }
-    return got;
-}
-
-/* ------------------------------------------------------------ menu bar */
-#define dirty_menu() do { struct rect _r = shadow_box(menu_x, menu_y, menu_w, menu_h, MENU_SHADOW_SP, MENU_SHADOW_DY); \
-                          add_dirty(_r.x, _r.y, _r.w, _r.h); } while (0)
-static void menu_close(void) { if (menu_kind) { dirty_menu(); add_dirty(0, 0, W, bar_h); menu_kind = 0; } }
-/* Open the logo (system) menu or the focused app's menu, anchored at tile_x. */
-static void menu_open_kind(int kind, int tile_x) {
-    if (cc_open) { cc_open = 0; dirty_cc(); }            /* the bar's panels are mutually exclusive */
-    if (nc_open) { nc_open = 0; dirty_nc(); }
-    menu_kind = kind; menu_nitems = 0;
-    for (int i = 0; i < MENU_MAXI; i++) { menu_iflags[i] = 0; menu_iaccel[i] = 0; }
-    const char *app = "tOS";
-    if (kind == 1) {                                 /* logo: the system menu */
-        menu_items[menu_nitems++] = "About This tOS";
-        menu_items[menu_nitems++] = "Preferences...";
-        menu_items[menu_nitems++] = "Restart";
-        menu_items[menu_nitems++] = "Shut Down";
-    } else if (kind == 3) {                          /* an app-declared menu (File/Edit/...) */
-        if (menu_app_idx < 0 || menu_app_idx >= (int)cur_menu.nmenus) { menu_kind = 0; return; }
-        app = cur_menu.m[menu_app_idx].title;
-        for (unsigned k = 0; k < cur_menu.m[menu_app_idx].nitems && menu_nitems < MENU_MAXI; k++) {
-            menu_iflags[menu_nitems] = cur_menu.m[menu_app_idx].flags[k];
-            menu_iaccel[menu_nitems] = cur_menu.m[menu_app_idx].accel[k];
-            menu_items[menu_nitems++] = cur_menu.m[menu_app_idx].items[k];
-        }
-    } else {                                         /* app: universal About / Quit */
-        int f = focus_slot();
-        app = (f >= 0) ? cw[f].title : "tOS";
-        int i = 0; const char *p = "About ";
-        while (*p && i < (int)sizeof(menu_about) - 1) menu_about[i++] = *p++;
-        for (int j = 0; app[j] && i < (int)sizeof(menu_about) - 1; j++) menu_about[i++] = app[j];
-        menu_about[i] = 0;
-        menu_items[menu_nitems++] = menu_about;
-        menu_items[menu_nitems++] = "Quit";
-    }
-    int wmax = 0, amax = 0;                          /* widen to the longest label + accel column */
-    for (int i = 0; i < menu_nitems; i++) {
-        int w = ugfx_text_w(menu_items[i]); if (w > wmax) wmax = w;
-        if (menu_iaccel[i]) { char ab[3] = { '^', menu_iaccel[i], 0 }; int aw = ugfx_text_w(ab); if (aw > amax) amax = aw; }
-    }
-    menu_w = MENU_PAD + MENU_CHECK_W + wmax + (amax ? amax + 20 : 0) + MENU_PAD;
-    if (menu_w < 168) menu_w = 168;
-    menu_h = menu_nitems * MENU_ROW + 2 * MENU_PAD;
-    menu_x = tile_x; if (menu_x + menu_w > W - 6) menu_x = W - 6 - menu_w;
-    menu_y = bar_h + 2;
-    /* trace geometry so the harness can click a row: rows start at menu_y+MENU_PAD,
-     * each MENU_ROW tall. Keeps the "[twm] menu logo" / "[twm] menu app <t>" prefixes. */
-    print("[twm] menu "); if (kind == 1) print("logo"); else { print("app "); print(app); }
-    print(" y "); printu((unsigned)(menu_y + MENU_PAD)); print(" row "); printu((unsigned)MENU_ROW);
-    print(" x "); printu((unsigned)menu_x); print("\r\n");
-    dirty_menu(); add_dirty(0, 0, W, bar_h);
-}
-/* A small ✓ drawn from two strokes (no line primitive in ugfx); ~10px box at (x,y). */
-static void draw_check(int x, int y, uint32_t col) {
-    for (int i = 0; i <= 3; i++) ugfx_fill(x + i,     y + 3 + i, 2, 2, col);   /* short down-right */
-    for (int i = 0; i <= 5; i++) ugfx_fill(x + 3 + i, y + 6 - i, 2, 2, col);   /* long up-right    */
-}
-static void draw_menu(void) {
-    if (!menu_kind) return;
-    struct rect r = shadow_box(menu_x, menu_y, menu_w, menu_h, MENU_SHADOW_SP, MENU_SHADOW_DY);
-    if (!rects_hit(cur_clip, r)) return;
-    ugfx_shadow(menu_x, menu_y + MENU_SHADOW_DY, menu_w, menu_h, TH_R_MD, MENU_SHADOW_SP, TH_SHADOW, 130);
-    ugfx_frost(menu_x, menu_y, menu_w, menu_h, TH_R_MD, TH_CC_FROST);
-    ugfx_rrect_border(menu_x, menu_y, menu_w, menu_h, TH_R_MD, 1, TH_BORDER_DIM);
-    for (int i = 0; i < menu_nitems; i++) {
-        int ry = menu_y + MENU_PAD + i * MENU_ROW;
-        int dis = (menu_iflags[i] & WMI_DISABLED) != 0;
-        int hot = !dis && cur_x >= menu_x && cur_x < menu_x + menu_w && cur_y >= ry && cur_y < ry + MENU_ROW;
-        if (hot) ugfx_rrect_a(menu_x + 4, ry, menu_w - 8, MENU_ROW, TH_R_SM, ARGB(235, 96, 152, 252));
-        uint32_t col = dis ? TH_MUTED : (hot ? RGB(255, 255, 255) : TH_TEXT);
-        int ty = ry + (MENU_ROW - fh) / 2;
-        if (menu_iflags[i] & WMI_CHECKED) draw_check(menu_x + MENU_PAD + 2, ty + 1, col);
-        ugfx_text(menu_x + MENU_PAD + MENU_CHECK_W, ty, menu_items[i], col, UGFX_TRANSPARENT);
-        if (menu_iaccel[i]) {                        /* right-aligned Ctrl-accel hint, e.g. ^S */
-            char ab[3] = { '^', menu_iaccel[i], 0 };
-            uint32_t ac = dis ? TH_MUTED : (hot ? ARGB(210, 255, 255, 255) : TH_MUTED);
-            ugfx_text(menu_x + menu_w - MENU_PAD - 4 - ugfx_text_w(ab), ty, ab, ac, UGFX_TRANSPARENT);
-        }
-    }
-}
-/* Run a menu item by index, then close. Reuses notify()/reboot()/shutdown(); "Quit"
- * sends WEV_CLOSE to the focused window (a real app action). */
-static void menu_click(int idx) {
-    int kind = menu_kind;
-    if (idx >= 0 && idx < menu_nitems && (menu_iflags[idx] & WMI_DISABLED)) { menu_close(); return; }  /* disabled: ignore */
-    print("[twm] menuitem "); printu((unsigned)kind); printc(' '); printu((unsigned)idx); print("\r\n");
-    menu_close();
-    if (kind == 1) {                                 /* system menu */
-        if (idx == 0)      notify("tOS", "tOS 1.0 -- a from-scratch hobby OS");
-        else if (idx == 1) notify("Preferences", "Settings live in Control Center for now");
-        else if (idx == 2) reboot();
-        else if (idx == 3) shutdown();
-    } else if (kind == 2) {                          /* app menu: universal About / Quit */
-        int f = focus_slot();
-        if (idx == 0 && f >= 0) notify(cw[f].title, "A tOS application");
-        else if (idx == 1 && f >= 0) wm_post(cw[f].id, WEV_CLOSE, 0);   /* Quit */
-    } else if (kind == 3) {                          /* app-declared menu -> WEV_MENU back to the app */
-        int f = focus_slot();
-        if (f >= 0) wm_post(cw[f].id, WEV_MENU, WEV_MENU_PACK(menu_app_idx, idx));
-    }
-}
-
 /* ------------------------------------------------------------ compose/present */
 /* A visible WIN_OVERLAY window (Launchpad) -> dimmed full-screen, drawn above the
  * dock. -1 if none. */
@@ -1183,151 +514,6 @@ static void flush_dirty(void) {
     ndirty = 0;
 }
 
-/* ------------------------------------------------------------------ /Apps */
-/* dst = a + "/" + b  (a is a directory path, b a relative name) */
-static void path_join(char *dst, const char *a, const char *b) {
-    int i = 0; while (a[i]) { dst[i] = a[i]; i++; }
-    if (i && dst[i - 1] != '/') dst[i++] = '/';
-    for (int j = 0; b[j]; j++) dst[i++] = b[j];
-    dst[i] = 0;
-}
-static int ends_app(const char *s) {                /* name ends in ".app" */
-    int n = 0; while (s[n]) n++;
-    return n >= 5 && s[n-4] == '.' && s[n-3] == 'a' && s[n-2] == 'p' && s[n-1] == 'p';
-}
-
-/* Load an icon.argb file (u32 w, u32 h, then w*h little-endian ARGB) into a
- * malloc'd buffer; 0 on any error (the dock then draws a generic tile). */
-static uint32_t *load_icon(const char *path, int *w, int *h) {
-    int fd = fopen(path, O_RDONLY);
-    if (fd < 0) return 0;
-    uint32_t hdr[2] = { 0, 0 };
-    if (fread_(fd, (char *)hdr, 8) != 8 || !hdr[0] || !hdr[1] || hdr[0] > 256 || hdr[1] > 256) {
-        fclose_(fd); return 0;
-    }
-    int need = (int)(hdr[0] * hdr[1] * 4), got = 0;
-    uint32_t *px = (uint32_t *)malloc((unsigned)need);
-    if (!px) { fclose_(fd); return 0; }
-    while (got < need) { int r = fread_(fd, (char *)px + got, need - got); if (r <= 0) break; got += r; }
-    fclose_(fd);
-    if (got != need) { free(px); return 0; }
-    *w = (int)hdr[0]; *h = (int)hdr[1];
-    return px;
-}
-
-/* Catalog every /Apps/<Name>.app bundle once (design/app-package-format.md): its
- * display name, absolute exec path, icon, and whether the manifest pins it to the
- * dock (pinned != false). rebuild_dock() composes the visible dock from this plus
- * the running window set. Replaces the old flat shortcuts file + baked icon table. */
-static void load_apps(void) {
-    struct dirent ents[2 * MAXAPPS];
-    int n = readdir("/Apps", ents, 2 * MAXAPPS);
-    for (int i = 0; i < n && napps < MAXAPPS; i++) {
-        if (ents[i].type != FT_DIR || !ends_app(ents[i].name)) continue;
-        char base[80]; path_join(base, "/Apps", ents[i].name);     /* /Apps/<Name>.app */
-        char mpath[112]; path_join(mpath, base, "manifest");
-        char buf[1024]; int fd = fopen(mpath, O_RDONLY);
-        if (fd < 0) continue;
-        int mn = fread_(fd, buf, sizeof buf - 1); fclose_(fd);
-        if (mn <= 0) continue;
-        buf[mn] = 0;
-
-        char val[96];
-        if (!manifest_get(buf, "name", val, sizeof val)) continue;
-        struct app *a = &apps[napps];
-        int j = 0; for (; val[j] && j < 23; j++) a->label[j] = val[j]; a->label[j] = 0;
-        if (!manifest_get(buf, "exec", val, sizeof val)) continue;
-        path_join(a->exec, base, val);                             /* absolute exec path */
-        a->pinned = 1;
-        if (manifest_get(buf, "pinned", val, sizeof val) &&
-            (streqz(val, "false") || streqz(val, "0") || streqz(val, "no"))) a->pinned = 0;
-        a->img = 0; a->iw = APPICON_SZ; a->ih = APPICON_SZ;
-        char iconrel[40];
-        if (manifest_get(buf, "icon", iconrel, sizeof iconrel) && iconrel[0]) {
-            char ipath[120]; path_join(ipath, base, iconrel);
-            a->img = load_icon(ipath, &a->iw, &a->ih);
-        }
-        napps++;
-    }
-}
-/* The catalog app whose name prefixes a window title (windows are titled by app
- * name), giving a running window its canonical label + icon; -1 if none. */
-static int app_for_title(const char *title) {
-    for (int i = 0; i < napps; i++) if (title_is(title, apps[i].label)) return i;
-    return -1;
-}
-/* Compose the visible dock: the leftmost Launchpad button, then every pinned app,
- * then a transient tile for each running (incl. minimized) non-popup window whose
- * app isn't already shown -- so an unpinned app like Notepad (opened from Files or
- * Spotlight) appears in the dock while it runs and drops off when it closes. */
-static void rebuild_dock(void) {
-    nicons = 0;
-    struct icon *lp = &icons[nicons++];                    /* Launchpad button (single click) */
-    const char *lpl = "Launchpad";
-    int k = 0; for (; lpl[k]; k++) lp->label[k] = lpl[k]; lp->label[k] = 0;
-    lp->exec[0] = 0; lp->img = 0; lp->iw = lp->ih = APPICON_SZ; lp->special = 1;
-    for (int i = 0; i < napps && nicons < MAXICON; i++) {  /* pinned apps, in catalog order */
-        if (!apps[i].pinned) continue;
-        struct icon *ic = &icons[nicons++];
-        int j = 0; for (; (ic->label[j] = apps[i].label[j]); j++) ;
-        j = 0;       for (; (ic->exec[j]  = apps[i].exec[j]);  j++) ;
-        ic->img = apps[i].img; ic->iw = apps[i].iw; ic->ih = apps[i].ih; ic->special = 0;
-    }
-    int pin_end = nicons;                                  /* boundary: tiles [1..pin_end) are pinned, [pin_end..) run */
-    for (int w = 0; w < MAXW && nicons < MAXICON; w++) {   /* running, not-yet-shown apps */
-        if (!cw[w].used || cw[w].popup) continue;
-        int dup = 0;
-        for (int e = 0; e < nicons; e++) if (title_is(cw[w].title, icons[e].label)) { dup = 1; break; }
-        if (dup) continue;
-        struct icon *ic = &icons[nicons++];
-        int ai = app_for_title(cw[w].title);
-        const char *lab = ai >= 0 ? apps[ai].label : cw[w].title;
-        int j = 0; for (; lab[j] && j < 23; j++) ic->label[j] = lab[j]; ic->label[j] = 0;
-        ic->exec[0] = 0;
-        ic->img = ai >= 0 ? apps[ai].img : 0;
-        ic->iw  = ai >= 0 ? apps[ai].iw  : APPICON_SZ;
-        ic->ih  = ai >= 0 ? apps[ai].ih  : APPICON_SZ;
-        ic->special = 0;
-    }
-    dock_runsep = (nicons > pin_end) ? pin_end : -1;       /* divider only when >=1 running-unpinned tile exists */
-}
-/* A cheap hash of the running non-popup window set (by id); the dock rebuilds +
- * re-lays-out only when this changes, so layout_dock's serial trace and the
- * recentre fire on open/close, not every frame. */
-static unsigned running_sig(void) {
-    unsigned h = 2166136261u ^ (unsigned)napps;
-    for (int w = 0; w < MAXW; w++)
-        if (cw[w].used && !cw[w].popup) h = (h ^ (unsigned)(cw[w].id + 1)) * 16777619u;
-    return h;
-}
-/* Position the dock tiles for the current dock_y (recomputed as the dock slides). */
-static void place_dock_icons(void) {
-    for (int i = 0; i < nicons; i++) {
-        icons[i].cx = dock_x + DOCK_PAD + TH_TILE / 2 + i * (TH_TILE + DOCK_GAP);
-        icons[i].cy = dock_y + DOCK_PAD + TH_TILE / 2;
-    }
-}
-static void layout_dock(void) {
-    static const uint32_t pal[4] = { TH_TILE_0, TH_TILE_1, TH_TILE_2, TH_TILE_3 };
-    if (nicons < 1) nicons = 1;
-    dock_w = nicons * TH_TILE + (nicons - 1) * DOCK_GAP + 2 * DOCK_PAD;
-    dock_h = TH_TILE + 2 * DOCK_PAD;
-    dock_x = (W - dock_w) / 2;
-    dock_y0 = H - dock_h - 18;
-    dock_y = dock_y0;
-    place_dock_icons();
-    for (int i = 0; i < nicons; i++) {
-        icons[i].tint = pal[i & 3];
-        /* the test harness drives the dock by these coordinates (the shown base
-         * position), so it never has to assume a layout or resolution. */
-        print("[twm] icon "); print(icons[i].label);
-        printc(' '); printu((unsigned)icons[i].cx); printc(' '); printu((unsigned)icons[i].cy);
-        print("\r\n");
-    }
-    if (dock_runsep >= 1)                            /* the pinned|running boundary, when a running-unpinned app exists */
-        { print("[twm] docksep "); printu((unsigned)dock_runsep); print("\r\n"); }
-}
-
 static void launch(const char *prog) {
     int pid = fork();
     if (pid == 0) { exec(prog); proc_exit(); }
@@ -1342,7 +528,7 @@ static int any_fullscreen(void) {
 /* Raise + focus a window (no-op if it is already focused), dirtying both the old
  * and new window plus the bar so their focused/unfocused chrome updates at once.
  * Shared by the dock, the window switcher and summon. */
-static void focus_window(int slot) {
+void focus_window(int slot) {
     int prev = focus_slot();
     if (prev == slot) return;
     zo_raise(slot);
@@ -1397,7 +583,7 @@ static void summon(const char *title, const char *prog, int frame) {
 /* Route a notification click to its sender (design/ui.md): if the target app has
  * a window, focus it (restoring a minimized one); otherwise launch it from the
  * app catalog. An empty target is a no-op (notify() with no declared target). */
-static void notif_activate(const char *target, int frame) {
+void notif_activate(const char *target, int frame) {
     if (!target || !target[0]) return;
     int ws = find_app_window(target);
     if (ws >= 0) { if (cw[ws].min) restore_window(ws); else focus_window(ws); return; }
@@ -1421,137 +607,12 @@ static void send_key(int id, int byte) {
     wm_post(id, WEV_KEY, WEV_KEY_PACK(byte, kbd_mods()));
 }
 
-/* --- macOS-style Alt-Tab switcher overlay (#7) ------------------------------- */
-static void switcher_layout(void) {
-    int n = sw_n > 0 ? sw_n : 1;
-    sw_pw = n * SW_CELL + 2 * SW_PAD;
-    if (sw_pw > W - 40) sw_pw = W - 40;
-    sw_ph = SW_PAD + APPICON_SZ + 8 + fh + SW_PAD;
-    sw_px = (W - sw_pw) / 2;
-    sw_py = (H - sw_ph) / 2;
-}
-static int sw_tile_cx(int i) { return sw_px + SW_PAD + i * SW_CELL + SW_CELL / 2; }
-static void dirty_switcher(void) {
-    switcher_layout();
-    struct rect r = shadow_box(sw_px, sw_py, sw_pw, sw_ph, SW_SHADOW_SP, SW_SHADOW_DY);
-    add_dirty(r.x, r.y, r.w, r.h);
-}
-static void switch_report_sel(void) {
-    int slot = sw_order[sw_pos];
-    print("[twm] altswitch sel "); printu((unsigned)sw_pos); printc(' ');
-    print(slot >= 0 && slot < MAXW ? cw[slot].title : "?"); print("\r\n");
-}
-/* Alt+Tab: open the switcher card (first press) or step the selection; `backward`
- * (Shift held) walks the other way. Focus does NOT change until commit. */
-static void window_switch(int frame, int backward) {
-    if (sw_until == 0 || frame >= sw_until || !sw_overlay) {   /* (re)start a session */
-        sw_n = 0;
-        for (int i = nz - 1; i >= 0; i--) {                    /* [0]=top (current), MRU order */
-            int s = zo[i];
-            if (!cw[s].popup && cw[s].used && !cw[s].min) sw_order[sw_n++] = s;
-        }
-        sw_pos = 0;
-        if (sw_n >= 2) {
-            sw_overlay = 1; sw_alt_frames = 0;
-            switcher_layout();
-            sw_sel_x = sw_target_x = sw_tile_cx(0);
-            print("[twm] altswitch open "); printu((unsigned)sw_n); printc(' ');
-            printu((unsigned)sw_px); printc(' '); printu((unsigned)sw_py); print("\r\n");
-        }
-    }
-    sw_until = frame + SWITCH_LINGER;
-    if (sw_n < 2) { sw_overlay = 0; return; }
-    sw_pos = (sw_pos + (backward ? sw_n - 1 : 1)) % sw_n;      /* step one tile */
-    sw_target_x = sw_tile_cx(sw_pos);
-    dirty_switcher();
-    switch_report_sel();
-}
-static void switch_commit(void) {
-    if (!sw_overlay) return;
-    int slot = sw_order[sw_pos];
-    sw_overlay = 0; sw_until = 0;
-    dirty_switcher();
-    if (slot >= 0 && slot < MAXW && cw[slot].used && !cw[slot].min) focus_window(slot);
-    print("[twm] altswitch commit "); print(slot >= 0 && slot < MAXW ? cw[slot].title : "?"); print("\r\n");
-}
-static void switch_cancel(void) {
-    if (!sw_overlay) return;
-    sw_overlay = 0; sw_until = 0;
-    dirty_switcher();
-    print("[twm] altswitch cancel\r\n");
-}
-/* A click inside the card selects + commits the tile under the cursor; a click
- * outside cancels. Returns 1 if the click was consumed. */
-static int switch_click(int mx, int my) {
-    if (!sw_overlay) return 0;
-    switcher_layout();
-    if (mx >= sw_px && mx < sw_px + sw_pw && my >= sw_py && my < sw_py + sw_ph) {
-        int i = (mx - sw_px - SW_PAD) / SW_CELL;
-        if (i >= 0 && i < sw_n) { sw_pos = i; switch_report_sel(); }
-        switch_commit();
-    } else {
-        switch_cancel();
-    }
-    return 1;
-}
-static void draw_switcher(void) {
-    if (!sw_overlay) return;
-    switcher_layout();
-    struct rect r = shadow_box(sw_px, sw_py, sw_pw, sw_ph, SW_SHADOW_SP, SW_SHADOW_DY);
-    if (!rects_hit(cur_clip, r)) return;
-    ugfx_shadow(sw_px, sw_py + SW_SHADOW_DY, sw_pw, sw_ph, CC_RAD, SW_SHADOW_SP, TH_SHADOW, 150);
-    ugfx_frost(sw_px, sw_py, sw_pw, sw_ph, CC_RAD, TH_CC_FROST);
-    ugfx_rrect_border(sw_px, sw_py, sw_pw, sw_ph, CC_RAD, 1, TH_BORDER_DIM);
-    int hh = APPICON_SZ + 14, hy = sw_py + SW_PAD - 7;          /* animated selection highlight */
-    ugfx_rrect_a(sw_sel_x - SW_CELL / 2 + 6, hy, SW_CELL - 12, hh, TH_R_MD, ARGB(70, 122, 152, 222));
-    char buf[32];
-    for (int i = 0; i < sw_n; i++) {
-        int slot = sw_order[i]; if (slot < 0 || slot >= MAXW) continue;
-        int cx = sw_tile_cx(i), ix = cx - APPICON_SZ / 2, iy = sw_py + SW_PAD;
-        int ai = app_for_title(cw[slot].title);
-        if (ai >= 0 && apps[ai].img) ugfx_blit_scaled(ix, iy, APPICON_SZ, APPICON_SZ, apps[ai].img, apps[ai].iw, apps[ai].ih);
-        else                         ugfx_blit_argb(ix, iy, APPICON_SZ, APPICON_SZ, appicons_argb[ICON_APP]);
-        fit_text(buf, sizeof buf, cw[slot].title, SW_CELL - 10);
-        int tw = ugfx_text_w(buf);
-        ugfx_text(cx - tw / 2, sw_py + SW_PAD + APPICON_SZ + 6, buf, i == sw_pos ? TH_TEXT : TH_MUTED, UGFX_TRANSPARENT);
-    }
-}
-
 /* macOS-style auto-hide. When a window is fullscreen -- or the user enabled
  * ui.bar.autohide / ui.dock.autohide -- the bar and dock slide off-screen and
  * reveal when the cursor reaches the top/bottom edge, retracting a moment after it
  * leaves (HIDE_LINGER). Each animates an offset (bar_y, dock_y) and dirties its
  * band so the compositor repaints only the moving strip. Default (no fullscreen,
  * autohide off) keeps both permanently shown -- no behaviour change. */
-/* A cheap signature of a menu spec, so the bar repaints only when the focused
- * app's declared menu actually changes (it is fetched every frame). */
-static unsigned menu_sig(const struct winmenu *m) {
-    unsigned h = 2166136261u ^ m->nmenus;
-    for (unsigned i = 0; i < m->nmenus && i < WINMENU_MAX; i++) {
-        for (const char *p = m->m[i].title; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
-        h = (h ^ m->m[i].nitems) * 16777619u;
-        for (unsigned k = 0; k < m->m[i].nitems && k < WINMENU_ITEMS; k++) {
-            for (const char *p = m->m[i].items[k]; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
-            h = (h ^ m->m[i].flags[k]) * 16777619u;          /* fold in check/disabled + accel (#6) */
-            h = (h ^ (unsigned char)m->m[i].accel[k]) * 16777619u;
-        }
-    }
-    return h;
-}
-/* Fetch the focused window's declared menu bar (#6) into cur_menu; repaint the bar
- * (and drop an open app dropdown) when it changes. Called once per frame. */
-static void refresh_app_menu(void) {
-    int fwin = focus_slot();
-    struct winmenu nm; nm.nmenus = 0;
-    if (fwin >= 0 && !cw[fwin].popup) wm_getmenu(cw[fwin].id, &nm);
-    unsigned sig = menu_sig(&nm);
-    if (sig != cur_menu_sig) {
-        cur_menu = nm; cur_menu_sig = sig;
-        if (menu_kind == 3) menu_close();
-        add_dirty(0, 0, W, bar_h);
-    }
-}
-
 static void update_chrome(int mx, int my) {
     int fs = any_fullscreen();
     int auto_bar  = fs || reg_bool("ui.bar.autohide", 0);
@@ -1919,7 +980,7 @@ void _ustart(void) {
             if (menu_kind && !handled) {
                 handled = 1;
                 if (ms.x >= menu_x && ms.x < menu_x + menu_w && ms.y >= menu_y && ms.y < menu_y + menu_h) {
-                    int idx = (ms.y - (menu_y + MENU_PAD)) / MENU_ROW;
+                    int idx = menu_row_at(ms.y);
                     if (idx >= 0 && idx < menu_nitems) menu_click(idx); else menu_close();
                 } else if (on_amenu >= 0) {             /* clicked another tile -> switch menus */
                     menu_close(); menu_app_idx = on_amenu; menu_open_kind(3, appmenu_x[on_amenu]);
@@ -1949,10 +1010,7 @@ void _ustart(void) {
                           ms.x >= sb_bell_x - 4 && ms.x < sb_bell_x + SB_BELL_W + 4;
             if (nc_open) {
                 handled = 1;
-                int cwid = ugfx_text_w("Clear");                  /* Clear button, header right */
-                int clx = nc_x + NC_W - NC_PAD - cwid, cly = nc_y + NC_PAD;
-                if (notes_n && ms.x >= clx - 4 && ms.x < clx + cwid + 4 &&
-                    ms.y >= cly - 2 && ms.y < cly + fh + 2) {     /* Clear: empty the ring, stay open */
+                if (nc_clear_hit(ms.x, ms.y)) {                   /* Clear: empty the ring, stay open */
                     dirty_nc();                                   /* invalidate the OLD (tall) panel + halo BEFORE the height shrinks */
                     notes_n = 0; notes_head = 0; notes_unseen = 0; nc_slide = 0;
                     for (int i = 0; i < NOTE_KEEP; i++) note_exp[i] = 0;
@@ -1979,29 +1037,8 @@ void _ustart(void) {
                 print(" "); printu((unsigned)nc_x); print(" "); printu((unsigned)nc_y); print("\r\n");
             }
             /* The live toast: a click anywhere on it is consumed (macOS-style, never
-             * leaks to a window behind), but only the chevron button toggles expand. */
-            if (toast_live && !handled) {
-                int tx, ty, tw, th2; toast_box(&tx, &ty, &tw, &th2);
-                if (ms.x >= tx && ms.x < tx + tw && ms.y >= ty && ms.y < ty + th2) {
-                    handled = 1;
-                    int xbtn = tx + tw - TOAST_PAD - STATUSICON_SZ;  /* dismiss (X) left edge   */
-                    int chev = xbtn - STATUSICON_SZ - 4;             /* chevron left edge        */
-                    int rt = ty + TOAST_PAD - 4, rb = ty + TOAST_PAD + fh + 6;
-                    if (ms.y >= rt && ms.y < rb && ms.x >= xbtn - 3) {           /* X: dismiss instantly */
-                        toast_kill();
-                        print("[twm] toast dismiss\r\n");
-                    } else if (toast_collapsible && ms.y >= rt && ms.y < rb &&
-                               ms.x >= chev - 3 && ms.x < xbtn - 3) {            /* chevron: expand/collapse */
-                        toast_expanded = !toast_expanded; toast_paused = 1;
-                        dirty_toast();
-                        print("[twm] toast expand "); printu((unsigned)toast_expanded); print("\r\n");
-                    } else if (toast.target[0]) {                               /* body: open the sender, then dismiss */
-                        print("[twm] notif open "); print(toast.target); print("\r\n");
-                        notif_activate(toast.target, frame);
-                        toast_kill();
-                    }
-                }
-            }
+             * leaks to a window behind); toast_click routes the X/chevron/body. */
+            if (toast_live && !handled && toast_click(ms.x, ms.y, frame)) handled = 1;
             /* The dock is a top-most overlay, so it must get the click before any
              * window it overlaps -- otherwise a window behind the dock swallows the
              * click and the dock becomes unusable. Clicks anywhere on the dock panel
@@ -2248,33 +1285,9 @@ void _ustart(void) {
             apply_settings_live(); }                    /* pick up Settings-app changes from disk */
 
         poll_notifications();                           /* drain notify() posts -> toast + center */
-        if (sw_overlay) {                               /* Alt-Tab card: commit + slide animation */
-            unsigned m = kbd_mods();
-            if (m & KMOD_ALT) { if (sw_alt_frames < 1000) sw_alt_frames++; }
-            else if (sw_alt_frames >= 3) switch_commit();   /* Alt was genuinely held, now released */
-            else if (frame >= sw_until)  switch_commit();   /* linger lapsed (no hold detected) */
-            if (sw_overlay && sw_sel_x != sw_target_x) {    /* ease the highlight toward its tile */
-                int d = sw_target_x - sw_sel_x;
-                sw_sel_x += d > 0 ? (d + 2) / 3 : (d - 2) / 3;
-                dirty_switcher();
-            }
-        }
+        switcher_tick(frame);                           /* Alt-Tab card: commit-on-release + highlight ease */
         if (nc_slide > 0) { nc_slide--; dirty_nc(); }   /* animate a row sliding into the center */
-        if (toast_live) {                               /* animate the toast (slide in/hold/out) */
-            int tx, ty, tw, th2; toast_box(&tx, &ty, &tw, &th2);
-            int hov = cur_x >= tx && cur_x < tx + tw && cur_y >= ty && cur_y < ty + th2;
-            if (hov) {                                  /* hover pauses the auto-dismiss timer */
-                if (toast_age < TOAST_IN) { toast_age++; dirty_toast(); }            /* finish sliding in */
-                else if (toast_age != TOAST_IN) { toast_age = TOAST_IN; dirty_toast(); }  /* snap fully open */
-                if (!toast_paused) { toast_paused = 1; print("[twm] toast pause\r\n"); }
-            } else {
-                toast_paused = 0;
-                dirty_toast();
-                if (++toast_age >= TOAST_LIFE) toast_kill();
-            }
-        } else if (toast_linger > 0) {                  /* belt-and-suspenders: scrub any shadow ghost */
-            toast_linger--; dirty_toast();
-        }
+        toast_tick();                                   /* animate the toast (slide in/hold/out) */
 
         /* repaint the dock when the running/focus/minimized set changes, so its
          * indicators + active highlight stay in sync (cheap signature check). */

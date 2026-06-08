@@ -14,6 +14,10 @@
 #include "ugfx.h"     /* the rasterizer (extern "C") */
 #include "theme.h"    /* shared design tokens (TH_*) */
 
+/* caret on/off period, in event-loop ticks (~0.5s). Shared: TextField phases its
+ * caret by it, and Window::redraw repaints a focused caret on its boundary. */
+#define TF_BLINK 32
+
 namespace ui {
 
 typedef uint32_t Color;

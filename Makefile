@@ -72,7 +72,16 @@ CXXPROGS := files notepad clipboard spotlight launchpad settings
 UELFS    := $(patsubst %,$(BUILD)/%.elf,$(UPROGS) $(CXXPROGS))
 ULIBOBJ  := $(BUILD)/$(UDIR)/lib/ulib.o $(BUILD)/$(UDIR)/lib/ugfx.o $(BUILD)/$(UDIR)/lib/libc.o $(BUILD)/$(UDIR)/lib/sys.o $(BUILD)/$(UDIR)/lib/registry.o
 CXXRT    := $(BUILD)/$(UDIR)/lib/crt.o
-CXXLIB   := $(BUILD)/$(UDIR)/lib/ui.o    # the C++ widget toolkit, linked into C++ apps
+# the C++ widget toolkit, linked into every C++ app. Split across ui*.cpp (ui.cpp +
+# ui_textfield.cpp + ...); the wildcard picks up each piece automatically.
+CXXLIB   := $(patsubst $(UDIR)/lib/%.cpp,$(BUILD)/$(UDIR)/lib/%.o,$(wildcard $(UDIR)/lib/ui*.cpp))
+
+# Every object an app links: one per .c/.cpp in its source dir (user/<app>/). This
+# lets an app outgrow a single file -- drop another .c/.cpp into its dir and it is
+# compiled + linked automatically (the per-file compile rules below match nested
+# paths). $(1) = app name. Used by the link rules and by UOBJ (dep tracking).
+app_objs = $(patsubst $(UDIR)/%.c,$(BUILD)/$(UDIR)/%.o,$(wildcard $(UDIR)/$(1)/*.c)) \
+           $(patsubst $(UDIR)/%.cpp,$(BUILD)/$(UDIR)/%.o,$(wildcard $(UDIR)/$(1)/*.cpp))
 
 KSRC := $(wildcard $(KDIR)/*.c) $(wildcard $(KDIR)/*/*.c)
 KOBJ := $(patsubst %.c,$(BUILD)/%.o,$(KSRC)) $(BUILD)/$(KDIR)/arch/cpu.o
@@ -80,8 +89,8 @@ KOBJ := $(patsubst %.c,$(BUILD)/%.o,$(KSRC)) $(BUILD)/$(KDIR)/arch/cpu.o
 # All compiled objects (C/C++), used to pull in the generated header-dependency
 # files. cpu.o is from NASM (no .d); -include ignores the missing entry.
 UOBJ := $(ULIBOBJ) $(CXXRT) $(CXXLIB) \
-        $(foreach p,$(UPROGS),$(BUILD)/$(UDIR)/$(p)/$(p).o) \
-        $(foreach p,$(CXXPROGS),$(BUILD)/$(UDIR)/$(p)/$(p).o)
+        $(foreach p,$(UPROGS),$(call app_objs,$(p))) \
+        $(foreach p,$(CXXPROGS),$(call app_objs,$(p)))
 DEPS := $(KOBJ:.o=.d) $(UOBJ:.o=.d)
 # NOTE: the actual `-include $(DEPS)` is at the very bottom of this file -- if it
 # ran here (before the `all` rule) the first dep rule would become the default goal.
@@ -134,15 +143,15 @@ $(BUILD)/$(UDIR)/%.o: $(UDIR)/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 define UPROG_RULE
-$(BUILD)/$(1).elf: $(BUILD)/$(UDIR)/$(1)/$(1).o $(ULIBOBJ) $(UDIR)/lib/user.ld
-	$(LD) $(ULDFLAGS) $(BUILD)/$(UDIR)/$(1)/$(1).o $(ULIBOBJ) -o $$@
+$(BUILD)/$(1).elf: $(call app_objs,$(1)) $(ULIBOBJ) $(UDIR)/lib/user.ld
+	$(LD) $(ULDFLAGS) $(call app_objs,$(1)) $(ULIBOBJ) -o $$@
 endef
 $(foreach p,$(UPROGS),$(eval $(call UPROG_RULE,$(p))))
 
 # C++ apps additionally link the C++ runtime (crt: entry + ctors + new/delete).
 define CXXPROG_RULE
-$(BUILD)/$(1).elf: $(BUILD)/$(UDIR)/$(1)/$(1).o $(CXXRT) $(CXXLIB) $(ULIBOBJ) $(UDIR)/lib/user.ld
-	$(LD) $(ULDFLAGS) $(BUILD)/$(UDIR)/$(1)/$(1).o $(CXXRT) $(CXXLIB) $(ULIBOBJ) -o $$@
+$(BUILD)/$(1).elf: $(call app_objs,$(1)) $(CXXRT) $(CXXLIB) $(ULIBOBJ) $(UDIR)/lib/user.ld
+	$(LD) $(ULDFLAGS) $(call app_objs,$(1)) $(CXXRT) $(CXXLIB) $(ULIBOBJ) -o $$@
 endef
 $(foreach p,$(CXXPROGS),$(eval $(call CXXPROG_RULE,$(p))))
 

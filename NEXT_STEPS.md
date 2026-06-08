@@ -206,6 +206,21 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Userspace de-clutter — split the big single files into modules (2026-06-08).** The Makefile now
+  compiles + links **every `.c`/`.cpp` in an app's dir** (a generic `app_objs` wildcard rule), so an app
+  can outgrow one file just by dropping another source in. **twm** (was 2325 lines) is now `twm.c` (core:
+  shared state, helpers, desktop, window draw, compose, launch/focus, the event loop) plus a shared
+  `twm.h` contract and the feature files **`bar.c`** (top menu bar + status glyphs), **`dock.c`** (dock +
+  /Apps catalog), **`controlcenter.c`**, **`notify.c`** (toast + notification center), **`switcher.c`**
+  (Alt-Tab), **`menubar.c`** (dropdowns). Panel hit-tests/animation the event loop used to inline now live
+  with their feature (`menu_row_at`, `nc_clear_hit`, `toast_click`, `toast_tick`, `switcher_tick`). **Files**
+  (was 1570) split its custom widgets into header `fileswidgets.h` and the path/icon helpers into
+  `filesutil.{h,cpp}`, leaving `files.cpp` as `FilesApp` + `app_main`. **ui.cpp** (was 785) pulled the
+  330-line `TextField` widget into `ui_textfield.cpp` (the shared `TF_BLINK` caret period moved to `ui.h`).
+  No behaviour change: full unit suite + the e2e suite stay green (the 3 "did-not-launch" flakes pass in
+  isolation, per the known host-load flakiness). Kernel stays single-file by design; `ugfx.c`/`term.c`/
+  `shell.c`/`notepad.cpp` left as cohesive single units (notepad's `TabBar` is back-coupled to its app
+  struct, so it doesn't split cleanly).
 - **Files Trash §9 — move / Put Back / Empty (2026-06-08).** Delete in a normal folder now **moves** the
   item to `~/.Trash` via `rename_()` (works for whole directories too) instead of destroying it, recording
   its origin in a hidden `~/.Trash/.trashinfo` sidecar so the context-menu **Put Back** restores it where
