@@ -332,6 +332,10 @@ static struct regs *syscall_dispatch(struct regs *r) {
         STR(r->rdi); BUF(r->rsi, sizeof(struct fstat));
         r->rax = (uint64_t)(int64_t)fs_stat((const char *)r->rdi, (struct fstat *)r->rsi);
         return r;
+    case SYS_STATFS:
+        BUF(r->rdi, sizeof(struct statfs));
+        r->rax = (uint64_t)(int64_t)fs_statfs((struct statfs *)r->rdi);
+        return r;
     case SYS_MMAP:
         r->rax = sched_mmap(r->rdi);
         return r;

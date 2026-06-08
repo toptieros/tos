@@ -43,7 +43,8 @@ struct tosfs_ent {
     uint8_t  owner;                    /* owning uid (TOS_UID_SYSTEM / _USER -- perm.h) */
     uint8_t  mode;                     /* reserved for future mode bits (0 today)  */
     uint16_t _entrsv;                  /* pad to a 4-byte boundary                 */
-};                                     /* == 52 bytes */
+    uint32_t mtime;                    /* packed modification time (fstime.h); 0 = unknown */
+};                                     /* == 56 bytes */
 
 /* Entry size drives the table geometry below; sizing off sizeof keeps the three
  * derived constants correct if the entry ever changes again. */

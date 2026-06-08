@@ -14,10 +14,21 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 #include "../kernel/fs/tosfs.h"
 #include "../kernel/fs/perm.h"
+#include "../kernel/fstime.h"   /* stamp shipped entries with a real build-time mtime (§8) */
 
 #define SECTOR 512
+
+/* the build time, packed once into the on-disk mtime format, so files shipped in the
+ * image show a sensible "Modified" date instead of a zero/unknown one. */
+static uint32_t build_mtime(void) {
+    time_t now = time(0);
+    struct tm *lt = localtime(&now);
+    if (!lt) return 0;
+    return fstime_pack(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min);
+}
 
 static struct tosfs_super super;
 static char *hostpath[TOSFS_MAX_FILES];     /* host source for each FILE slot */
@@ -49,6 +60,7 @@ static int new_slot(unsigned type, const char *name, int parent) {
     strncpy(super.ents[s].name, name, TOSFS_NAME_MAX - 1);
     super.ents[s].type   = type;
     super.ents[s].parent = parent;
+    super.ents[s].mtime  = build_mtime();
     char path[1024]; full_path(s, path);
     super.ents[s].owner = (uint8_t)tos_owner_for(path);   /* /Users + /tmp -> user; rest -> system */
     return s;

@@ -28,4 +28,5 @@ int fs_chdir(const char *path);                          /* set the caller's cwd
 int fs_getcwd(char *buf, int len);                       /* absolute cwd path      */
 int fs_rename(const char *oldp, const char *newp);       /* move/rename            */
 int fs_stat(const char *path, struct fstat *st);         /* type + size            */
+int fs_statfs(struct statfs *st);                        /* volume total/free bytes */
 int fs_readdir(const char *path, struct dirent *out, int max);  /* list a dir -> n */

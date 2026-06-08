@@ -100,6 +100,7 @@ int  getcwd(char *buf, int len);                      /* absolute cwd -> 0/-1   
 int  readdir(const char *path, struct dirent *out, int max); /* list a dir -> n */
 int  rename_(const char *oldp, const char *newp);     /* move/rename; 0/-1      */
 int  stat_(const char *path, struct fstat *st);       /* type+size; 0/-1        */
+int  statfs_(struct statfs *st);                      /* volume total/free; 0/-1 */
 
 int streq(const char *a, const char *b);
 

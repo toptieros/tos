@@ -5,6 +5,7 @@
  * which readline() parses. On a terminal it runs `fastfetch` at startup. */
 #include "ulib.h"
 #include "registry.h"
+#include "humansize.h"     /* human_bytes: the `df` figures */
 
 #define HISTN 64
 #define LINEMAX 512
@@ -340,6 +341,17 @@ static void cmd_mem(void) {
     struct sysinfo si; sysinfo(&si);
     print("RAM: "); printu((unsigned)(si.ram_bytes / (1024 * 1024))); print(" MiB\r\n");
 }
+/* df: the mounted tosfs volume's size / used / free (SYS_STATFS). */
+static void cmd_df(void) {
+    struct statfs sf;
+    if (statfs_(&sf) != 0) { print("df: statfs failed\r\n"); return; }
+    char t[24], u[24], f[24];
+    human_bytes(sf.total_bytes, t, sizeof t);
+    human_bytes(sf.total_bytes - sf.free_bytes, u, sizeof u);
+    human_bytes(sf.free_bytes, f, sizeof f);
+    print("Filesystem: tosfs\r\n");
+    print("Size: "); print(t); print("   Used: "); print(u); print("   Free: "); print(f); print("\r\n");
+}
 
 static void cmd_uname(void) { print("tOS x86_64 (SMP, preemptive) -- a hobby OS\r\n"); }
 
@@ -416,7 +428,7 @@ void _ustart(void) {
             print("  help ls [d] cd <d> pwd mkdir <d> rmdir <d> tree\r\n");
             print("  cat <f> write <f> rm [-r] <p> cp <s> <d> mv <s> <d> echo <t>\r\n");
             print("  copy <text> paste   (system clipboard; Super+V opens the manager)\r\n");
-            print("  clear date uptime mem sysinfo uname colors mouse lspci beep\r\n");
+            print("  clear date uptime mem df sysinfo uname colors mouse lspci beep\r\n");
             print("  fastfetch spawn fork smp sleep <n> reboot halt poweroff crash\r\n");
             print("  reg get/set/list <key> [value]   (system + user settings)\r\n");
             print("  (arrows/Home/End/Del edit; up/down = history)\r\n");
@@ -488,6 +500,8 @@ void _ustart(void) {
             cmd_uptime();
         } else if (streq(line, "mem")) {
             cmd_mem();
+        } else if (streq(line, "df")) {
+            cmd_df();
         } else if (streq(line, "uname")) {
             cmd_uname();
         } else if (streq(line, "sysinfo")) {

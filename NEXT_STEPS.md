@@ -59,8 +59,13 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   (start_lba 0 / size 0, like a directory) instead of discarding empty writes — so New File, truncate-to-
   empty, and copying an empty file all work. Pure name codec `dupname.h` (unit `t_dupname`), e2e
   `t_files_newdup` (New File + file Duplicate + recursive folder Duplicate, all confirmed on disk), logs
-  `[files] duplicate <name>`. **Left, cheapest-first:** rich Get Info + fs timestamps §8, tabs/split §4,
-  column/gallery views §1, search/thumbnails §6, tags/undo §10/§12.
+  `[files] duplicate <name>`. **fs timestamps §8** — every tosfs entry now carries a packed `mtime`
+  (`fstime.h`, unit `t_fstime`), stamped from the CMOS RTC on create/write/mkdir (+ build time for
+  shipped files via `mkfs`), plumbed through `dirent`/`fstat` to the Details pane's **Modified** line.
+  **statfs §6/§7** — `SYS_STATFS` returns the tosfs volume's total/free bytes (sector bitmap); shown
+  as the shell's `df` + a **"<n> free"** Details-pane footer; pure formatter `humansize.h` (unit
+  `t_humansize`), e2e `t_statfs`. **Left, cheapest-first:** rich Get Info §8 (now has dates+free),
+  tabs/split §4, column/gallery views §1, search/thumbnails §11, tags/undo §10/§12.
   → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
@@ -213,6 +218,19 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **statfs / free-space §6/§7 (2026-06-08).** New `SYS_STATFS` (69) fills a `struct statfs`
+  (total/free/block bytes) from the tosfs sector bitmap. Surfaced two ways: the shell's **`df`**
+  (Size/Used/Free) and a **"<n> free"** footer in the Files **Details pane** (the status bar's
+  own bottom-right corner sits under the dock, so the always-visible Details column is the better
+  home). 1024-based formatting is a pure header `humansize.h` (unit `t_humansize`, rounds tenths);
+  e2e `t_statfs` drives `df` + a post-write re-check.
+- **tosfs file timestamps (mtime) §8 (2026-06-08).** Every tosfs entry now carries a packed
+  modification time — a FAT-style 32-bit `year:12 month:4 day:5 hour:5 min:6` (`kernel/fstime.h`,
+  pure + unit `t_fstime`), stamped from the CMOS RTC (`rtc_now`) on file create/overwrite + mkdir,
+  and on files shipped in the image by the host `mkfs` (build time). Plumbed through `struct
+  tosfs_ent` → `struct dirent` (readdir) + `struct fstat` (stat) → the Files **Details pane**, which
+  now shows a **Modified** line (screenshot-verified: the minute tracks the menu-bar clock). FS
+  regression (struct grew): `t_fs_crud` / `t_fs_persist` / `t_many_files` / `t_files_*` all green.
 - **Files Duplicate + New File §12 + tosfs 0-byte files (2026-06-08).** **Duplicate** (Edit ▸ Duplicate /
   Ctrl D / context menu) clones the selected item beside itself as Finder-style **"X copy"** — files copy
   their bytes, folders copy **recursively** (new `copy_tree`, heap-allocates each level's listing so deep

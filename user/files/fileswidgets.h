@@ -10,6 +10,7 @@
 #include "icons.h"
 #include "pathbar.h"       /* pathbar_split + struct crumb: the breadcrumb model */
 #include "filesutil.h"     /* eqn / blit_scaled / vline_ / draw_glyph + G_* glyph ids */
+#include "fstime.h"        /* fstime_unpack: render an entry's packed "Modified" time */
 
 #define MAXAPPS 16          /* Open With chooser app cap (also FilesApp's apps[])      */
 
@@ -87,6 +88,8 @@ public:
     char name[64] = {0}, where[256] = {0};
     const char *kind = "";
     unsigned size = 0;
+    uint32_t mtime = 0;                               /* packed mtime (fstime.h); 0 = hide */
+    char freeline[28] = {0};                          /* "<n> free": volume free space footer (§6) */
     const uint32_t *icon = nullptr; int iw = 0, ih = 0, file_icon = FILEICON_FILE;
     void field(int x, int y, const char *k, const char *v) {
         int fh = ugfx_font_h();
@@ -99,6 +102,10 @@ public:
         ugfx_fill(r.x, r.y, r.w, r.h, C_DETAILS);
         ugfx_fill_a(r.x, r.y, 1, r.h, ARGB(70, 0, 0, 0));
         ugfx_set_clip(r.x, r.y, r.w, r.h);
+        if (freeline[0]) {                               /* §6: volume free space, always-visible footer */
+            ugfx_fill_a(r.x + 16, r.y + r.h - fh - 13, r.w - 32, 1, ARGB(40, 150, 170, 230));
+            ugfx_text(r.x + 16, r.y + r.h - fh - 6, freeline, TH_MUTED, UGFX_TRANSPARENT);
+        }
         if (!has) {
             const char *m = "No selection";
             ugfx_text(cx - ugfx_text_w(m) / 2, r.y + r.h / 2 - fh / 2, m, TH_MUTED, UGFX_TRANSPARENT);
@@ -112,10 +119,16 @@ public:
         ugfx_fill_a(r.x + 16, ty, r.w - 32, 1, ARGB(40, 150, 170, 230)); ty += 12;
         field(r.x + 16, ty, "Kind", kind); ty += fh * 2 + 9;
         if (is_file) { char sz[32]; snprintf(sz, sizeof sz, "%u bytes", size); field(r.x + 16, ty, "Size", sz); ty += fh * 2 + 9; }
+        if (mtime) {                                  /* §8: the file's last-modified time */
+            int yy, mo, dd, hh, mi; fstime_unpack(mtime, &yy, &mo, &dd, &hh, &mi);
+            char mt[32]; snprintf(mt, sizeof mt, "%04d-%02d-%02d %02d:%02d", yy, mo, dd, hh, mi);
+            field(r.x + 16, ty, "Modified", mt); ty += fh * 2 + 9;
+        }
         ugfx_text(r.x + 16, ty, "Where", TH_MUTED, UGFX_TRANSPARENT); ty += fh;
         int cols = (r.w - 32) / fw; if (cols < 1) cols = 1; if (cols > 62) cols = 62;
         int wl = (int)strlen(where);
-        for (int off = 0; off < wl && ty <= r.y + r.h - fh; off += cols) {
+        int wmax = r.y + r.h - fh - (freeline[0] ? fh + 14 : 0);   /* leave room for the free footer */
+        for (int off = 0; off < wl && ty <= wmax; off += cols) {
             char line[64]; int c = 0;
             for (; c < cols && off + c < wl; c++) line[c] = where[off + c];
             line[c] = 0;

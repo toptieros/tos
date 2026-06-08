@@ -1108,6 +1108,40 @@ def t_files_newdup(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_statfs(uefi):
+    # Free-space query (files-app §6/§7): SYS_STATFS reports the mounted volume's data
+    # capacity + free bytes from the sector bitmap. The shell's `df` surfaces it (and the
+    # Files status bar shows "<n> free"); the human_bytes formatter is unit-tested
+    # (t_humansize). Here we confirm the syscall returns sane figures end-to-end, and that
+    # free shrinks after we write a file.
+    with Tos(uefi=uefi) as t:
+        assert t.boot_ok(), "shell did not come up"
+        mark = len(t.serial())
+        t.line("df"); t.line("echo DF-A")
+        assert t.wait_for("DF-A", 6), "df did not complete"
+        out = t.serial()[mark:]
+        assert "tosfs" in out, "df did not name the filesystem"
+        m = re.search(r"Size: ([0-9.]+) (KB|MB|GB)\s+Used: ([0-9.]+) (KB|MB|GB)\s+Free: ([0-9.]+) (KB|MB|GB)", out)
+        assert m, "df did not report Size/Used/Free figures (%r)" % out[-200:]
+        size, free = float(m.group(1)), float(m.group(5))
+        assert size > 0 and free > 0, "df reported non-positive size/free"
+        # write a file, then free must not be larger than before (it dropped or held)
+        free_before = m.group(5) + " " + m.group(6)
+        t.line("write /Users/user/blob")              # prompts, then saves the next line
+        t.line("the quick brown fox jumps over the lazy dog over and over again")
+        assert t.wait_for("saved /Users/user/blob", 6), "write did not save the test file"
+        mark2 = len(t.serial())
+        t.line("df"); t.line("echo DF-B")
+        assert t.wait_for("DF-B", 6), "second df did not complete"
+        out2 = t.serial()[mark2:]
+        m2 = re.search(r"Free: ([0-9.]+) (KB|MB|GB)", out2)
+        assert m2, "second df did not report Free"
+        # a sector got consumed, so free is <= the earlier figure (same or one sector less)
+        assert (m2.group(2) != m.group(6)) or (float(m2.group(1)) <= free + 0.001), \
+            "free space grew after writing a file (was %s, now %s %s)" % (free_before, m2.group(1), m2.group(2))
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_term_menu(uefi):
     # The terminal is a raw-syscall app (not the ui:: toolkit), but it declares a
     # menu the same way via SYS_WIN_SETMENU: an Edit menu with Copy/Paste/Clear (no
@@ -1250,7 +1284,7 @@ def t_drivers(uefi):
 BIOS_TESTS = [
     # boot + filesystem
     t_boot_and_ls, t_partition, t_fs_crud, t_fs_persist, t_registry, t_many_files,
-    t_system_ownership,
+    t_system_ownership, t_statfs,
     # processes / scheduler
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys

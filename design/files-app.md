@@ -205,8 +205,10 @@ A bottom bar (Finder/Dolphin both have one) — currently absent. Shows, left-to
 
 - **Item count** for the folder, and on selection **"N of M selected, <total size>"**
   (needs multi-select — foundation; needs recursive folder size — §8/supporting work).
-- **Free space** on the volume with a thin usage bar (Dolphin's
-  `StatusBarSpaceInfo`). Needs a **statfs** syscall — supporting work.
+- **Free space** on the volume. *(done 2026-06-08: a `SYS_STATFS` syscall returns the tosfs
+  volume's total/free bytes from the sector bitmap; surfaced as a **"<n> free"** footer in the
+  Details pane — the status bar's own bottom-right sits under the dock — and as the shell's `df`.
+  A thin usage bar is still TODO.)*
 - The **zoom slider** (§1), right-aligned.
 - A **progress area** for the active background job (copy/move/delete/search) with a
   **Stop** button (§12). Hidden when idle; appears only if a job runs >~0.5s (Dolphin's
@@ -236,7 +238,10 @@ The Details pane is thin (icon, kind, size, where). A real **Get Info** (Ctrl I;
 - **Large preview / thumbnail** (§11), the editable **name** (inline rename from Info),
   **Kind**, **Size** — *recursive* for folders ("Calculate" / auto, with a running total
   as the walk progresses), **Where** (path).
-- **Created / Modified** dates (needs fs timestamps — supporting work).
+- **Created / Modified** dates. *(fs timestamps done 2026-06-08: tosfs entries now carry a
+  packed `mtime` (`fstime.h`, minute resolution), stamped on create/write/mkdir from the CMOS
+  RTC and on shipped files by `mkfs`; surfaced as the Details pane's **Modified** line. Only
+  mtime for now — a separate Created/btime field is still TODO.)*
 - **Owner** (we already have `fstat.owner` / `TOS_UID_*`) and **permissions** — and
   whether the item is **system-owned** (read-only / undeletable per
   [`system-ownership.md`](system-ownership.md), shown as a lock badge).

@@ -20,8 +20,19 @@
 #include "syscall.h"      /* O_CREATE / O_TRUNC / O_RDONLY, struct dirent / fstat */
 #include "spinlock.h"
 #include "perm.h"         /* tos_may_write() ownership check */
+#include "rtc.h"          /* rtc_now(): CMOS wall-clock for file mtimes (§8) */
+#include "fstime.h"       /* fstime_pack(): the on-disk packed mtime format */
 
 #define NOFILE 16
+
+/* the current wall-clock packed for an entry's mtime (fstime.h); 0 if the RTC is
+ * unreadable so the field stays "unknown" rather than a bogus date */
+static uint32_t fs_now(void) {
+    struct rtctime t;
+    rtc_now(&t);
+    if (t.year < 1970) return 0;
+    return fstime_pack(t.year, t.month, t.day, t.hour, t.min);
+}
 
 /* Guards the shared FS metadata (superblock, free-sector map, open-file tables,
  * per-task cwd) so file I/O from different CPUs doesn't corrupt it. */
@@ -290,6 +301,7 @@ static int mkdir_l(const char *path) {
     super.ents[s].type      = TOSFS_DIR;
     super.ents[s].owner     = (uint8_t)sched_uid();       /* a new entry is owned by its creator */
     super.ents[s].mode      = 0;
+    super.ents[s].mtime     = fs_now();
     return flush_super_ent(s);
 }
 
@@ -399,16 +411,36 @@ static int stat_l(const char *path, struct fstat *st) {
     if (!mounted) return -1;
     int s = resolve(path, cwd[sched_current()]);
     if (s == R_NONE) return -1;
-    if (s == TOSFS_ROOT) { st->type = TOSFS_DIR; st->size = 0; st->owner = TOS_UID_SYSTEM; return 0; }
+    if (s == TOSFS_ROOT) { st->type = TOSFS_DIR; st->size = 0; st->owner = TOS_UID_SYSTEM; st->mtime = 0; return 0; }
     st->type  = super.ents[s].type;
     st->size  = super.ents[s].size;
     st->owner = super.ents[s].owner;
+    st->mtime = super.ents[s].mtime;
     return 0;
 }
 
 int fs_stat(const char *path, struct fstat *st) {
     uint64_t f = spin_lock_preempt(&fs_lock);
     int r = stat_l(path, st);
+    spin_unlock_preempt(&fs_lock, f);
+    return r;
+}
+
+/* Volume usage: the directory table (sectors 0..D-1) is fixed overhead, so the data
+ * capacity is DISK-D sectors; free is however many of those the bitmap has clear. */
+static int statfs_l(struct statfs *st) {
+    if (!mounted) return -1;
+    uint32_t freecnt = 0;
+    for (uint32_t s = TOSFS_DIR_SECTORS; s < TOSFS_DISK_SECTORS; s++)
+        if (!bit_get(s)) freecnt++;
+    st->block_size  = 512;
+    st->total_bytes = (TOSFS_DISK_SECTORS - TOSFS_DIR_SECTORS) * 512u;
+    st->free_bytes  = freecnt * 512u;
+    return 0;
+}
+int fs_statfs(struct statfs *st) {
+    uint64_t f = spin_lock_preempt(&fs_lock);
+    int r = statfs_l(st);
     spin_unlock_preempt(&fs_lock, f);
     return r;
 }
@@ -421,8 +453,9 @@ static int readdir_l(const char *path, struct dirent *out, int max) {
     for (uint32_t i = 0; i < TOSFS_MAX_FILES && n < max; i++) {
         if (super.ents[i].type == TOSFS_FREE || super.ents[i].parent != dir) continue;
         copy_name(out[n].name, super.ents[i].name);
-        out[n].type = super.ents[i].type;
-        out[n].size = super.ents[i].size;
+        out[n].type  = super.ents[i].type;
+        out[n].size  = super.ents[i].size;
+        out[n].mtime = super.ents[i].mtime;
         n++;
     }
     return n;
@@ -612,6 +645,7 @@ static int close_l(int fd) {
                 super.ents[s].type      = TOSFS_FILE;
                 super.ents[s].owner     = (uint8_t)sched_uid();
                 super.ents[s].mode      = 0;
+                super.ents[s].mtime     = fs_now();
                 if (flush_super_ent(s) < 0) return -1;
             }
         } else {
@@ -628,6 +662,7 @@ static int close_l(int fd) {
                 super.ents[s].type      = TOSFS_FILE;
                 super.ents[s].owner     = (uint8_t)sched_uid();   /* owned by the writer */
                 super.ents[s].mode      = 0;
+                super.ents[s].mtime     = fs_now();
                 if (flush_super_ent(s) < 0) return -1;   /* persist just this entry's sector */
             } else {
                 for (uint32_t k = 0; k < f->nsect; k++) bit_clr(f->base_lba + k);

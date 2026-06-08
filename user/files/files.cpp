@@ -18,6 +18,7 @@
 #include "viewmem.h"       /* view_prefs: per-folder view memory in the registry (§2) */
 #include "trashinfo.h"     /* trashinfo_*: the Trash sidecar codec (§9) */
 #include "dupname.h"       /* dup_candidate: Finder-style "X copy" naming (§12) */
+#include "humansize.h"     /* human_bytes: status-bar free-space figure (§6) */
 
 #define NMAX    256
 #define HISTN   32
@@ -184,6 +185,8 @@ struct FilesApp : ui::Window {
          * + rowh/2). Row 0 is the synthetic ".." up-entry when has_up(). */
         print("[files] listrect "); printu((unsigned)list.r.x); printc(' '); printu((unsigned)list.r.y);
         printc(' '); printu((unsigned)list.r.w); printc(' '); printu((unsigned)list.row_h); print("\r\n");
+        struct statfs sf;                                /* §6 canary: the volume free bytes Files sees */
+        if (statfs_(&sf) == 0) { print("[files] free "); printu(sf.free_bytes); print("\r\n"); }
     }
     /* map a visible list row to an ents[] index, or -1 for the ".." row / off-list */
     int ent_at(int row) const {
@@ -220,6 +223,10 @@ struct FilesApp : ui::Window {
     void update_status() {
         if (filtering()) snprintf(status.left, sizeof status.left, "%d of %d shown", nview, nshown);
         else             snprintf(status.left, sizeof status.left, "%d item%s", nshown, nshown == 1 ? "" : "s");
+        struct statfs sf;                                /* §6: the volume's free space, shown as a */
+        if (statfs_(&sf) == 0) { char fb[24]; human_bytes(sf.free_bytes, fb, sizeof fb);   /* details footer */
+                                 snprintf(details.freeline, sizeof details.freeline, "%s free", fb); }
+        else details.freeline[0] = 0;
         int hu = has_up();
         if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
             if (details.is_file)
@@ -360,6 +367,7 @@ struct FilesApp : ui::Window {
         details.kind = kind_for(e->type, e->name);
         details.is_file = (e->type == FT_FILE);
         details.size = e->size;
+        details.mtime = e->mtime;                  /* §8: surface the file's modified time */
         details.icon = appicon[idx]; details.iw = appiw[idx]; details.ih = appih[idx];
         details.file_icon = file_icon_for(e->type, e->name);
         join(details.where, sizeof details.where, path, e->name);

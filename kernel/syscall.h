@@ -83,6 +83,7 @@
 #define SYS_WIN_PRESENT_RECT 66 /* (id, xy, wh) -> present only a damage rect (packed 16:16)   */
 #define SYS_GETPID      67 /* ()                 -> the caller's process id                     */
 #define SYS_GETPPID     68 /* ()                 -> the caller's parent process id (0 if none)  */
+#define SYS_STATFS      69 /* (struct statfs*)   -> fill volume total/free bytes; 0/-1         */
 
 /* Keyboard modifier bitmask (SYS_KBD_MODS, and packed into WEV_KEY -- see below). */
 #define KMOD_SHIFT 1
@@ -168,6 +169,15 @@ struct dirent {
     char     name[32];
     uint32_t type;        /* FT_FILE / FT_DIR */
     uint32_t size;        /* bytes (0 for a directory) */
+    uint32_t mtime;       /* packed modification time (fstime.h); 0 = unknown */
+};
+
+/* Filled by SYS_STATFS: the mounted volume's data capacity + what's free, in bytes
+ * (block_size is the allocation unit -- one tosfs sector). */
+struct statfs {
+    uint32_t total_bytes;   /* usable data capacity (excludes the directory table) */
+    uint32_t free_bytes;    /* currently free */
+    uint32_t block_size;    /* allocation unit in bytes (512) */
 };
 
 /* Filled by SYS_STAT. */
@@ -175,6 +185,7 @@ struct fstat {
     uint32_t type;        /* FT_FILE / FT_DIR */
     uint32_t size;
     uint32_t owner;       /* owning uid (TOS_UID_* -- fs/perm.h); for lock badges + messages */
+    uint32_t mtime;       /* packed modification time (fstime.h); 0 = unknown */
 };
 
 /* Per-task layout: each task's address space maps a private data page here.
