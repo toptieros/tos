@@ -43,8 +43,17 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   when too long for `REG_KEYMAX`; a stable `view.default` covers unseen folders); restored on navigate,
   persisted on every view/sort/zoom change; the menu-check re-sync was **batched into one `win_setmenu`**
   (was 7/nav, which raced menu clicks). Pure codec `viewmem.h` (unit `t_viewmem`), e2e `t_files_viewmem`,
-  logs `[files] viewmem <path> <mode> zoom <z>`. **Left, cheapest-first:** Trash §9, rich Get Info + fs
-  timestamps §8, tabs/split §4, column/gallery views §1, search/thumbnails §6, tags/undo §10/§12.
+  logs `[files] viewmem <path> <mode> zoom <z>`. **Trash §9** — Delete in a normal folder now **moves**
+  the item to `~/.Trash` (a `rename_()`, so it works for whole directories) instead of destroying it; a
+  hidden sidecar `~/.Trash/.trashinfo` records each item's origin so the context-menu **Put Back** restores
+  it where it came from; **Empty Trash** (File menu + Trash context menu) removes for good; Delete *inside*
+  the Trash deletes immediately. A **Trash** place anchors the sidebar; dotfiles (incl. `.Trash`/`.trashinfo`)
+  are now hidden from listings and the status "N items" count. Pure sidecar codec `trashinfo.h` (unit
+  `t_trashinfo`), e2e `t_files_trash` (full move → Put Back → Empty round-trip, confirmed on disk), logs
+  `[files] trash <name> / untrash <name> / trash empty`; new geometry canaries `[files] listrect` +
+  `[files] ctxmenu` (and a `rightclick` harness helper) let e2e drive list rows and context menus. **Left,
+  cheapest-first:** rich Get Info + fs timestamps §8, tabs/split §4, column/gallery views §1,
+  search/thumbnails §6, tags/undo §10/§12.
   → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
@@ -197,6 +206,18 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files Trash §9 — move / Put Back / Empty (2026-06-08).** Delete in a normal folder now **moves** the
+  item to `~/.Trash` via `rename_()` (works for whole directories too) instead of destroying it, recording
+  its origin in a hidden `~/.Trash/.trashinfo` sidecar so the context-menu **Put Back** restores it where
+  it came from; **Empty Trash** (File menu + Trash context menu) and Delete-inside-the-Trash remove for
+  good. New **Trash** sidebar place; **dotfiles are now hidden** from listings (so `.Trash`/`.trashinfo`
+  don't show) and excluded from the status "N items" count (new `nshown`). Pure sidecar codec
+  `trashinfo.h` (host unit `t_trashinfo`, 24 checks); e2e `t_files_trash` drives the full move → Put Back →
+  Empty round-trip and confirms each move on disk from the shell. Two reusable e2e canaries landed:
+  `[files] listrect x y w rowh` (click a list row) and `[files] ctxmenu px py rowh n` (click a context-menu
+  item, clamp-aware), plus a `rightclick` harness helper (twm already forwards the right button as a
+  context request). Screenshot-verified (sidebar Trash, two trashed folders, Put Back/Delete Immediately/
+  Empty Trash menu).
 - **Exit-fullscreen no longer leaves black areas (2026-06-06).** Toggling a toolkit app out of
   fullscreen left most of the window black until you hovered around to repaint it piecemeal. Cause:
   the `WEV_RESIZE` handler in `ui::Window::run` only set `dirty`, not `dmg_full` — so if any other

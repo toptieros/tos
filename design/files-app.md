@@ -250,6 +250,14 @@ toggle (today's Info button) and is shared with the desktop's "Get Info" popup
 
 ## 9. Trash
 
+**Status: v1 done (2026-06-08).** Move-to-Trash, Put Back, Empty Trash, and a Trash
+sidebar place all shipped; sidecar codec in `trashinfo.h` (unit `t_trashinfo`), e2e
+`t_files_trash`. Deviations from the sketch below: the sidecar (`~/.Trash/.trashinfo`)
+records `<trashedname>\t<originalpath>` per line (deletion time waits on fs timestamps
+§8); **dotfiles are now globally hidden** from listings (so the Trash/sidecar don't show)
+rather than special-casing `.Trash`; system-ownership greying and drag-to-trash are still
+to come. Remaining: full/empty Trash icon, Shift+Delete accelerator, confirm dialog.
+
 Replace irreversible `rmrf` with a two-tier model (Finder/Dolphin):
 
 - **Move to Trash** (default Delete / Ctrl Backspace): move the item into a per-user

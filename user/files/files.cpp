@@ -581,6 +581,7 @@ struct FilesApp : ui::Window {
     struct dirent ents[NMAX];
     int           nents = 0;
     int           view[NMAX]; int nview = 0;     /* ents indices currently shown (after filter) */
+    int           nshown = 0;                    /* non-hidden, picker-allowed item count (status "N items") */
     bool          filter_open = false;           /* the live filter bar is up ("/") */
     bool          loading = false;               /* guard: set_text() fires on_change mid-load */
     uint32_t     *appicon[NMAX] = {};
@@ -708,14 +709,15 @@ struct FilesApp : ui::Window {
      * over the display name); resets the selection, like Finder/Dolphin's filter. */
     void apply_filter() {
         const char *q = filter_open ? filterfld.text() : "";
-        nview = 0;
+        nview = 0; nshown = 0;
         for (int i = 0; i < nents; i++) {
             if (ents[i].name[0] == '.') continue;            /* hide dotfiles (.Trash, .trashinfo, ...) */
-            char label[64]; disp_name(ents[i].name, label, sizeof label);
-            if (!tu_ci_contains(label, q)) continue;
             /* picker mode: directories always navigable; files only if their extension
              * is in the request's allowed list (empty list = all). */
             if (picker && ents[i].type == FT_FILE && !pickreq_ext_match(ents[i].name, preq.ext)) continue;
+            nshown++;                                        /* a real (non-hidden, allowed) item */
+            char label[64]; disp_name(ents[i].name, label, sizeof label);
+            if (!tu_ci_contains(label, q)) continue;
             view[nview++] = i;
         }
         list.count = nview + has_up();
@@ -728,8 +730,8 @@ struct FilesApp : ui::Window {
     }
     /* refresh the bottom status bar from the folder count + current selection */
     void update_status() {
-        if (filtering()) snprintf(status.left, sizeof status.left, "%d of %d shown", nview, nents);
-        else             snprintf(status.left, sizeof status.left, "%d item%s", nents, nents == 1 ? "" : "s");
+        if (filtering()) snprintf(status.left, sizeof status.left, "%d of %d shown", nview, nshown);
+        else             snprintf(status.left, sizeof status.left, "%d item%s", nshown, nshown == 1 ? "" : "s");
         int hu = has_up();
         if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
             if (details.is_file)
