@@ -999,7 +999,7 @@ def t_files_trash(uefi):
         c_ctx = t.serial().count("[files] ctxmenu")
         rx, ry = _files_row_xy(t, wr, 1)
         t.rightclick(rx, ry)
-        _files_ctx_click(t, wr, 2, c_ctx)                 # dir menu: Open(0) Rename(1) Delete(2)
+        _files_ctx_click(t, wr, 3, c_ctx)                 # dir menu: Open(0) Duplicate(1) Rename(2) Delete(3)
         assert t.wait_for("[files] trash trashme", 8), "Delete did not move trashme to the Trash"
         # on disk: it physically moved into ~/.Trash. (The "[files] trash" canary alone
         # can't prove this -- move_to_trash logs it even on the rmrf fallback -- so we
@@ -1031,9 +1031,9 @@ def t_files_trash(uefi):
         c_ctx = t.serial().count("[files] ctxmenu")
         rx, ry = _files_row_xy(t, wr, 1)
         t.rightclick(rx, ry)
-        _files_ctx_click(t, wr, 2, c_ctx)                 # Delete again
+        _files_ctx_click(t, wr, 3, c_ctx)                 # Delete again (Open0 Duplicate1 Rename2 Delete3)
         assert _count_at_least(t, "[files] trash trashme", c_trash + 1, 8), "re-Delete did not re-trash trashme"
-        _files_menu_click(t, "File", 2)                   # File > Empty Trash
+        _files_menu_click(t, "File", 3)                   # File > Empty Trash (after New Folder/New File/Refresh)
         assert t.wait_for("[files] trash empty", 8), "Empty Trash did not run"
         # on disk: the Trash is now empty
         _dock_focus(t, "Terminal")
@@ -1042,6 +1042,69 @@ def t_files_trash(uefi):
         t.line("echo TRASH-CHECKED")
         assert t.wait_for("TRASH-CHECKED", 6), "the trash listing did not complete"
         assert "trashme" not in t.serial()[et_mark:], "Empty Trash left trashme on disk"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_files_newdup(uefi):
+    # New File + Duplicate (files-app §12). New File drops an empty "newfile.txt" here and
+    # enters rename (like New Folder); Duplicate clones the selected item beside itself as
+    # "<name> copy" -- files copy their bytes, folders copy recursively (copy_tree). The
+    # "X copy" name math is unit-tested (t_dupname); here we drive the real ops through the
+    # UI and confirm each one on disk from the terminal. Deterministic single-item staged
+    # folders make the target row 1; the shell's `ls <path>` keeps the whole rest of the
+    # line as the path, so a duplicated "box copy" with a space is checkable directly.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        # stage two empty folders + a nested tree (box/sub) for the recursion check
+        t.line("mkdir /Users/user/dup")
+        t.line("mkdir /Users/user/dup2")
+        t.line("mkdir /Users/user/dup2/box")
+        t.line("mkdir /Users/user/dup2/box/sub")
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        # --- New File: File > New File creates newfile.txt + enters rename; Esc keeps it ---
+        _files_nav(t, wr, "/Users/user/dup")
+        _files_menu_click(t, "File", 1)                   # File > New File
+        assert t.wait_for("[files] renaming newfile.txt", 8), "New File did not create + name newfile.txt"
+        t.key("esc", delay=0.2)                           # keep the default name
+        # on disk: the empty file is really there
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("ls /Users/user/dup"); t.line("echo NEWFILE-A")
+        assert t.wait_for("NEWFILE-A", 6), "the dup listing did not complete"
+        assert "newfile.txt" in t.serial()[mark:], "New File did not land on disk"
+        # --- Duplicate a file: right-click newfile.txt (row 1), pick Duplicate ---
+        _dock_focus(t, "Files")
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)
+        t.rightclick(rx, ry)
+        _files_ctx_click(t, wr, 4, c_ctx)                 # file menu: Open(0) OpenWith(1) Copy(2) Cut(3) Duplicate(4)
+        assert t.wait_for("[files] duplicate newfile copy.txt", 8), "Duplicate did not clone the file as 'newfile copy.txt'"
+        # on disk: both the original and the copy exist
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("ls /Users/user/dup"); t.line("echo NEWFILE-B")
+        assert t.wait_for("NEWFILE-B", 6), "the post-duplicate listing did not complete"
+        tail = t.serial()[mark:]
+        assert "newfile copy.txt" in tail, "the duplicated file is not on disk"
+        # --- Duplicate a folder: copy_tree recurses (box/sub -> 'box copy'/sub) ---
+        _dock_focus(t, "Files")
+        _files_nav(t, wr, "/Users/user/dup2")
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)
+        t.rightclick(rx, ry)
+        _files_ctx_click(t, wr, 1, c_ctx)                 # folder menu: Open(0) Duplicate(1)
+        assert t.wait_for("[files] duplicate box copy", 8), "Duplicate did not clone the folder as 'box copy'"
+        # on disk: the recursive copy reproduced the child directory inside 'box copy'
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("ls /Users/user/dup2/box copy"); t.line("echo BOXCOPY")
+        assert t.wait_for("BOXCOPY", 6), "the box-copy listing did not complete"
+        assert "sub" in t.serial()[mark:], "copy_tree did not recurse into the folder's child"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -1192,7 +1255,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,

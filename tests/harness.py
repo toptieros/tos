@@ -228,13 +228,17 @@ class Tos:
     def open_terminal(self):
         """Double-click the Terminal launcher in the dock to open it, then wait
         for its shell. The dock coordinates come from twm's serial output."""
-        if not self.wait_for("[twm] desktop ready", timeout=15):
+        # Generous waits: under full-suite load the host is running back-to-back
+        # QEMU boots, so the desktop/shell can take noticeably longer to come up
+        # than in isolation. wait_for returns the instant the line appears, so the
+        # headroom is free on a fast boot and only spent on a contended one.
+        if not self.wait_for("[twm] desktop ready", timeout=25):
             return False
         xy = self.icon_xy("Terminal")
         if not xy:
             return False
         self.doubleclick(*xy)
-        return self.wait_for("Welcome to the tOS shell", timeout=12)
+        return self.wait_for("Welcome to the tOS shell", timeout=20)
 
     def stop(self):
         try:

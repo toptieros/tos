@@ -302,12 +302,20 @@ P3 — clean follow-up once Get Info and search exist.
 
 ## 12. File-operation completeness
 
+**Status: Duplicate + New File done (2026-06-08).** Duplicate clones the selection beside
+itself as Finder-style "X copy"/"X copy 2" (pure name math `dupname.h`); files copy their
+bytes, folders recurse via `copy_tree`. New File drops an empty `newfile.txt` and enters
+rename like New Folder. This needed a tosfs fix — `close_l` now persists 0-byte files
+(start_lba 0/size 0) instead of discarding empty writes. e2e `t_files_newdup`. **Remaining:**
+a real template set, **New Folder with Selection**, undo/redo, background jobs + conflict
+prompts (the bullets below).
+
 Beyond the foundation's copy/cut/paste/rename:
 
 - **Duplicate** (Ctrl D) — `cp_r` an item next to itself as "X copy"; the foundation's
-  recursive copy makes this a one-liner.
-- **New File / templates** — alongside New Folder: New Text File (and a small template
-  set), then **New Folder with Selection** (Finder: wrap the selection in a new folder).
+  recursive copy makes this a one-liner. *(done)*
+- **New File / templates** — alongside New Folder: New Text File *(done; a template set +
+  **New Folder with Selection** — Finder: wrap the selection in a new folder — are still TODO)*.
 - **Undo / redo** of file operations (Dolphin's `KIO` undo, Finder ⌘Z) — keep a small
   **op journal** (create/rename/move/copy/trash) with inverse actions, so the last
   operation(s) can be undone. Trash + rename make most undo trivial (move back / rename

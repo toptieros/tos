@@ -597,8 +597,23 @@ static int close_l(int fd) {
     if (fd < 0 || fd >= NOFILE || !tbl[fd].used) return -1;
     struct ofile *f = &tbl[fd];
     if (f->writing) {
-        if (f->pos == 0) {                               /* empty file: give the sector back */
-            bit_clr(f->base_lba);
+        if (f->pos == 0) {                               /* empty file: no data sectors, but
+                                                          * still a real 0-byte entry (like a
+                                                          * dir: start_lba 0, size 0) so New File
+                                                          * / truncate-to-empty / copying an empty
+                                                          * file persist instead of vanishing */
+            bit_clr(f->base_lba);                        /* return the speculatively-reserved sector */
+            int s = alloc_slot();
+            if (s >= 0) {
+                copy_name(super.ents[s].name, f->name);
+                super.ents[s].start_lba = 0;
+                super.ents[s].size      = 0;
+                super.ents[s].parent    = f->parent;
+                super.ents[s].type      = TOSFS_FILE;
+                super.ents[s].owner     = (uint8_t)sched_uid();
+                super.ents[s].mode      = 0;
+                if (flush_super_ent(s) < 0) return -1;
+            }
         } else {
             if (f->pos % 512 != 0) {                     /* flush partial sector */
                 for (uint32_t j = f->pos % 512; j < 512; j++) wbuf[j] = 0;

@@ -17,6 +17,7 @@
 #include "filesort.h"      /* filesort_cmp: data-driven Sort by Name/Kind/Size (§2) */
 #include "viewmem.h"       /* view_prefs: per-folder view memory in the registry (§2) */
 #include "trashinfo.h"     /* trashinfo_*: the Trash sidecar codec (§9) */
+#include "dupname.h"       /* dup_candidate: Finder-style "X copy" naming (§12) */
 
 #define NMAX    256
 #define HISTN   32
@@ -378,6 +379,32 @@ struct FilesApp : ui::Window {
             rmdir(p);
         } else funlink(p);
     }
+    /* recursive copy `src` -> `dst` (dst must not already exist): a file copies its
+     * bytes, a directory is recreated and each child copied into it. This is the
+     * "foundation recursive copy" Duplicate (§12) and folder paste build on. The
+     * per-level listing is heap-allocated (NMAX dirents = 10K) so a deep tree can't
+     * blow the small userspace stack. Returns 0 on success, -1 if anything failed. */
+    static int copy_tree(const char *src, const char *dst) {
+        struct fstat st; if (stat_(src, &st) < 0) return -1;
+        if (st.type != FT_DIR) {                                   /* a plain file: slurp + spit */
+            int n = 0; char *b = sys_slurp(src, &n);
+            if (!b) { sys_spit(dst, "", 0); return 0; }            /* empty/zero-length source */
+            int w = sys_spit(dst, b, n); free(b);
+            return (w == n) ? 0 : -1;
+        }
+        if (mkdir(dst) != 0) return -1;
+        struct dirent *e = (struct dirent *)malloc(sizeof(struct dirent) * NMAX);
+        if (!e) return -1;
+        int n = readdir(src, e, NMAX), rc = 0;
+        for (int i = 0; i < n; i++) {
+            char cs[256], cd[256];
+            join(cs, sizeof cs, src, e[i].name);
+            join(cd, sizeof cd, dst, e[i].name);
+            if (copy_tree(cs, cd) != 0) rc = -1;
+        }
+        free(e);
+        return rc;
+    }
     /* ---- Trash (§9) --------------------------------------------------------- *
      * Delete in a normal folder MOVES the item to ~/.Trash (a rename, so it's cheap
      * and works for whole directories); a sidecar (~/.Trash/.trashinfo) records each
@@ -530,6 +557,36 @@ struct FilesApp : ui::Window {
                 return;
             }
         }
+    }
+    /* §12: New (Text) File -- create an empty "newfile.txt" here (deduped so repeats
+     * never clobber) and drop into rename over it, exactly like New Folder. */
+    void make_file() {
+        char name[40], child[256];
+        for (int k = 0; k < 1000; k++) {
+            if (k == 0) strncpy(name, "newfile.txt", sizeof name); else snprintf(name, sizeof name, "newfile%d.txt", k);
+            join(child, sizeof child, path, name);
+            struct fstat st;
+            if (stat_(child, &st) < 0) {
+                sys_spit(child, "", 0); load_dir();
+                if (select_named(name) >= 0) start_rename();   /* name it now, Finder-style */
+                return;
+            }
+        }
+    }
+    /* §12: Duplicate -- clone the selected item beside itself as "<name> copy" (files
+     * copy their bytes, folders copy recursively via copy_tree). Picks the first free
+     * "copy"/"copy 2"/... name, then selects the new item. Not offered in the Trash. */
+    void duplicate_sel() {
+        int idx = ent_at(list.sel);
+        if (idx < 0 || in_trash() || !dir_writable()) return;
+        char src[256]; join(src, sizeof src, path, ents[idx].name);
+        char dst[256];
+        int k = 1; for (; k < 1000; k++) { dup_candidate(dst, sizeof dst, src, k); if (!sys_exists(dst, 0)) break; }
+        if (k >= 1000 || copy_tree(src, dst) != 0) return;
+        print("[files] duplicate "); print(basename_of(dst)); print("\r\n");
+        load_dir();
+        select_named(basename_of(dst));
+        invalidate();
     }
 
     /* ---- in-place rename ---------------------------------------------------- */
@@ -887,11 +944,11 @@ struct FilesApp : ui::Window {
 
         if (!picker) {                                /* app menus #6: File/Edit/Go bar (normal mode only) */
             menu_begin();
-            int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "Refresh", 0);
-                                       menu_item(mf, "Empty Trash", 0);
+            int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "New File", 0);
+                                       menu_item(mf, "Refresh", 0); menu_item(mf, "Empty Trash", 0);
             int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
-                                       menu_item(me, "Paste", 'V'); menu_item(me, "Delete", 0);
-                                       menu_item(me, "Rename", 0);
+                                       menu_item(me, "Paste", 'V'); menu_item(me, "Duplicate", 'D');
+                                       menu_item(me, "Delete", 0); menu_item(me, "Rename", 0);
             int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
             int mv = menu_add("View");                          /* view mode + zoom (§1) */
             menu_item(mv, "as Icons", 0, view_mode == 1 ? WMI_CHECKED : 0);
@@ -951,6 +1008,8 @@ struct FilesApp : ui::Window {
         case 9: start_rename();  break;                   /* in-place rename */
         case 10: restore_from_trash(); break;             /* Put Back a trashed item (§9) */
         case 11: empty_trash();        break;             /* Empty Trash (§9) */
+        case 12: duplicate_sel();      break;             /* Duplicate (§12) */
+        case 13: make_file();          break;             /* New File (§12)  */
         }
         invalidate();
     }
@@ -980,6 +1039,7 @@ struct FilesApp : ui::Window {
                 if (e->type == FT_DIR || is_app_dir(e->type, e->name)) menu.add("Open", PK_ACTION, 1, 0, 0, 0);
                 else { menu.add("Open", PK_ACTION, 1, 0, 0, 0); menu.add("Open With...", PK_ACTION, 2, 0, 0, 0);
                        menu.add("Copy", PK_ACTION, 6, 0, 0, 0); menu.add("Cut", PK_ACTION, 7, 0, 0, 0); }
+                menu.add("Duplicate", PK_ACTION, 12, 0, 0, 0);        /* §12 */
                 menu.add("Rename", PK_ACTION, 9, 0, 0, 0);
                 menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
             }
@@ -989,7 +1049,8 @@ struct FilesApp : ui::Window {
             if (clip_info(clip_active(-1), &ci) == 0 && ci.type == CLIP_FILE)
                 menu.add("Paste", PK_ACTION, 8, 0, 0, 0); }
         if (trash) menu.add("Empty Trash", PK_ACTION, 11, 0, 0, 0);
-        else       menu.add("New Folder",  PK_ACTION, 4, 0, 0, 0);
+        else { menu.add("New Folder", PK_ACTION,  4, 0, 0, 0);
+               menu.add("New File",   PK_ACTION, 13, 0, 0, 0); }   /* §12 */
         menu.add("Refresh",    PK_ACTION, 5, 0, 0, 0);
         menu.show(x, y);
         invalidate();
@@ -1024,12 +1085,12 @@ struct FilesApp : ui::Window {
      * arrive here as WEV_MENU picks (the same actions the toolbar + right-click run). */
     void on_menu(int menu, int item) override {
         print("[files] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
-        if (menu == 0) { if (item == 0) make_folder(); else if (item == 1) load_dir();
-                         else if (item == 2) empty_trash(); }                                 /* File: New Folder / Refresh / Empty Trash */
+        if (menu == 0) { if (item == 0) make_folder(); else if (item == 1) make_file();
+                         else if (item == 2) load_dir(); else if (item == 3) empty_trash(); } /* File: New Folder / New File / Refresh / Empty Trash */
         else if (menu == 1) {                                                                 /* Edit */
             if (item == 0) copy_sel(false); else if (item == 1) copy_sel(true);
-            else if (item == 2) paste(); else if (item == 3) do_delete();
-            else if (item == 4) start_rename();
+            else if (item == 2) paste(); else if (item == 3) duplicate_sel();
+            else if (item == 4) do_delete(); else if (item == 5) start_rename();
         } else if (menu == 2) {                                                               /* Go */
             if (item == 0) go_up(); else if (item == 1) go_back(); else if (item == 2) go_fwd();
         } else if (menu == 3) {                                                               /* View: mode + zoom */

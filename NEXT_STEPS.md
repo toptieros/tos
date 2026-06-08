@@ -51,9 +51,16 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   are now hidden from listings and the status "N items" count. Pure sidecar codec `trashinfo.h` (unit
   `t_trashinfo`), e2e `t_files_trash` (full move → Put Back → Empty round-trip, confirmed on disk), logs
   `[files] trash <name> / untrash <name> / trash empty`; new geometry canaries `[files] listrect` +
-  `[files] ctxmenu` (and a `rightclick` harness helper) let e2e drive list rows and context menus. **Left,
-  cheapest-first:** rich Get Info + fs timestamps §8, tabs/split §4, column/gallery views §1,
-  search/thumbnails §6, tags/undo §10/§12.
+  `[files] ctxmenu` (and a `rightclick` harness helper) let e2e drive list rows and context menus.
+  **Duplicate + New File §12** — **Duplicate** (Edit ▸ / context menu) clones the selected item beside
+  itself as Finder-style **"X copy" / "X copy 2"** — files copy their bytes, folders copy **recursively**
+  (`copy_tree`); **New File** (File ▸ / context menu) drops an empty `newfile.txt` and enters rename like
+  New Folder. Enabling empty files needed a **tosfs fix**: `close_l` now persists a real **0-byte entry**
+  (start_lba 0 / size 0, like a directory) instead of discarding empty writes — so New File, truncate-to-
+  empty, and copying an empty file all work. Pure name codec `dupname.h` (unit `t_dupname`), e2e
+  `t_files_newdup` (New File + file Duplicate + recursive folder Duplicate, all confirmed on disk), logs
+  `[files] duplicate <name>`. **Left, cheapest-first:** rich Get Info + fs timestamps §8, tabs/split §4,
+  column/gallery views §1, search/thumbnails §6, tags/undo §10/§12.
   → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
@@ -206,6 +213,16 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files Duplicate + New File §12 + tosfs 0-byte files (2026-06-08).** **Duplicate** (Edit ▸ Duplicate /
+  Ctrl D / context menu) clones the selected item beside itself as Finder-style **"X copy"** — files copy
+  their bytes, folders copy **recursively** (new `copy_tree`, heap-allocates each level's listing so deep
+  trees don't blow the stack). **New File** (File ▸ New File / context menu) drops an empty `newfile.txt`
+  and enters rename like New Folder. tosfs couldn't hold empty files — `close_l` discarded any 0-byte write —
+  so it now writes a real **0-byte entry** (start_lba 0 / size 0, like a dir); New File / truncate-to-empty /
+  copying an empty file all persist now. Pure name codec `dupname.h` (unit `t_dupname`, 12 checks), e2e
+  `t_files_newdup` (New File + file Duplicate + recursive folder Duplicate, all confirmed on disk). Menu
+  reindex: File = New Folder / **New File** / Refresh / Empty Trash; Edit gains **Duplicate**; the folder
+  context menu gains Duplicate (shifted t_files_trash's Delete/Empty-Trash indices, updated to match).
 - **Userspace de-clutter — split the big single files into modules (2026-06-08).** The Makefile now
   compiles + links **every `.c`/`.cpp` in an app's dir** (a generic `app_objs` wildcard rule), so an app
   can outgrow one file just by dropping another source in. **twm** (was 2325 lines) is now `twm.c` (core:
