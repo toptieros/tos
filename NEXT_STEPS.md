@@ -224,6 +224,16 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files split / dual pane §4 (2026-06-09).** **View ▸ Split View** shows a second pane beside the
+  primary one (its own `path2`/`ents2`/selection), with a splitter + a blue **active-pane accent**
+  (`SplitDecor`). The second pane is a lean navigable list (`..` + double-click to drill); **Copy to
+  Other Pane** / **Move to Other Pane** (Edit menu + the file context menu, enabled only in split) send
+  the active pane's selection into the other pane's folder via `copy_tree` + a dedupe. Details pane
+  hides in split; clicking either pane sets the active one. e2e `t_files_split` (toggle on, drive pane
+  2 to a sibling folder, copy a file across — confirmed on disk — screenshot two panes). Canaries
+  `[files] split`, `[files] pane2 cd`, `[files] copy-across`, `[files] listrect2`. Menu adds: View ▸
+  Split View (item 5), Edit ▸ Copy/Move to Other Pane (items 6/7). (A full symmetric `FileView`
+  extraction — breadcrumb/rename/icons per pane + drag-between — is the follow-up.)
 - **Files tabs §4 (2026-06-09).** One window, many folders: a **tab strip** of folder pills under the
   location bar (hidden with a single tab), each tab keeping its **own folder + back/forward history +
   selection**. The live `path`/`hist` are the active tab's working copy; switching shuttles them to/from

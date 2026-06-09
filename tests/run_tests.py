@@ -976,6 +976,15 @@ def _files_ctx_click(t, wr, idx, before):
     t.click(wr[0] + px + 14, wr[1] + py + 5 + idx * rh + rh // 2)
 
 
+def _files_pane2_row_xy(t, wr, row):
+    """Absolute (x, y) of the second (split) pane's `row` centre, from the latest
+    "[files] listrect2 x y w rowh" canary. Row 0 is its ".." up-entry."""
+    ms = re.findall(r"\[files\] listrect2 (\d+) (\d+) (\d+) (\d+)", t.serial())
+    assert ms, "the Files pane-2 list-rect canary was not reported"
+    lx, ly, lw, rh = (int(v) for v in ms[-1])
+    return wr[0] + lx + lw // 2, wr[1] + ly + row * rh + rh // 2
+
+
 def _files_tab_click(t, wr, i, close=False):
     """Click tab `i`'s pill body (or its × when close=True) on the Files tab strip, using
     the latest "[files] tabbar y h n cur" + "[files] tabpos i x w" geometry canaries. The
@@ -1235,6 +1244,58 @@ def t_files_tabs(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_split(uefi):
+    # Split / dual-pane view (§4): View ▸ Split View shows a second pane beside the first,
+    # each with its own folder. The second pane is navigable (.. + double-click a folder);
+    # "Copy to Other Pane" sends the active pane's selection into the other pane's folder.
+    # Canaries: "[files] split 1", "[files] pane2 cd <path>", "[files] copy-across <name> ->
+    # <dstdir>". Screenshot the two panes.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        # a deterministic parent sp/{src,dst}; src holds the file we'll copy across
+        t.line("mkdir /Users/user/sp")
+        t.line("mkdir /Users/user/sp/src")
+        t.line("mkdir /Users/user/sp/dst")
+        t.line("write /Users/user/sp/src/movefile.txt"); t.line("payload across panes")
+        assert t.wait_for("saved /Users/user/sp/src/movefile.txt", 6), "could not stage movefile.txt"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        # primary pane -> sp/src
+        _files_nav(t, wr, "/Users/user/sp/src")
+        # turn on Split View (View menu item 5); pane 2 opens at the same folder
+        _files_menu_click(t, "View", 5)
+        assert t.wait_for("[files] split 1", 6), "Split View did not turn on"
+        assert t.wait_for("[files] pane2 cd /Users/user/sp/src", 6), "pane 2 did not open at the current folder"
+        # drive pane 2 to sp/dst: double-click ".." (row 0) up to sp, then "dst" (row 1)
+        p2 = t.serial().count("[files] pane2 cd /Users/user/sp\r")
+        rx, ry = _files_pane2_row_xy(t, wr, 0)
+        t.doubleclick(rx, ry)
+        assert _count_at_least(t, "[files] pane2 cd /Users/user/sp\r", p2 + 1, 6), "pane 2 did not go up to sp"
+        rx, ry = _files_pane2_row_xy(t, wr, 1)            # sp: row0=".." row1="dst" (dst<src)
+        t.doubleclick(rx, ry)
+        assert t.wait_for("[files] pane2 cd /Users/user/sp/dst", 6), "pane 2 did not enter dst"
+        t.screenshot("/tmp/tos_split.ppm")               # two panes, primary=src active, pane2=dst
+        # right-click the file in the PRIMARY pane, Copy to Other Pane (sends it into dst)
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)                 # primary src: row0=".." row1="movefile.txt"
+        t.rightclick(rx, ry)
+        # file menu in split: Open0 OpenWith1 Copy2 Cut3 Duplicate4 Rename5 Delete6 Copy-to-Other-Pane7
+        _files_ctx_click(t, wr, 7, c_ctx)
+        assert t.wait_for("[files] copy-across movefile.txt -> /Users/user/sp/dst", 8), \
+            "Copy to Other Pane did not copy the file across"
+        # confirm on disk
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("ls /Users/user/sp/dst"); t.line("echo SPLITDONE")
+        assert t.wait_for("SPLITDONE", 6), "the dst listing did not complete"
+        assert "movefile.txt" in t.serial()[mark:], "the copied file did not land in the other pane's folder"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_statfs(uefi):
     # Free-space query (files-app §6/§7): SYS_STATFS reports the mounted volume's data
     # capacity + free bytes from the sector bitmap. The shell's `df` surfaces it (and the
@@ -1416,7 +1477,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_files_split, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,

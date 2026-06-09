@@ -52,6 +52,8 @@ struct FilesApp : ui::Window {
     DetailsPanel details;
     StatusBar    status;
     TabStrip     tabstrip;                    /* the folder tab strip (§4)             */
+    ui::ListView list2;                       /* dual-pane: the second pane (§4)        */
+    SplitDecor   splitdecor;                  /* splitter + active-pane accent (§4)     */
     Popup        menu;
 
     /* ---- picker mode (#11): Files run as the system Open/Save dialog ---------
@@ -93,6 +95,16 @@ struct FilesApp : ui::Window {
     char          tabtitle_buf[TabStrip::VIS][32];
     const char   *tabtitle_ptr[TabStrip::VIS];
 
+    /* Dual-pane / split view (§4): a self-contained second pane (its own folder + listing
+     * + selection) beside the primary one. Files copy/move *between* the panes; `active`
+     * is the pane with keyboard focus. The primary pane keeps all its machinery; pane 2 is
+     * a lean navigable list (.. + folder drill) that shares the sort + copy helpers. */
+    bool          split = false;
+    int           active = 0;                    /* 0 = primary pane, 1 = pane 2 */
+    char          path2[256] = HOMEDIR;
+    struct dirent ents2[NMAX]; int nents2 = 0;   /* pane 2: dotfiles compacted out, sorted */
+    int           sel2 = -1;
+
     AppEntry      apps[MAXAPPS]; int napps = 0;
     int           menu_mode = 0;                 /* 0 = context actions, 1 = open-with */
     char          ow_path[256] = {0};            /* file the open-with chooser targets */
@@ -126,6 +138,7 @@ struct FilesApp : ui::Window {
         if (picker) return;                          /* picker mode has no menu bar */
         menu_check_local(3, 0, view_mode == 1);      /* View: as Icons */
         menu_check_local(3, 1, view_mode == 0);      /* View: as List  */
+        menu_check_local(3, 5, split);               /* View: Split View (§4) */
         menu_check_local(4, 0, sort_key == FSORT_NAME);
         menu_check_local(4, 1, sort_key == FSORT_KIND);
         menu_check_local(4, 2, sort_key == FSORT_SIZE);
@@ -413,6 +426,94 @@ struct FilesApp : ui::Window {
         char t[256]; join(t, sizeof t, path, e->name); new_tab(t);
     }
 
+    /* ---- Split / dual pane (§4) -------------------------------------------- */
+    static bool is_root(const char *p) { return p[0] == '/' && p[1] == 0; }
+    int  has_up2() const { return is_root(path2) ? 0 : 1; }
+    void load_dir2() {                                    /* read + compact + sort pane 2 */
+        int n = readdir(path2, ents2, NMAX); if (n < 0) n = 0;
+        int w = 0; for (int i = 0; i < n; i++) if (ents2[i].name[0] != '.') ents2[w++] = ents2[i];
+        nents2 = w;
+        for (int i = 0; i < nents2; i++)
+            for (int j = i + 1; j < nents2; j++)
+                if (ent_cmp(&ents2[j], &ents2[i]) < 0) { struct dirent t = ents2[i]; ents2[i] = ents2[j]; ents2[j] = t; }
+        list2.count = nents2 + has_up2();
+        if (sel2 >= list2.count) sel2 = -1;
+        list2.sel = sel2; list2.top = 0;
+        print("[files] pane2 cd "); print(path2); print("\r\n");
+        print("[files] listrect2 "); printu((unsigned)list2.r.x); printc(' '); printu((unsigned)list2.r.y);
+        printc(' '); printu((unsigned)list2.r.w); printc(' '); printu((unsigned)list2.row_h); print("\r\n");
+    }
+    void nav2(const char *p) { strncpy(path2, p, sizeof path2 - 1); path2[sizeof path2 - 1] = 0;
+                               if (!path2[0]) { path2[0] = '/'; path2[1] = 0; } sel2 = -1; load_dir2(); invalidate(); }
+    void go_up2() {
+        if (is_root(path2)) return;
+        char par[256]; strncpy(par, path2, sizeof par - 1); par[sizeof par - 1] = 0;
+        int last = -1; for (int i = 0; par[i]; i++) if (par[i] == '/') last = i;
+        if (last <= 0) { par[0] = '/'; par[1] = 0; } else par[last] = 0;
+        nav2(par);
+    }
+    void select2(int row) { active = 1; splitdecor.active = 1; sel2 = list2.sel = row; invalidate(); }
+    void enter2(int row) {
+        active = 1; splitdecor.active = 1;
+        if (has_up2() && row == 0) { go_up2(); return; }
+        int idx = row - has_up2(); if (idx < 0 || idx >= nents2) return;
+        struct dirent *e = &ents2[idx];
+        if (e->type == FT_DIR && !is_app_dir(e->type, e->name)) { char t[256]; join(t, sizeof t, path2, e->name); nav2(t); }
+    }
+    void set_split(bool on) {
+        if (split == on) return;
+        split = on;
+        if (split) { strncpy(path2, path, sizeof path2 - 1); path2[sizeof path2 - 1] = 0; sel2 = -1;
+                     active = 0; splitdecor.active = 0; if (view_mode == 1) set_view(0); }  /* split is list-only */
+        layout_widgets();
+        if (split) load_dir2();
+        sync_menus();                                      /* publish the View ▸ Split View tick */
+        /* the primary list rect just changed (half width <-> full); re-emit so e2e clicks
+         * land on the correct pane. */
+        print("[files] listrect "); printu((unsigned)list.r.x); printc(' '); printu((unsigned)list.r.y);
+        printc(' '); printu((unsigned)list.r.w); printc(' '); printu((unsigned)list.row_h); print("\r\n");
+        print("[files] split "); printu(split ? 1u : 0u); print("\r\n");
+        invalidate();
+    }
+    /* copy `name` from `srcdir` into `dstdir` (recursive; dedupes a colliding name) */
+    void copy_across(const char *srcdir, const char *name, const char *dstdir) {
+        char src[256], dst[256]; join(src, sizeof src, srcdir, name); join(dst, sizeof dst, dstdir, name);
+        if (sys_exists(dst, 0)) { char dd[256]; dedup_path(dd, sizeof dd, dst); strncpy(dst, dd, sizeof dst - 1); dst[sizeof dst - 1] = 0; }
+        if (copy_tree(src, dst) == 0) { print("[files] copy-across "); print(name); print(" -> "); print(dstdir); print("\r\n"); }
+    }
+    void copy_to_other(bool move) {                        /* §4: send active selection to the other pane */
+        if (!split) return;
+        if (active == 0) {
+            int hu = has_up(); if (list.sel < 0 || (hu && list.sel == 0)) return;
+            struct dirent *e = &ents[list.sel - hu];
+            copy_across(path, e->name, path2);
+            if (move) { char s[256]; join(s, sizeof s, path, e->name); rmrf(s); load_dir(); }
+            load_dir2();
+        } else {
+            if (sel2 < 0 || (has_up2() && sel2 == 0)) return;
+            int idx = sel2 - has_up2(); if (idx < 0 || idx >= nents2) return;
+            struct dirent *e = &ents2[idx];
+            copy_across(path2, e->name, path);
+            if (move) { char s[256]; join(s, sizeof s, path2, e->name); rmrf(s); load_dir2(); }
+            load_dir();
+        }
+        invalidate();
+    }
+    static void render_row2(void *ctx, int i, ui::Rect cell, bool sel) {
+        FilesApp *a = (FilesApp *)ctx;
+        if (!sel && (i & 1)) ugfx_fill(cell.x, cell.y, cell.w, cell.h, C_ZEBRA);
+        int ix = cell.x + 12, ty = cell.y + (cell.h - a->fh) / 2, iyy = cell.y + (cell.h - 20) / 2;
+        const char *name; int type; unsigned size = 0;
+        if (a->has_up2() && i == 0) { name = ".."; type = FT_DIR; }
+        else { int idx = i - a->has_up2(); if (idx < 0 || idx >= a->nents2) return;
+               struct dirent *e = &a->ents2[idx]; name = e->name; type = e->type; size = e->size; }
+        char label[64]; disp_name(name, label, sizeof label);
+        blit_scaled(ix, iyy, 20, 20, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
+        ugfx_text(ix + 30, ty, label, sel ? RGB(255, 255, 255) : TH_TEXT, UGFX_TRANSPARENT);
+        if (type == FT_FILE) { char sz[20]; snprintf(sz, sizeof sz, "%u B", size);
+            ugfx_text(cell.x + cell.w - ugfx_text_w(sz) - 14, ty, sz, sel ? RGB(230, 238, 250) : TH_MUTED, UGFX_TRANSPARENT); }
+    }
+
     /* open a non-.app file: use a remembered default app for its extension, else
      * pop the Open With chooser. */
     void open_file(const char *name) {
@@ -456,6 +557,7 @@ struct FilesApp : ui::Window {
      * list's own rect; without a repaint request the damage-tracked frame would
      * only refresh the list. Repaint the whole window (selection is low-frequency). */
     void select_row(int row) {
+        active = 0; splitdecor.active = 0;               /* a click in the primary pane makes it active (§4) */
         list.sel = grid.sel = row;                       /* single selection, shared by both views */
         int idx = ent_at(row);
         if (idx < 0) { details.has = false; update_status(); update_pick_btn(); invalidate(); return; }
@@ -928,7 +1030,8 @@ struct FilesApp : ui::Window {
         STH = fh + 12;
         SBW = 11 * fw + 34; if (SBW < 150) SBW = 150;
         DPW = 20 * fw + 28; if (DPW < 200) DPW = 200; if (DPW > 264) DPW = 264;
-        int dp = dpw_now(), mainx = SBW, mainw = w - SBW - dp;
+        int dp = (details_open && !picker && !split) ? DPW : 0;   /* details hidden in split (§4) */
+        int mainx = SBW, mainw = w - SBW - dp;
 
         side.r = { 0, 0, SBW, h };
         side.row_h = fh + 10; side.head_h = fh + 18;
@@ -960,15 +1063,27 @@ struct FilesApp : ui::Window {
         FTH = picker ? fh + 26 : 0;                      /* the picker footer band         */
         listy = tabs_bottom + FBH;
         int lh = h - listy - STH - FTH; if (lh < fh) lh = fh;
-        list.r = { mainx, listy, mainw, lh }; list.row_h = fh + 12;
-        grid.r = list.r;                                 /* the icon view shares the content area */
-        bool icons = (view_mode == 1) && !picker;
-        list.visible = !icons; grid.visible = icons;
-        grid.clamp_top();
+        list.row_h = list2.row_h = fh + 12;
+        if (split && !picker) {                          /* §4: two panes side by side */
+            int half = mainw / 2;
+            list.r  = { mainx, listy, half - 1, lh };
+            list2.r = { mainx + half + 1, listy, mainw - half - 1, lh };
+            list.visible = true; list2.visible = true; grid.visible = false;
+            splitdecor.visible = true; splitdecor.on = true;
+            splitdecor.pane[0] = list.r; splitdecor.pane[1] = list2.r;
+        } else {
+            list.r = { mainx, listy, mainw, lh };
+            grid.r = list.r;                             /* the icon view shares the content area */
+            bool icons = (view_mode == 1) && !picker;
+            list.visible = !icons; grid.visible = icons;
+            list2.visible = false; splitdecor.visible = false; splitdecor.on = false;
+            grid.clamp_top();
+        }
         renamefld.visible = renaming;                    /* the in-place rename overlay tracks the item */
         if (renaming) renamefld.r = rename_rect();
         status.r = { mainx, h - STH - FTH, mainw, STH };
         details.r = { w - DPW, TBH, DPW, h - TBH };
+        details.visible = details_open && !picker && !split;
 
         if (picker) {                                    /* footer: [Name: ___]  Cancel  Open/Save */
             int fy = h - FTH, pad = 8, bh = FTH - 12, by2 = fy + 6;
@@ -1045,6 +1160,10 @@ struct FilesApp : ui::Window {
         grid.render_tile = render_tile;
         grid.on_select   = [](void *c, int i) { ((FilesApp *)c)->select_row(i); };
         grid.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter(i); };
+
+        list2.ctx = this; list2.render_row = render_row2; list2.bg = C_LIST; list2.sel_bg = C_SELROW;
+        list2.on_select   = [](void *c, int i) { ((FilesApp *)c)->select2(i); };
+        list2.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter2(i); };
         apply_zoom();
 
         back.ctx = fwd.ctx = up.ctx = newf.ctx = del.ctx = info.ctx = this;
@@ -1089,7 +1208,7 @@ struct FilesApp : ui::Window {
 
         layout_widgets();
         add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info); add(&tabstrip);
-        add(&crumbbar); add(&pathfld); add(&list); add(&grid); add(&renamefld); add(&details); add(&status);
+        add(&crumbbar); add(&pathfld); add(&list); add(&grid); add(&list2); add(&splitdecor); add(&renamefld); add(&details); add(&status);
         add(&footer); add(&nameLbl); add(&nameFld); add(&cancelBtn); add(&okBtn);
         add(&menu); add(&overwrite);                  /* menu + overwrite last = on top + modal */
         focus = picker && preq.mode == PICK_SAVE ? (ui::Widget *)&nameFld : (ui::Widget *)&list;
@@ -1102,6 +1221,8 @@ struct FilesApp : ui::Window {
             int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
                                        menu_item(me, "Paste", 'V'); menu_item(me, "Duplicate", 'D');
                                        menu_item(me, "Delete", 0); menu_item(me, "Rename", 0);
+                                       menu_item(me, "Copy to Other Pane", 0, split ? 0 : WMI_DISABLED);   /* §4 (item 6) */
+                                       menu_item(me, "Move to Other Pane", 0, split ? 0 : WMI_DISABLED);   /* §4 (item 7) */
             int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
             int mv = menu_add("View");                          /* view mode + zoom (§1) */
             menu_item(mv, "as Icons", 0, view_mode == 1 ? WMI_CHECKED : 0);
@@ -1109,6 +1230,7 @@ struct FilesApp : ui::Window {
             menu_item(mv, "Zoom In",     0);
             menu_item(mv, "Zoom Out",    0);
             menu_item(mv, "Actual Size", 0);
+            menu_item(mv, "Split View",  0, split ? WMI_CHECKED : 0);   /* §4 (item 5) */
             int ms = menu_add("Sort");                          /* Sort by … (§2) */
             menu_item(ms, "Sort by Name", 0, sort_key == FSORT_NAME ? WMI_CHECKED : 0);
             menu_item(ms, "Sort by Kind", 0, sort_key == FSORT_KIND ? WMI_CHECKED : 0);
@@ -1167,6 +1289,7 @@ struct FilesApp : ui::Window {
         case 12: duplicate_sel();      break;             /* Duplicate (§12) */
         case 13: make_file();          break;             /* New File (§12)  */
         case 14: open_sel_new_tab();   break;             /* Open in New Tab (§4) */
+        case 15: copy_to_other(false); break;             /* Copy to Other Pane (§4) */
         }
         invalidate();
     }
@@ -1203,6 +1326,7 @@ struct FilesApp : ui::Window {
                 menu.add("Duplicate", PK_ACTION, 12, 0, 0, 0);        /* §12 */
                 menu.add("Rename", PK_ACTION, 9, 0, 0, 0);
                 menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
+                if (split) menu.add("Copy to Other Pane", PK_ACTION, 15, 0, 0, 0);   /* §4 */
             }
             menu.add("", PK_SEP, 0, 0, 0, 0);
         }
@@ -1262,6 +1386,7 @@ struct FilesApp : ui::Window {
             if (item == 0) copy_sel(false); else if (item == 1) copy_sel(true);
             else if (item == 2) paste(); else if (item == 3) duplicate_sel();
             else if (item == 4) do_delete(); else if (item == 5) start_rename();
+            else if (item == 6) copy_to_other(false); else if (item == 7) copy_to_other(true);  /* §4 */
         } else if (menu == 2) {                                                               /* Go */
             if (item == 0) go_up(); else if (item == 1) go_back(); else if (item == 2) go_fwd();
         } else if (menu == 3) {                                                               /* View: mode + zoom */
@@ -1270,6 +1395,7 @@ struct FilesApp : ui::Window {
             else if (item == 2) set_zoom(zoom + 1);                /* Zoom In     */
             else if (item == 3) set_zoom(zoom - 1);                /* Zoom Out    */
             else if (item == 4) set_zoom(1);                       /* Actual Size */
+            else if (item == 5) set_split(!split);                 /* Split View (§4) */
         } else if (menu == 4) {                                                               /* Sort by … */
             if      (item == 0) set_sort(FSORT_NAME, sort_desc, sort_ff);
             else if (item == 1) set_sort(FSORT_KIND, sort_desc, sort_ff);

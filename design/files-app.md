@@ -183,6 +183,14 @@ per-tab drag/reorder.)*
   its own path; **Copy/Move to Other View** acts between them, and drag between panes
   (foundation DnD) moves files. One pane is "active" (keyboard focus). Toggle on the
   toolbar / Ctrl `*`.
+  *(Done 2026-06-09: View ▸ Split View shows a second pane (`list2`/`ents2`/`path2`) beside the
+  primary one, with a splitter + a blue active-pane accent (`SplitDecor`). The second pane is a
+  lean navigable list (.. + double-click to drill); **Copy to Other Pane** / **Move to Other
+  Pane** (Edit menu + context menu) send the active pane's selection across via `copy_tree` +
+  dedupe. Details pane is hidden in split. e2e `t_files_split` (toggle, pane-2 nav, copy-across
+  confirmed on disk, screenshot). Still TODO: a real `FileView` extraction so both panes are
+  fully symmetric (pane 2 has no breadcrumb/rename/icons/its own context menu yet), drag-between,
+  and the Ctrl+`*` chord.)*
 
 Both are pure app-level composition over `FileView` instances — no kernel work — but
 tabs need a tab-strip widget and split needs a draggable splitter (small toolkit

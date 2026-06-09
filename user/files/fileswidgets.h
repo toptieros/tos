@@ -276,6 +276,29 @@ public:
     }
 };
 
+/* ---------------------------------------------------------------- SplitDecor */
+/* Dual-pane chrome (design/files-app.md §4): a thin vertical splitter between the two
+ * panes plus a 2px accent frame around whichever pane is active. Purely decorative -- it
+ * sits on top of the two list views and never eats clicks (the app routes those). */
+class SplitDecor : public ui::Widget {
+public:
+    ui::Rect pane[2];        /* the two pane content rects (window coords) */
+    int  active = 0;
+    bool on = false;
+    SplitDecor() { focusable = false; }
+    static void frame(ui::Rect q, uint32_t c) {
+        ugfx_fill_a(q.x, q.y, q.w, 2, c); ugfx_fill_a(q.x, q.y + q.h - 2, q.w, 2, c);
+        ugfx_fill_a(q.x, q.y, 2, q.h, c); ugfx_fill_a(q.x + q.w - 2, q.y, 2, q.h, c);
+    }
+    void draw() override {
+        if (!visible || !on) return;
+        int sx = (pane[0].x + pane[0].w + pane[1].x) / 2;        /* mid-gap splitter */
+        ugfx_fill_a(sx, pane[0].y, 1, pane[0].h, ARGB(80, 0, 0, 0));
+        frame(pane[active], ARGB(200, 120, 160, 240));
+    }
+    bool on_mouse(int, int, int) override { return false; }      /* never consume clicks */
+};
+
 /* ---------------------------------------------------------------- Breadcrumb */
 /* The location bar (design/files-app.md §3): the path as clickable segment chips
  * ( / › Users › user › Documents ), each navigating to that ancestor, with a chevron
