@@ -940,20 +940,33 @@ def _files_nav(t, wr, path):
     """Navigate Files to `path` via the breadcrumb path editor (the proven-robust route,
     vs. the Ctrl+L chord that races the modifier release). Counts NEW "[files] pathedit"
     / "[files] cd <path>" lines so a re-visit isn't satisfied by an earlier identical
-    one (wait_for is a substring search over the whole log)."""
+    one (wait_for is a substring search over the whole log).
+
+    The whole open->type->Enter is retried as a unit: under host load either the click
+    that opens the editor or the Enter that commits can be dropped, so a single shot is
+    flaky. Esc before each retry closes any half-open editor (harmless no-op when the
+    editor isn't up), so the next crumbend click re-opens a FRESH field whose select-all
+    discards any garbage a dropped keystroke left behind."""
     cdc = t.serial().count("[files] cd %s\r" % path)
-    for _ in range(3):
+    for attempt in range(3):
+        if attempt:
+            t.key("esc", delay=0.2)                       # close a stuck editor before reopening
         pe = t.serial().count("[files] pathedit")
-        ms = re.findall(r"\[files\] crumbend (\d+) (\d+)", t.serial())
-        assert ms, "the breadcrumb empty-area target was not reported"
-        t.click(wr[0] + int(ms[-1][0]), wr[1] + int(ms[-1][1]))
-        if _count_at_least(t, "[files] pathedit", pe + 1, 4):
-            break
-    else:
-        assert False, "the Files path editor did not open"
-    t.type(path, delay=0.03)
-    t.key("ret", delay=0.25)
-    assert _count_at_least(t, "[files] cd %s\r" % path, cdc + 1, 8), "Files did not navigate to %s" % path
+        opened = False
+        for _ in range(3):
+            ms = re.findall(r"\[files\] crumbend (\d+) (\d+)", t.serial())
+            assert ms, "the breadcrumb empty-area target was not reported"
+            t.click(wr[0] + int(ms[-1][0]), wr[1] + int(ms[-1][1]))
+            if _count_at_least(t, "[files] pathedit", pe + 1, 4):
+                opened = True
+                break
+        if not opened:
+            continue
+        t.type(path, delay=0.03)
+        t.key("ret", delay=0.25)
+        if _count_at_least(t, "[files] cd %s\r" % path, cdc + 1, 8):
+            return
+    assert False, "Files did not navigate to %s" % path
 
 
 def _files_row_xy(t, wr, row):
@@ -983,6 +996,24 @@ def _files_pane2_row_xy(t, wr, row):
     assert ms, "the Files pane-2 list-rect canary was not reported"
     lx, ly, lw, rh = (int(v) for v in ms[-1])
     return wr[0] + lx + lw // 2, wr[1] + ly + row * rh + rh // 2
+
+
+def _files_hdr(t):
+    """Latest details-view column-header geometry, from "[files] hdr x y h x0 w0 x1 w1 x2
+    w2 x3 w3" (client coords + per-column offset/width). Returns (hx, hy, hh, [(cx,cw)*4])."""
+    ms = re.findall(r"\[files\] hdr (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+)", t.serial())
+    assert ms, "the Files column-header geometry canary was not reported"
+    v = [int(x) for x in ms[-1]]
+    cols = [(v[3 + 2 * c], v[4 + 2 * c]) for c in range(4)]
+    return v[0], v[1], v[2], cols
+
+
+def _files_hdr_click(t, wr, col):
+    """Click the centre of details-view header column `col` (0=Name 1=Kind 2=Size 3=Date)
+    -- well clear of the resize dividers at the column edges -- to sort by it."""
+    hx, hy, hh, cols = _files_hdr(t)
+    cx, cw = cols[col]
+    t.click(wr[0] + hx + cx + cw // 2, wr[1] + hy + hh // 2)
 
 
 def _files_tab_click(t, wr, i, close=False):
@@ -1296,6 +1327,51 @@ def t_files_split(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_details(uefi):
+    # Details / column view (§1): the list mode grows a header row -- Name | Kind | Size |
+    # Date Modified -- whose cells sort on click (toggling asc/desc, with a caret) and are
+    # resizable. We stage a folder with files of differing kind/size, open Files (list mode is
+    # the default, so the header is up), screenshot the aligned columns, then drive sorting by
+    # clicking the Size / Date / Name headers. Canaries: "[files] hdr ...", "[files] sort ...".
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        t.line("mkdir /Users/user/dv")
+        t.line("write /Users/user/dv/alpha.txt"); t.line("a")
+        assert t.wait_for("saved /Users/user/dv/alpha.txt", 6), "could not stage alpha.txt"
+        t.line("write /Users/user/dv/beta.md"); t.line("a much longer line of bytes here")
+        assert t.wait_for("saved /Users/user/dv/beta.md", 6), "could not stage beta.md"
+        t.line("mkdir /Users/user/dv/zsub")
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        _files_nav(t, wr, "/Users/user/dv")
+        # the details header is up in list mode -> its geometry canary must report four columns
+        hx, hy, hh, cols = _files_hdr(t)
+        assert cols[0][1] > cols[1][1], "Name should be the widest column by default"
+        assert all(cw > 0 for _, cw in cols), "every column has a positive width"
+        t.screenshot("/tmp/tos_details.ppm")             # Name/Kind/Size/Date columns + a caret
+        # click the Size header -> sort by size ascending
+        s = t.serial().count("[files] sort size asc")
+        _files_hdr_click(t, wr, 2)
+        assert _count_at_least(t, "[files] sort size asc", s + 1, 6), "Size header did not sort by size asc"
+        # click it again -> the active column toggles to descending
+        s = t.serial().count("[files] sort size desc")
+        _files_hdr_click(t, wr, 2)
+        assert _count_at_least(t, "[files] sort size desc", s + 1, 6), "re-clicking Size did not flip to desc"
+        # Date header -> sort by date (a fresh key resets to ascending)
+        s = t.serial().count("[files] sort date asc")
+        _files_hdr_click(t, wr, 3)
+        assert _count_at_least(t, "[files] sort date asc", s + 1, 6), "Date header did not sort by date"
+        # Name header -> back to name ascending
+        s = t.serial().count("[files] sort name asc")
+        _files_hdr_click(t, wr, 0)
+        assert _count_at_least(t, "[files] sort name asc", s + 1, 6), "Name header did not sort by name"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_statfs(uefi):
     # Free-space query (files-app §6/§7): SYS_STATFS reports the mounted volume's data
     # capacity + free bytes from the sector bitmap. The shell's `df` surfaces it (and the
@@ -1477,7 +1553,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_files_split, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_files_split, t_files_details, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,

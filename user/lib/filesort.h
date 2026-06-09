@@ -6,7 +6,7 @@
  * section of the design doc.) */
 #pragma once
 
-enum { FSORT_NAME = 0, FSORT_KIND = 1, FSORT_SIZE = 2 };
+enum { FSORT_NAME = 0, FSORT_KIND = 1, FSORT_SIZE = 2, FSORT_DATE = 3 };
 
 static inline char fs_lc(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 
@@ -53,15 +53,17 @@ static inline int fs_extcmp(const char *a, const char *b) {
 
 /* The directory comparator: returns <0 if entry a sorts before b. `key` is FSORT_*,
  * `desc` reverses the order, `folders_first` keeps directories grouped at the top
- * regardless of direction (Finder/Dolphin default). Name is the tiebreak for Kind
- * and Size so the order is stable. */
-static inline int filesort_cmp(const char *an, int a_isdir, unsigned asz,
-                               const char *bn, int b_isdir, unsigned bsz,
+ * regardless of direction (Finder/Dolphin default). `amt`/`bmt` are the entries' packed
+ * mtimes (fstime.h; monotonic, so a raw compare orders them) -- used only by FSORT_DATE.
+ * Name is the tiebreak for Kind / Size / Date so the order is stable. */
+static inline int filesort_cmp(const char *an, int a_isdir, unsigned asz, unsigned amt,
+                               const char *bn, int b_isdir, unsigned bsz, unsigned bmt,
                                int key, int desc, int folders_first) {
     if (folders_first && (a_isdir != b_isdir)) return a_isdir ? -1 : 1;  /* dirs first, before the direction flip */
     int c;
     if (key == FSORT_SIZE)      { c = (asz < bsz) ? -1 : (asz > bsz) ? 1 : 0; if (c == 0) c = fs_natcmp(an, bn); }
     else if (key == FSORT_KIND) { c = fs_extcmp(an, bn); if (c == 0) c = fs_natcmp(an, bn); }
+    else if (key == FSORT_DATE) { c = (amt < bmt) ? -1 : (amt > bmt) ? 1 : 0; if (c == 0) c = fs_natcmp(an, bn); }
     else                        { c = fs_natcmp(an, bn); }
     return desc ? -c : c;
 }

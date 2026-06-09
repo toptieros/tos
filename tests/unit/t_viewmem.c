@@ -13,6 +13,9 @@ static void test_defaults(void) {
     CHECK_INT(d.sort_desc, 0, "default direction is ascending");
     CHECK_INT(d.sort_ff, 1,   "default folders-first is on");
     CHECK_INT(d.zoom, 1,      "default zoom is actual size");
+    CHECK_INT(d.colw[0], 230, "default Name column width");
+    CHECK_INT(d.colw[1], 96,  "default Kind column width");
+    CHECK_INT(d.colw[2], 96,  "default Size column width");
     /* an empty/garbage value decodes to the defaults */
     struct view_prefs e = viewmem_decode("");
     CHECK_INT(e.mode, 0,    "empty string -> default mode");
@@ -22,16 +25,20 @@ static void test_defaults(void) {
 }
 
 static void test_roundtrip(void) {
-    struct view_prefs in = { 1 /*icons*/, 2 /*size*/, 1 /*desc*/, 0 /*ff off*/, 2 /*zoomed*/ };
-    char buf[32];
+    struct view_prefs in = { 1 /*icons*/, 2 /*size*/, 1 /*desc*/, 0 /*ff off*/, 2 /*zoomed*/,
+                             { 250, 110, 80 } };
+    char buf[48];
     viewmem_encode(&in, buf, sizeof buf);
-    CHECK_STR(buf, "1;2;1;0;2", "encode packs the five fields");
+    CHECK_STR(buf, "1;2;1;0;2;250;110;80", "encode packs all eight fields");
     struct view_prefs out = viewmem_decode(buf);
     CHECK_INT(out.mode, 1,      "round-trip mode");
     CHECK_INT(out.sort_key, 2,  "round-trip sort key");
     CHECK_INT(out.sort_desc, 1, "round-trip direction");
     CHECK_INT(out.sort_ff, 0,   "round-trip folders-first");
     CHECK_INT(out.zoom, 2,      "round-trip zoom");
+    CHECK_INT(out.colw[0], 250, "round-trip Name width");
+    CHECK_INT(out.colw[1], 110, "round-trip Kind width");
+    CHECK_INT(out.colw[2], 80,  "round-trip Size width");
 }
 
 static void test_partial(void) {
@@ -39,6 +46,11 @@ static void test_partial(void) {
     struct view_prefs p = viewmem_decode("1");
     CHECK_INT(p.mode, 1,    "leading field parsed");
     CHECK_INT(p.sort_ff, 1, "omitted folders-first keeps its default (on)");
+    /* a legacy 5-field value (pre-column-widths) keeps the default widths */
+    struct view_prefs g = viewmem_decode("1;2;1;0;2");
+    CHECK_INT(g.zoom, 2,      "legacy value still parses zoom");
+    CHECK_INT(g.colw[0], 230, "legacy value -> default Name width");
+    CHECK_INT(g.colw[2], 96,  "legacy value -> default Size width");
 }
 
 static void test_key_literal(void) {

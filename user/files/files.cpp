@@ -54,6 +54,7 @@ struct FilesApp : ui::Window {
     TabStrip     tabstrip;                    /* the folder tab strip (§4)             */
     ui::ListView list2;                       /* dual-pane: the second pane (§4)        */
     SplitDecor   splitdecor;                  /* splitter + active-pane accent (§4)     */
+    ColumnHeader header;                       /* details-view sortable column header (§1) */
     Popup        menu;
 
     /* ---- picker mode (#11): Files run as the system Open/Save dialog ---------
@@ -116,11 +117,13 @@ struct FilesApp : ui::Window {
     int at_root()  const { return path[0] == '/' && path[1] == 0; }
     int has_up()   const { return at_root() ? 0 : 1; }
     int dpw_now()  const { return details_open ? DPW : 0; }
+    /* details view = the list mode's sortable column header (§1); not in icons/picker/split */
+    bool cols_on() const { return view_mode == 0 && !picker && !split; }
 
     /* the readdir comparator, driven by the user's Sort menu choice (§2) */
     int ent_cmp(const struct dirent *a, const struct dirent *b) const {
         int ad = (a->type == FT_DIR), bd = (b->type == FT_DIR);
-        return filesort_cmp(a->name, ad, a->size, b->name, bd, b->size, sort_key, sort_desc, sort_ff);
+        return filesort_cmp(a->name, ad, a->size, a->mtime, b->name, bd, b->size, b->mtime, sort_key, sort_desc, sort_ff);
     }
     /* Flip a View/Sort check mark on menu_spec in-place WITHOUT publishing -- so a batch
      * of updates costs a single win_setmenu (via sync_menus' menu_commit) instead of one
@@ -136,6 +139,7 @@ struct FilesApp : ui::Window {
      * index 4) and publish once. Called on navigation (restored prefs) and the setters. */
     void sync_menus() {
         if (picker) return;                          /* picker mode has no menu bar */
+        header.sort_key = sort_key; header.sort_desc = sort_desc;   /* §1: keep the column caret current */
         menu_check_local(3, 0, view_mode == 1);      /* View: as Icons */
         menu_check_local(3, 1, view_mode == 0);      /* View: as List  */
         menu_check_local(3, 5, split);               /* View: Split View (§4) */
@@ -153,9 +157,24 @@ struct FilesApp : ui::Window {
         sync_menus();
         load_dir();
         persist_view();                              /* remember this folder's sort (§2) */
-        const char *kn = key == FSORT_KIND ? "kind" : key == FSORT_SIZE ? "size" : "name";
+        const char *kn = key == FSORT_KIND ? "kind" : key == FSORT_SIZE ? "size" : key == FSORT_DATE ? "date" : "name";
         print("[files] sort "); print(kn); printc(' '); print(desc ? "desc" : "asc"); printc(' '); printu((unsigned)ff); print("\r\n");
         invalidate();
+    }
+    /* §1: a details-view column label was clicked -- sort by it, toggling direction on the
+     * already-active column (Finder behaviour). Keyboard focus returns to the rows. */
+    void header_sort(int colkey) {
+        int desc = (sort_key == colkey) ? !sort_desc : 0;
+        set_sort(colkey, desc, sort_ff);
+        focus = &list;
+    }
+    /* §1: a column divider drag finished -- persist the new widths and re-flow the rows */
+    void header_resized() {
+        persist_view();
+        focus = &list;
+        print("[files] colw "); printu((unsigned)header.cw[0]); printc(' ');
+        printu((unsigned)header.cw[1]); printc(' '); printu((unsigned)header.cw[2]); print("\r\n");
+        layout_widgets(); invalidate();
     }
 
     /* scan /Apps once for the Open With chooser */
@@ -312,6 +331,7 @@ struct FilesApp : ui::Window {
         if (!picker) {                                       /* §2: restore this folder's remembered view */
             struct view_prefs v = load_view_prefs();
             view_mode = v.mode; sort_key = v.sort_key; sort_desc = v.sort_desc; sort_ff = v.sort_ff; zoom = v.zoom;
+            header.set_widths(v.colw);                        /* §1: restore the column widths too */
         }
         load_dir();                                          /* sorts with the restored sort_key */
         crumbbar.set_path(path); side.cur = path;
@@ -937,21 +957,59 @@ struct FilesApp : ui::Window {
         else                        okBtn.enabled = (list.sel >= 0);
     }
 
+    /* "Folder" / "Application" / an UPPERCASED extension / "File" -- the Kind column (§1) */
+    static void kind_label(int type, const char *name, char *out, int cap) {
+        const char *k = nullptr;
+        if (type == FT_DIR) k = is_app_dir(type, name) ? "Application" : "Folder";
+        else { const char *e = fs_ext(name);
+               if (!e[0]) k = "File";
+               else { int i = 0; for (; e[i] && i < cap - 1; i++) { char c = e[i]; out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; } out[i] = 0; return; } }
+        int i = 0; for (; k[i] && i < cap - 1; i++) out[i] = k[i]; out[i] = 0;
+    }
+    /* truncate `s` to fit `maxpx` (monospace), tail-clipping with a '.' like the icon tiles */
+    static void fit_col(const char *s, char *out, int cap, int maxpx) {
+        int fwd = ugfx_font_w(); if (fwd < 1) fwd = 1;
+        int maxc = maxpx / fwd; if (maxc < 1) maxc = 1; if (maxc > cap - 1) maxc = cap - 1;
+        int n = 0; while (s[n]) n++;
+        if (n <= maxc) { int i = 0; for (; s[i]; i++) out[i] = s[i]; out[i] = 0; return; }
+        int k = maxc - 1; if (k < 0) k = 0; for (int i = 0; i < k; i++) out[i] = s[i]; out[k] = '.'; out[k + 1] = 0;
+    }
+    /* the per-row 20px file/app icon, shared by the legacy + details layouts */
+    static void row_icon(FilesApp *a, int idx, int type, const char *name, int ix, int iyy) {
+        if (idx >= 0 && is_app_dir(type, name) && a->appicon[idx]) blit_scaled(ix, iyy, 20, 20, a->appicon[idx], a->appiw[idx], a->appih[idx]);
+        else blit_scaled(ix, iyy, 20, 20, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
+    }
     static void render_row(void *ctx, int i, ui::Rect cell, bool sel) {
         FilesApp *a = (FilesApp *)ctx;
         if (!sel && (i & 1)) ugfx_fill(cell.x, cell.y, cell.w, cell.h, C_ZEBRA);
-        int ix = cell.x + 12, ty = cell.y + (cell.h - a->fh) / 2, iyy = cell.y + (cell.h - 20) / 2;
-        const char *name; int type; unsigned size = 0; int idx = -1;
+        int ty = cell.y + (cell.h - a->fh) / 2, iyy = cell.y + (cell.h - 20) / 2;
+        const char *name; int type; unsigned size = 0, mt = 0; int idx = -1;
         if (a->has_up() && i == 0) { name = ".."; type = FT_DIR; }
-        else { idx = a->ent_at(i); if (idx < 0) return; struct dirent *e = &a->ents[idx]; name = e->name; type = e->type; size = e->size; }
+        else { idx = a->ent_at(i); if (idx < 0) return; struct dirent *e = &a->ents[idx];
+               name = e->name; type = e->type; size = e->size; mt = e->mtime; }
         char label[64]; disp_name(name, label, sizeof label);
-        if (idx >= 0 && is_app_dir(type, name) && a->appicon[idx]) blit_scaled(ix, iyy, 20, 20, a->appicon[idx], a->appiw[idx], a->appih[idx]);
-        else blit_scaled(ix, iyy, 20, 20, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
-        ugfx_text(ix + 30, ty, label, sel ? RGB(255, 255, 255) : TH_TEXT, UGFX_TRANSPARENT);
-        if (type == FT_FILE) {
-            char sz[20]; snprintf(sz, sizeof sz, "%u B", size);
-            ugfx_text(cell.x + cell.w - ugfx_text_w(sz) - 14, ty, sz, sel ? RGB(230, 238, 250) : TH_MUTED, UGFX_TRANSPARENT);
+        uint32_t txt = sel ? RGB(255, 255, 255) : TH_TEXT, mut = sel ? RGB(230, 238, 250) : TH_MUTED;
+        if (!a->cols_on()) {                                 /* legacy single-column rows (picker / split panes) */
+            int ix = cell.x + 12; row_icon(a, idx, type, name, ix, iyy);
+            ugfx_text(ix + 30, ty, label, txt, UGFX_TRANSPARENT);
+            if (type == FT_FILE) { char sz[20]; snprintf(sz, sizeof sz, "%u B", size);
+                ugfx_text(cell.x + cell.w - ugfx_text_w(sz) - 14, ty, sz, mut, UGFX_TRANSPARENT); }
+            return;
         }
+        /* details view: each cell aligned to the column header (§1) */
+        int *cx = a->header.colx, *cwd = a->header.colw, base = cell.x;
+        int ix = base + cx[0] + 10; row_icon(a, idx, type, name, ix, iyy);
+        char nm[64]; fit_col(label, nm, sizeof nm, cwd[0] - 40);
+        ugfx_text(ix + 28, ty, nm, txt, UGFX_TRANSPARENT);
+        char kd[24], buf[40]; kind_label(type, name, kd, sizeof kd);
+        fit_col(kd, buf, sizeof buf, cwd[1] - 14); ugfx_text(base + cx[1] + 10, ty, buf, mut, UGFX_TRANSPARENT);
+        char sz[24]; if (type == FT_FILE) human_bytes(size, sz, sizeof sz); else { sz[0] = '-'; sz[1] = '-'; sz[2] = 0; }
+        fit_col(sz, buf, sizeof buf, cwd[2] - 14); ugfx_text(base + cx[2] + 10, ty, buf, mut, UGFX_TRANSPARENT);
+        char dt[40];
+        if (mt) { int yy, mo, dd, hh, mi; fstime_unpack(mt, &yy, &mo, &dd, &hh, &mi);
+                  snprintf(dt, sizeof dt, "%04d-%02d-%02d %02d:%02d", yy, mo, dd, hh, mi); }
+        else { dt[0] = '-'; dt[1] = '-'; dt[2] = 0; }
+        fit_col(dt, buf, sizeof buf, cwd[3] - 14); ugfx_text(base + cx[3] + 10, ty, buf, mut, UGFX_TRANSPARENT);
     }
 
     /* icon-view tile: a large icon centred in the cell with a centred, width-clamped
@@ -999,8 +1057,9 @@ struct FilesApp : ui::Window {
      * until a future "Use as defaults" action). The picker is transient -- no memory. */
     void persist_view() {
         if (picker) return;
-        struct view_prefs v = { view_mode, sort_key, sort_desc, sort_ff, zoom };
-        char val[32]; viewmem_encode(&v, val, sizeof val);
+        struct view_prefs v = { view_mode, sort_key, sort_desc, sort_ff, zoom,
+                                { header.cw[0], header.cw[1], header.cw[2] } };   /* §1 column widths */
+        char val[48]; viewmem_encode(&v, val, sizeof val);
         char key[VIEWMEM_KEYMAX]; viewmem_key(path, key, sizeof key);
         reg_set(key, val); reg_save();
     }
@@ -1064,6 +1123,9 @@ struct FilesApp : ui::Window {
         listy = tabs_bottom + FBH;
         int lh = h - listy - STH - FTH; if (lh < fh) lh = fh;
         list.row_h = list2.row_h = fh + 12;
+        int HDRH = cols_on() ? fh + 10 : 0;              /* §1: details column-header band  */
+        header.visible = HDRH > 0;
+        header.sort_key = sort_key; header.sort_desc = sort_desc;
         if (split && !picker) {                          /* §4: two panes side by side */
             int half = mainw / 2;
             list.r  = { mainx, listy, half - 1, lh };
@@ -1072,12 +1134,22 @@ struct FilesApp : ui::Window {
             splitdecor.visible = true; splitdecor.on = true;
             splitdecor.pane[0] = list.r; splitdecor.pane[1] = list2.r;
         } else {
-            list.r = { mainx, listy, mainw, lh };
-            grid.r = list.r;                             /* the icon view shares the content area */
+            list.r = { mainx, listy + HDRH, mainw, lh - HDRH };
+            grid.r = { mainx, listy, mainw, lh };        /* the icon view spans the full content area */
             bool icons = (view_mode == 1) && !picker;
             list.visible = !icons; grid.visible = icons;
             list2.visible = false; splitdecor.visible = false; splitdecor.on = false;
             grid.clamp_top();
+        }
+        if (header.visible) {                            /* §1: position + report the column header */
+            header.r = { mainx, listy, mainw, HDRH };
+            header.relayout();
+            print("[files] hdr "); printu((unsigned)header.r.x); printc(' ');
+            printu((unsigned)header.r.y); printc(' '); printu((unsigned)header.r.h);
+            for (int c = 0; c < COLFIT_NCOL; c++) {
+                printc(' '); printu((unsigned)header.colx[c]); printc(' '); printu((unsigned)header.colw[c]);
+            }
+            print("\r\n");
         }
         renamefld.visible = renaming;                    /* the in-place rename overlay tracks the item */
         if (renaming) renamefld.r = rename_rect();
@@ -1164,6 +1236,10 @@ struct FilesApp : ui::Window {
         list2.ctx = this; list2.render_row = render_row2; list2.bg = C_LIST; list2.sel_bg = C_SELROW;
         list2.on_select   = [](void *c, int i) { ((FilesApp *)c)->select2(i); };
         list2.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter2(i); };
+
+        header.ctx = this;                               /* §1: details-view sortable column header */
+        header.on_sort   = [](void *c, int k) { ((FilesApp *)c)->header_sort(k); };
+        header.on_resize = [](void *c)        { ((FilesApp *)c)->header_resized(); };
         apply_zoom();
 
         back.ctx = fwd.ctx = up.ctx = newf.ctx = del.ctx = info.ctx = this;
@@ -1208,7 +1284,7 @@ struct FilesApp : ui::Window {
 
         layout_widgets();
         add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info); add(&tabstrip);
-        add(&crumbbar); add(&pathfld); add(&list); add(&grid); add(&list2); add(&splitdecor); add(&renamefld); add(&details); add(&status);
+        add(&crumbbar); add(&pathfld); add(&header); add(&list); add(&grid); add(&list2); add(&splitdecor); add(&renamefld); add(&details); add(&status);
         add(&footer); add(&nameLbl); add(&nameFld); add(&cancelBtn); add(&okBtn);
         add(&menu); add(&overwrite);                  /* menu + overwrite last = on top + modal */
         focus = picker && preq.mode == PICK_SAVE ? (ui::Widget *)&nameFld : (ui::Widget *)&list;

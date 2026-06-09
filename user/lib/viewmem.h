@@ -10,11 +10,14 @@
 #define VIEWMEM_KEYMAX 64   /* must match REG_KEYMAX in registry.h */
 
 /* The remembered state for one folder. Defaults match the app's startup view:
- * list mode, sort by name ascending, folders first, "actual size" zoom. */
-struct view_prefs { int mode, sort_key, sort_desc, sort_ff, zoom; };
+ * list mode, sort by name ascending, folders first, "actual size" zoom. `colw` is the
+ * details-view (§1) Name/Kind/Size column widths (the Date column fills the remainder);
+ * persisting them per folder is what makes a resized header stick. */
+struct view_prefs { int mode, sort_key, sort_desc, sort_ff, zoom, colw[3]; };
 
 static inline struct view_prefs viewmem_defaults(void) {
-    struct view_prefs v = { 0 /*list*/, 0 /*name*/, 0 /*asc*/, 1 /*folders first*/, 1 /*actual size*/ };
+    struct view_prefs v = { 0 /*list*/, 0 /*name*/, 0 /*asc*/, 1 /*folders first*/, 1 /*actual size*/,
+                            { 230 /*Name*/, 96 /*Kind*/, 96 /*Size*/ } };
     return v;
 }
 
@@ -48,12 +51,13 @@ static inline void viewmem_key(const char *path, char *out, int outsz) {
     out[j] = 0;
 }
 
-/* Encode the prefs as "m;sk;sd;ff;z" -- always all five fields, comfortably under
- * REG_VALMAX. */
+/* Encode the prefs as "m;sk;sd;ff;z;cw0;cw1;cw2" -- always all eight fields, comfortably
+ * under REG_VALMAX. (Old 5-field values still decode: the trailing widths keep defaults.) */
 static inline void viewmem_encode(const struct view_prefs *v, char *out, int outsz) {
-    int vals[5] = { v->mode, v->sort_key, v->sort_desc, v->sort_ff, v->zoom };
+    int vals[8] = { v->mode, v->sort_key, v->sort_desc, v->sort_ff, v->zoom,
+                    v->colw[0], v->colw[1], v->colw[2] };
     int o = 0;
-    for (int f = 0; f < 5; f++) {
+    for (int f = 0; f < 8; f++) {
         if (f && o < outsz - 1) out[o++] = ';';
         int x = vals[f];
         if (x < 0 && o < outsz - 1) { out[o++] = '-'; x = -x; }
@@ -70,9 +74,10 @@ static inline void viewmem_encode(const struct view_prefs *v, char *out, int out
 static inline struct view_prefs viewmem_decode(const char *s) {
     struct view_prefs v = viewmem_defaults();
     if (!s || !s[0]) return v;
-    int *fields[5] = { &v.mode, &v.sort_key, &v.sort_desc, &v.sort_ff, &v.zoom };
+    int *fields[8] = { &v.mode, &v.sort_key, &v.sort_desc, &v.sort_ff, &v.zoom,
+                       &v.colw[0], &v.colw[1], &v.colw[2] };
     const char *p = s;
-    for (int f = 0; f < 5; f++) {
+    for (int f = 0; f < 8; f++) {
         while (*p == ' ') p++;
         if (*p != '-' && (*p < '0' || *p > '9')) break;   /* nothing left to parse */
         int neg = 0; if (*p == '-') { neg = 1; p++; }

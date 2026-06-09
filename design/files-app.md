@@ -67,7 +67,7 @@ value; **P3** = polish / power-user. "Foundation" = specified in
 | Folder-aware copy/cut/paste (path refs) | files only | foundation | **P1** (foundation) |
 | Inline **rename** | none | foundation | **P1** (foundation) |
 | **Icon (grid) view** | none | §1 | **P1** |
-| **List / Details view** w/ sortable columns | size only | §1 | **P1** |
+| **List / Details view** w/ sortable columns | ✅ Name/Kind/Size/Date header, sort+resize | §1 | **done** |
 | **Column (Miller) view** | none | §1 | P2 |
 | **Gallery / preview view** | none | §1 | P3 |
 | **Zoom / icon-size** control | none | §1 | **P1** |
@@ -106,6 +106,15 @@ defines `LIST` and `ICONS`. This section fleshes those out and adds two more.
   user-chosen, sortable columns** (Name, Kind, Size, Date Modified, Date Added,
   owner; see §2/§8). A **header row** whose cells sort on click (and show the
   asc/desc caret) and are **resizable**; column set + widths persist per folder (§2).
+  *(Done 2026-06-09: the list mode now draws a `ColumnHeader` — Name | Kind | Size | Date
+  Modified — above the rows, each row's cells aligned to it. Click a header to sort (fresh
+  column → ascending, re-click the active one flips, ▲/▼ caret); drag the divider on
+  Name/Kind/Size's right edge to resize (Date fills the rest); widths persist per folder in
+  the registry next to mode/sort/zoom. Added the `FSORT_DATE` sort key (off `dirent.mtime`).
+  Pure width math `colfit.h` (unit `t_colfit`); `filesort.h`/`viewmem.h` extended (date key +
+  3 widths, codec back-compatible). e2e `t_files_details`. Still TODO: a Sort-menu Date item,
+  the **Date Added** column (needs a create-time fs field), an **owner** column, configurable
+  column **add/remove**, and **Show in Groups**.)*
 - **Column view (Miller columns)** — horizontally scrolling panes, one per path level;
   selecting a folder in column *n* opens its contents in column *n+1*; the last column
   is a preview. This is *the* Finder navigation idiom for deep trees. P2.
@@ -190,7 +199,10 @@ per-tab drag/reorder.)*
   dedupe. Details pane is hidden in split. e2e `t_files_split` (toggle, pane-2 nav, copy-across
   confirmed on disk, screenshot). Still TODO: a real `FileView` extraction so both panes are
   fully symmetric (pane 2 has no breadcrumb/rename/icons/its own context menu yet), drag-between,
-  and the Ctrl+`*` chord.)*
+  and the Ctrl+`*` chord. ⚠ **Known issue (not reliably reproducible):** a user reported a
+  cross-pane click-drag freezing the whole desktop; the Files side of the drag is provably benign
+  (no loop/panic), so if real the locus is twm's input loop — see the "Known issues" note in
+  NEXT_STEPS.md + the `tests/repro_split_drag.py` scaffold.)*
 
 Both are pure app-level composition over `FileView` instances — no kernel work — but
 tabs need a tab-strip widget and split needs a draggable splitter (small toolkit

@@ -13,6 +13,7 @@
 #include "fstime.h"        /* fstime_unpack: render an entry's packed "Modified" time */
 #include "humansize.h"     /* human_bytes: recursive folder size on the Get Info pane  */
 #include "fileinfo.h"      /* info_owner_label / info_count_label: Get Info fields (§8) */
+#include "colfit.h"        /* colfit: details-view column layout (§1)                  */
 
 #define MAXAPPS 16          /* Open With chooser app cap (also FilesApp's apps[])      */
 
@@ -297,6 +298,75 @@ public:
         frame(pane[active], ARGB(200, 120, 160, 240));
     }
     bool on_mouse(int, int, int) override { return false; }      /* never consume clicks */
+};
+
+/* ---------------------------------------------------------------- ColumnHeader */
+/* The details-view header row (design/files-app.md §1): Name / Kind / Size / Date Modified.
+ * Clicking a column's label sorts by it (toggling asc/desc on the active one, shown by a
+ * caret); Name/Kind/Size are resized by dragging the divider on their right edge, and Date
+ * fills the rest. colfit() (host-tested) owns the width math; the app reads colx[]/colw[] so
+ * the rows it draws line up under the header. The app is told of a label click (on_sort) and
+ * of a finished divider drag (on_resize, to persist the new widths). Focusable only so a
+ * divider drag's WEV_MOUSE_DRAG packets reach on_drag; the app restores list focus after. */
+class ColumnHeader : public ui::Widget {
+public:
+    static const int GRAB = 4;                       /* divider grab half-width in px */
+    int  cw[3] = { 230, 96, 96 };                    /* user widths: Name, Kind, Size (Date fills) */
+    int  colx[COLFIT_NCOL] = {0}, colw[COLFIT_NCOL] = {0};
+    int  sort_key = 0, sort_desc = 0;                /* drives the active label + caret */
+    int  drag_div = -1, drag_x0 = 0, drag_w0 = 0;    /* active divider drag, -1 = none */
+    void *ctx = nullptr;
+    void (*on_sort)(void *, int colkey) = nullptr;
+    void (*on_resize)(void *) = nullptr;
+    ColumnHeader() { focusable = true; }
+
+    static int col_key(int c) { return c; }          /* col index == FSORT_* (Name0 Kind1 Size2 Date3) */
+    void relayout() { colfit(r.w, cw, colx, colw); }
+    void set_widths(const int w[3]) { cw[0] = w[0]; cw[1] = w[1]; cw[2] = w[2]; relayout(); }
+
+    /* a 7px-wide triangle from stacked horizontal lines; up = ascending (apex on top) */
+    static void caret(int cx, int ytop, int up, uint32_t c) {
+        for (int i = 0; i < 4; i++) {
+            int row = up ? i : (3 - i);
+            ugfx_fill(cx - row, ytop + i, row * 2 + 1, 1, c);
+        }
+    }
+    void draw() override {
+        if (!visible) return;
+        relayout();
+        int fh = ugfx_font_h(), ty = r.y + (r.h - fh) / 2;
+        ugfx_fill(r.x, r.y, r.w, r.h, C_TOOLBAR);
+        ugfx_fill_a(r.x, r.y + r.h - 1, r.w, 1, ARGB(90, 0, 0, 0));     /* bottom hairline */
+        static const char *lbl[COLFIT_NCOL] = { "Name", "Kind", "Size", "Date Modified" };
+        for (int c = 0; c < COLFIT_NCOL; c++) {
+            int cx = r.x + colx[c] + 10, active = (sort_key == col_key(c));
+            ugfx_set_clip(r.x + colx[c], r.y, colw[c] - 2 > 0 ? colw[c] - 2 : 1, r.h);
+            ugfx_text(cx, ty, lbl[c], active ? TH_TEXT : TH_MUTED, UGFX_TRANSPARENT);
+            if (active) caret(cx + ugfx_text_w(lbl[c]) + 7, r.y + r.h / 2 - 2, !sort_desc, TH_ACCENT);
+            ugfx_clip_none();
+            if (c < 3) ugfx_fill_a(r.x + colx[c] + colw[c], r.y + 5, 1, r.h - 10, ARGB(70, 0, 0, 0));
+        }
+    }
+    /* press: a divider grab starts a resize; a label body requests a sort */
+    bool on_mouse(int x, int y, int) override {
+        (void)y; relayout();
+        for (int c = 0; c < 3; c++) {
+            int dvx = r.x + colx[c] + colw[c];
+            if (x >= dvx - GRAB && x <= dvx + GRAB) { drag_div = c; drag_x0 = x; drag_w0 = cw[c]; return true; }
+        }
+        int lx = x - r.x;
+        for (int c = 0; c < COLFIT_NCOL; c++)
+            if (lx >= colx[c] && lx < colx[c] + colw[c]) { if (on_sort) on_sort(ctx, col_key(c)); break; }
+        return true;
+    }
+    void on_drag(int x, int y) override {
+        (void)y;
+        if (drag_div < 0) return;
+        int nw = drag_w0 + (x - drag_x0); if (nw < COLFIT_MINW) nw = COLFIT_MINW;
+        cw[drag_div] = nw; relayout();
+        if (win) win->invalidate();
+    }
+    void on_button_up() override { if (drag_div >= 0) { drag_div = -1; if (on_resize) on_resize(ctx); } }
 };
 
 /* ---------------------------------------------------------------- Breadcrumb */

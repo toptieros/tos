@@ -4,8 +4,8 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **46/46** (35 e2e journeys on BIOS + a UEFI subset 11) + **135 host
-unit tests** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
+**Status:** `make test` **50/50** (39 e2e journeys on BIOS + a UEFI subset 11) + **275 host
+unit checks** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
 Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unless asked).
@@ -218,12 +218,47 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 ### Smaller ideas
 - _(nothing queued right now)_
 
+### Known issues (to investigate)
+- ⚠ **Reported desktop freeze on a cross-pane click-drag in Files split view (2026-06-09).** A user
+  reported that, in split view, pressing-and-holding inside one pane and dragging onto the other pane
+  freezes the whole desktop (input stops everywhere, not just Files — "the Files bug nukes the whole
+  OS"). **Status: not reliably reproducible** — neither the user nor I can trigger it on demand.
+  **What's ruled out:** the Files-app side of the drag is benign. A left-drag from pane 1 into pane 2 is
+  forwarded by twm to the Files window as `WEV_MOUSE_DRAG` packets (drag-capture via `cdrag`); on the app
+  side `ListView::on_drag` is a no-op unless the scrollbar thumb is grabbed and the window-level
+  rubber-band `on_drag` is unimplemented, so the drag only produces the initial `[files] sel` and then
+  nothing — no loop, no `[EXCEPTION]`/`PANIC`. `SplitDecor` is decorative with a zero rect and never
+  receives the drag; `cdrag` is cleared on button-up. **The danger, regardless of trigger:** a userspace
+  app must *never* be able to wedge the compositor — so if real, the locus is twm's input loop, not Files.
+  **Lead for next time:** the most likely mechanism is twm's `down`/`cdrag`/`last_b` getting stuck
+  "button held" after an odd button-up ordering, which would suppress hover + swallow clicks
+  desktop-wide → apparent freeze. The QEMU repro is confounded because the harness `drag()` uses
+  *relative* `mouse_move` packets that can themselves desync the emulated PS/2 pointer/button (a state a
+  real mouse self-heals), so harness "input stalls" after a drag aren't trustworthy evidence. Repro
+  scaffold kept at `tests/repro_split_drag.py`. To investigate: instrument twm's button/`cdrag` state
+  across a client drag and guarantee input servicing can't wedge on a malformed button sequence.
+
 ---
 
 ## Done (changelog)
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files details / column view §1 (2026-06-09).** The list mode is now a real **details view**: a
+  **column header** — **Name | Kind | Size | Date Modified** — sits above the rows, each row drawing its
+  cells aligned to the header. Header cells **sort on click** (a fresh column goes ascending; re-clicking
+  the active column flips direction, shown by a ▲/▼ **caret**), and the Name/Kind/Size columns are
+  **resized by dragging the divider on their right edge** (Date fills the remainder). Column widths are
+  remembered **per folder** alongside mode/sort/zoom. New **Date Modified** sort key (`FSORT_DATE`, off
+  each entry's `dirent.mtime`). The width math is a pure host-tested header (`colfit.h`, unit `t_colfit`);
+  `filesort.h`/`viewmem.h` grew the date key + the three column widths (their unit suites updated, and the
+  codec stays backward-compatible with old 5-field registry values). New widget `ColumnHeader`
+  (`fileswidgets.h`) is focusable only so a divider drag's `WEV_MOUSE_DRAG` reaches it; the app restores
+  list focus after a click/drag. e2e `t_files_details` (header geometry + screenshot + click-to-sort by
+  Size↔asc/desc, Date, Name); canaries `[files] hdr …`, `[files] sort date …`, `[files] colw …`. The
+  header shows only in list mode (hidden in icons / split / picker, which keep the lean single-column rows).
+  Still TODO: a **Sort menu "Date Modified"** item (skipped to avoid shifting the Sort menu's e2e indices —
+  the Date header is the affordance), per-column **grouping**, and column **add/remove**.
 - **Files split / dual pane §4 (2026-06-09).** **View ▸ Split View** shows a second pane beside the
   primary one (its own `path2`/`ents2`/selection), with a splitter + a blue **active-pane accent**
   (`SplitDecor`). The second pane is a lean navigable list (`..` + double-click to drill); **Copy to
@@ -233,7 +268,11 @@ Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
   2 to a sibling folder, copy a file across — confirmed on disk — screenshot two panes). Canaries
   `[files] split`, `[files] pane2 cd`, `[files] copy-across`, `[files] listrect2`. Menu adds: View ▸
   Split View (item 5), Edit ▸ Copy/Move to Other Pane (items 6/7). (A full symmetric `FileView`
-  extraction — breadcrumb/rename/icons per pane + drag-between — is the follow-up.)
+  extraction — breadcrumb/rename/icons per pane + drag-between — is the follow-up.) The shared e2e
+  `_files_nav` helper was also **hardened to retry the whole open→type→Enter as a unit** (Esc-then-reopen
+  on a dropped keystroke, the fresh field's select-all discarding any garbage) — under host load either
+  the crumb click or the commit Enter could be dropped, which had been flaking ~⅓ of the nav-heavy runs;
+  all 11 `t_files*` now pass back-to-back.
 - **Files tabs §4 (2026-06-09).** One window, many folders: a **tab strip** of folder pills under the
   location bar (hidden with a single tab), each tab keeping its **own folder + back/forward history +
   selection**. The live `path`/`hist` are the active tab's working copy; switching shuttles them to/from

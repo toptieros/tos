@@ -4,10 +4,15 @@
 #include "unit.h"
 #include "../../user/lib/filesort.h"
 
-/* convenience: sign of the comparator for a key/dir/ff combo */
+/* convenience: sign of the comparator for a key/dir/ff combo (mtime irrelevant here) */
 static int cmp(const char *an, int ad, unsigned asz, const char *bn, int bd, unsigned bsz,
                int key, int desc, int ff) {
-    int c = filesort_cmp(an, ad, asz, bn, bd, bsz, key, desc, ff);
+    int c = filesort_cmp(an, ad, asz, 0, bn, bd, bsz, 0, key, desc, ff);
+    return c < 0 ? -1 : c > 0 ? 1 : 0;
+}
+/* date-aware wrapper: sign of FSORT_DATE for two mtimes (folders-first on) */
+static int cmpd(const char *an, int ad, unsigned amt, const char *bn, int bd, unsigned bmt, int desc) {
+    int c = filesort_cmp(an, ad, 0, amt, bn, bd, 0, bmt, FSORT_DATE, desc, 1);
     return c < 0 ? -1 : c > 0 ? 1 : 0;
 }
 
@@ -50,6 +55,15 @@ static void test_kind_sort(void) {
     CHECK_INT(cmp("a.txt", 0, 0, "b.txt", 0, 0, FSORT_KIND, 0, 1), -1, "same kind tie breaks by name");
 }
 
+static void test_date_sort(void) {
+    /* ascending = older first (smaller packed mtime first); desc flips */
+    CHECK_INT(cmpd("old.txt", 0, 100, "new.txt", 0, 200, 0), -1, "older file first (asc)");
+    CHECK_INT(cmpd("new.txt", 0, 200, "old.txt", 0, 100, 0),  1, "newer file later (asc)");
+    CHECK_INT(cmpd("old.txt", 0, 100, "new.txt", 0, 200, 1),  1, "descending shows newer first");
+    CHECK_INT(cmpd("a.txt", 0, 500, "b.txt", 0, 500, 0), -1, "equal mtime tie-breaks by name");
+    CHECK_INT(cmpd("dir", 1, 100, "z.txt", 0, 999, 0), -1, "folders-first survives date sort");
+}
+
 static void test_no_folders_first(void) {
     /* folders_first off: a folder named 'm' sorts among files by name */
     CHECK_INT(cmp("apple.txt", 0, 0, "mfolder", 1, 0, FSORT_NAME, 0, 0), -1, "ff off: apple before mfolder");
@@ -62,6 +76,7 @@ int main(void) {
     RUN(test_name_sort);
     RUN(test_size_sort);
     RUN(test_kind_sort);
+    RUN(test_date_sort);
     RUN(test_no_folders_first);
     return UNIT_SUMMARY();
 }
