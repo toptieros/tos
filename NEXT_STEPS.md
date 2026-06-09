@@ -64,7 +64,13 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   shipped files via `mkfs`), plumbed through `dirent`/`fstat` to the Details pane's **Modified** line.
   **statfs §6/§7** — `SYS_STATFS` returns the tosfs volume's total/free bytes (sector bitmap); shown
   as the shell's `df` + a **"<n> free"** Details-pane footer; pure formatter `humansize.h` (unit
-  `t_humansize`), e2e `t_statfs`. **Left, cheapest-first:** rich Get Info §8 (now has dates+free),
+  `t_humansize`), e2e `t_statfs`. **rich Get Info §8** — selecting an item now fills the Details pane
+  with a folder's **recursive size + item count** (a `du`-style `dir_usage` walk), the **Owner**
+  (System / You from `fstat.owner`), a **"Read only" lock badge** for system-owned items, and **Opens
+  with** (the default app for the type); folder size also lands on the status bar; **Ctrl+I** toggles
+  the pane. Pure helpers `fileinfo.h` (owner label / lock rule / item-count, unit `t_fileinfo`), e2e
+  `t_files_getinfo` (recursive folder size + a locked system item, screenshot-verified), canary
+  `[files] sel <name> (ro|rw) owner=<uid> size=<n> [items=<n>]`. **Left, cheapest-first:**
   tabs/split §4, column/gallery views §1, search/thumbnails §11, tags/undo §10/§12.
   → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
@@ -218,6 +224,17 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files rich Get Info / Properties §8 (2026-06-09).** Selecting an item now fills the **Details
+  pane** with a real Get Info: a folder's **recursive size + item count** (a `du`-style `dir_usage`
+  walk — heap-listed per level like `copy_tree`; the volume is tiny so it runs synchronously on
+  selection), the **Owner** (System / You, from `fstat.owner`), a gold **"Read only" lock badge** for
+  system-owned items (the `tos_may_write` rule), and **Opens with** (the type's default app from
+  `open.default.<ext>`). The selected folder's size also shows on the status bar; **Ctrl+I** (and the
+  toolbar Info button) toggle the pane. Pure helpers live in `user/lib/fileinfo.h` (owner label / lock
+  rule / singular-plural item count — unit `t_fileinfo`, 14 checks); e2e `t_files_getinfo` stages a
+  nested tree and a system folder, asserting the `[files] sel <name> (ro|rw) owner=<uid> size=<n>
+  [items=<n>]` canary, screenshot-verified for both a user folder ("34 B, 3 items", Owner: You) and a
+  locked one (/Apps "Read only", Owner: System).
 - **statfs / free-space §6/§7 (2026-06-08).** New `SYS_STATFS` (69) fills a `struct statfs`
   (total/free/block bytes) from the tosfs sector bitmap. Surfaced two ways: the shell's **`df`**
   (Size/Used/Free) and a **"<n> free"** footer in the Files **Details pane** (the status bar's

@@ -1108,6 +1108,60 @@ def t_files_newdup(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_getinfo(uefi):
+    # Rich Get Info / Properties (§8): selecting an item fills the Details pane with a
+    # folder's *recursive* size + item count (a du-style walk), the owning identity, a
+    # read-only lock for system-owned items, and the default app for a file's type.
+    # select_row emits "[files] sel <name> (ro|rw) owner=<uid> size=<n> [items=<n>]";
+    # a folder pick walks the tree, a system item reads owner=0/ro. A screenshot captures
+    # the rendered pane (Size "N, 3 items", Owner: You, Where).
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        # stage a deterministic tree under a fresh parent: gi/tree/{a.txt, sub/b.txt}
+        t.line("mkdir /Users/user/gi")
+        t.line("mkdir /Users/user/gi/tree")
+        t.line("mkdir /Users/user/gi/tree/sub")
+        t.line("write /Users/user/gi/tree/a.txt"); t.line("hello get info")
+        assert t.wait_for("saved /Users/user/gi/tree/a.txt", 6), "could not stage a.txt"
+        t.line("write /Users/user/gi/tree/sub/b.txt"); t.line("a nested file body")
+        assert t.wait_for("saved /Users/user/gi/tree/sub/b.txt", 6), "could not stage b.txt"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        # --- folder Get Info: recursive size + 3 descendants, owned by the user ---
+        _files_nav(t, wr, "/Users/user/gi")
+        before = t.serial().count("[files] sel ")
+        rx, ry = _files_row_xy(t, wr, 1)                  # row 0 = "..", row 1 = "tree"
+        t.click(rx, ry)
+        assert _count_at_least(t, "[files] sel ", before + 1, 6), "selecting the folder reported no Get Info"
+        m = None
+        for _ in range(40):
+            m = re.search(r"\[files\] sel tree rw owner=1 size=(\d+) items=(\d+)", t.serial())
+            if m:
+                break
+            time.sleep(0.1)
+        assert m, "the folder's recursive Get Info (rw owner=1 size/items) was not reported"
+        assert int(m.group(2)) == 3, "recursive item count should be 3 (a.txt, sub, sub/b.txt), got %s" % m.group(2)
+        assert int(m.group(1)) > 0, "recursive folder size should be non-zero"
+        t.screenshot("/tmp/tos_getinfo.ppm")              # the pane shows Size "N, 3 items" + Owner
+        # --- a system-owned item reads read-only (owner 0 -> the lock badge) ---
+        _files_nav(t, wr, "/")
+        rx, ry = _files_row_xy(t, wr, 0)                  # volume root has no ".."; row 0 = first entry (Apps)
+        t.click(rx, ry)
+        m = None
+        for _ in range(40):
+            m = re.search(r"\[files\] sel \S+ ro owner=0 ", t.serial())
+            if m:
+                break
+            time.sleep(0.1)
+        assert m, "a system-owned item did not report read-only / owner=System"
+        t.screenshot("/tmp/tos_getinfo_locked.ppm")       # the "Read only" lock badge under the name
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_statfs(uefi):
     # Free-space query (files-app §6/§7): SYS_STATFS reports the mounted volume's data
     # capacity + free bytes from the sector bitmap. The shell's `df` surfaces it (and the
@@ -1289,7 +1343,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
@@ -1321,12 +1375,19 @@ def run(label, tests, uefi):
 def main():
     do_bios = "--uefi-only" not in sys.argv
     do_uefi = "--bios-only" not in sys.argv
+    # Optional positional filter: any bare args name the tests to run (substring
+    # match against the function name), e.g. `run_tests.py t_file_picker`. Without
+    # a filter the full suite runs as before.
+    names = [a for a in sys.argv[1:] if not a.startswith("-")]
+    def _sel(tests):
+        return [t for t in tests if any(n in t.__name__ for n in names)] if names else tests
+    bios_tests, uefi_tests = _sel(BIOS_TESTS), _sel(UEFI_TESTS)
     total_pass = total_fail = 0
-    if do_bios:
-        p, f = run("bios", BIOS_TESTS, uefi=False)
+    if do_bios and bios_tests:
+        p, f = run("bios", bios_tests, uefi=False)
         total_pass += p; total_fail += f
-    if do_uefi:
-        p, f = run("uefi", UEFI_TESTS, uefi=True)
+    if do_uefi and uefi_tests:
+        p, f = run("uefi", uefi_tests, uefi=True)
         total_pass += p; total_fail += f
     print(f"\n{total_pass} passed, {total_fail} failed")
     sys.exit(1 if total_fail else 0)

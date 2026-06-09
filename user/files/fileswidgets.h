@@ -11,6 +11,8 @@
 #include "pathbar.h"       /* pathbar_split + struct crumb: the breadcrumb model */
 #include "filesutil.h"     /* eqn / blit_scaled / vline_ / draw_glyph + G_* glyph ids */
 #include "fstime.h"        /* fstime_unpack: render an entry's packed "Modified" time */
+#include "humansize.h"     /* human_bytes: recursive folder size on the Get Info pane  */
+#include "fileinfo.h"      /* info_owner_label / info_count_label: Get Info fields (§8) */
 
 #define MAXAPPS 16          /* Open With chooser app cap (also FilesApp's apps[])      */
 
@@ -89,12 +91,26 @@ public:
     const char *kind = "";
     unsigned size = 0;
     uint32_t mtime = 0;                               /* packed mtime (fstime.h); 0 = hide */
+    uint32_t owner = INFO_UID_USER;                   /* §8: owning uid (fstat.owner)      */
+    bool     locked = false;                          /* §8: system-owned & not ours (RO)  */
+    unsigned dir_items = 0;                           /* §8: recursive item count (folders) */
+    char     opens_with[40] = {0};                    /* §8: default app label (files; "")  */
     char freeline[28] = {0};                          /* "<n> free": volume free space footer (§6) */
     const uint32_t *icon = nullptr; int iw = 0, ih = 0, file_icon = FILEICON_FILE;
     void field(int x, int y, const char *k, const char *v) {
         int fh = ugfx_font_h();
         ugfx_text(x, y, k, TH_MUTED, UGFX_TRANSPARENT);
         ugfx_text(x, y + fh, v, TH_TEXT, UGFX_TRANSPARENT);
+    }
+    /* a small padlock glyph (no line primitive, so build it from fills): a filled
+     * body with a keyhole + an open-topped shackle above it. Drawn at the badge's
+     * baseline so it sits next to the "Read only" label. */
+    static void lock_glyph(int x, int y, uint32_t c) {
+        ugfx_fill_a(x + 1, y + 4, 8, 6, c);              /* body */
+        ugfx_fill_a(x + 1, y,     1, 4, c);              /* shackle left  */
+        ugfx_fill_a(x + 8, y,     1, 4, c);              /* shackle right */
+        ugfx_fill_a(x + 2, y - 1, 6, 1, c);              /* shackle top   */
+        ugfx_fill_a(x + 4, y + 6, 2, 2, ARGB(180, 0, 0, 0));  /* keyhole */
     }
     void draw() override {
         if (!visible) return;
@@ -116,13 +132,31 @@ public:
         else      blit_scaled(cx - IS / 2, iy, IS, IS, fileicons_argb[file_icon], FILEICON_SZ, FILEICON_SZ);
         int ty = iy + IS + 14;
         ugfx_text(cx - ugfx_text_w(name) / 2, ty, name, TH_TEXT, UGFX_TRANSPARENT); ty += fh + 8;
+        if (locked) {                                 /* §8: read-only / system-owned badge */
+            const char *rl = "Read only"; int tw = ugfx_text_w(rl);
+            int bx = cx - (tw + 16) / 2, by = ty;
+            lock_glyph(bx, by + 2, ARGB(230, 210, 170, 90));
+            ugfx_text(bx + 14, by, rl, ARGB(230, 210, 170, 90), UGFX_TRANSPARENT);
+            ty += fh + 8;
+        }
         ugfx_fill_a(r.x + 16, ty, r.w - 32, 1, ARGB(40, 150, 170, 230)); ty += 12;
         field(r.x + 16, ty, "Kind", kind); ty += fh * 2 + 9;
-        if (is_file) { char sz[32]; snprintf(sz, sizeof sz, "%u bytes", size); field(r.x + 16, ty, "Size", sz); ty += fh * 2 + 9; }
+        {                                             /* Size: bytes for files, du-walk for folders (§8) */
+            char sz[48];
+            if (is_file) snprintf(sz, sizeof sz, "%u bytes", size);
+            else { char hb[24], cl[20]; human_bytes(size, hb, sizeof hb);
+                   info_count_label(cl, sizeof cl, dir_items);
+                   snprintf(sz, sizeof sz, "%s, %s", hb, cl); }
+            field(r.x + 16, ty, "Size", sz); ty += fh * 2 + 9;
+        }
         if (mtime) {                                  /* §8: the file's last-modified time */
             int yy, mo, dd, hh, mi; fstime_unpack(mtime, &yy, &mo, &dd, &hh, &mi);
             char mt[32]; snprintf(mt, sizeof mt, "%04d-%02d-%02d %02d:%02d", yy, mo, dd, hh, mi);
             field(r.x + 16, ty, "Modified", mt); ty += fh * 2 + 9;
+        }
+        field(r.x + 16, ty, "Owner", info_owner_label(owner)); ty += fh * 2 + 9;   /* §8 */
+        if (is_file && opens_with[0]) {               /* §8: the default app for this type */
+            field(r.x + 16, ty, "Opens with", opens_with); ty += fh * 2 + 9;
         }
         ugfx_text(r.x + 16, ty, "Where", TH_MUTED, UGFX_TRANSPARENT); ty += fh;
         int cols = (r.w - 32) / fw; if (cols < 1) cols = 1; if (cols > 62) cols = 62;

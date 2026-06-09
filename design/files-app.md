@@ -235,6 +235,15 @@ Today's 8 hardcoded rows become a real **Places sidebar**, Finder/Dolphin-style:
 The Details pane is thin (icon, kind, size, where). A real **Get Info** (Ctrl I; Finder
 ⌘I) — either the side pane upgraded or a small floating panel — shows:
 
+*(Get Info upgraded 2026-06-09: the Details pane now does a **recursive folder size + item
+count** (`dir_usage` du-walk, synchronous on selection), an **Owner** line (System / You from
+`fstat.owner`), a **"Read only" lock badge** for system-owned items, and an **Opens with** line
+(default app for the type); folder size also shows on the status bar; **Ctrl+I** + the Info
+button toggle the pane. Pure logic in `user/lib/fileinfo.h` (unit `t_fileinfo`), e2e
+`t_files_getinfo`. Still TODO: large thumbnail preview (§11), inline rename from Info, a running
+total as a big walk progresses (needs the §17 job runner), the permissions/Open-With **chooser**,
+multi-selection totals, and the tags editor (§10).)*
+
 - **Large preview / thumbnail** (§11), the editable **name** (inline rename from Info),
   **Kind**, **Size** — *recursive* for folders ("Calculate" / auto, with a running total
   as the walk progresses), **Where** (path).

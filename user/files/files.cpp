@@ -19,6 +19,7 @@
 #include "trashinfo.h"     /* trashinfo_*: the Trash sidecar codec (§9) */
 #include "dupname.h"       /* dup_candidate: Finder-style "X copy" naming (§12) */
 #include "humansize.h"     /* human_bytes: status-bar free-space figure (§6) */
+#include "fileinfo.h"      /* info_is_locked: Get Info owner/lock fields (§8) */
 
 #define NMAX    256
 #define HISTN   32
@@ -231,8 +232,10 @@ struct FilesApp : ui::Window {
         if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
             if (details.is_file)
                 snprintf(status.right, sizeof status.right, "%s selected  --  %u bytes", details.name, details.size);
-            else
-                snprintf(status.right, sizeof status.right, "%s selected", details.name);
+            else {                                       /* a folder: show its recursive size (§8) */
+                char hb[24]; human_bytes(details.size, hb, sizeof hb);
+                snprintf(status.right, sizeof status.right, "%s selected  --  %s", details.name, hb);
+            }
         } else status.right[0] = 0;
     }
     /* "/" opens the filter bar (or refocuses it if already open) */
@@ -371,7 +374,30 @@ struct FilesApp : ui::Window {
         details.icon = appicon[idx]; details.iw = appiw[idx]; details.ih = appih[idx];
         details.file_icon = file_icon_for(e->type, e->name);
         join(details.where, sizeof details.where, path, e->name);
+        /* §8 Get Info: owner + read-only lock, recursive folder size, default app */
+        struct fstat st;
+        if (stat_(details.where, &st) == 0) {
+            details.owner = st.owner;
+            details.locked = info_is_locked(st.owner, (unsigned)getuid()) != 0;
+        } else { details.owner = INFO_UID_USER; details.locked = false; }
+        details.dir_items = 0;
+        if (e->type == FT_DIR) {                          /* du-walk the folder for its size */
+            unsigned b = 0, it = 0; dir_usage(details.where, &b, &it);
+            details.size = b; details.dir_items = it;
+        }
+        details.opens_with[0] = 0;                        /* default app for this file's type */
+        if (e->type == FT_FILE) {
+            char ext[16]; ext_of(e->name, ext, sizeof ext);
+            char k[40]; snprintf(k, sizeof k, "open.default.%s", ext[0] ? ext : "_");
+            const char *def = reg_get(k, "");
+            if (def && def[0]) disp_name(basename_of(def), details.opens_with, sizeof details.opens_with);
+        }
         details.has = true;
+        print("[files] sel "); print(details.name);
+        print(details.locked ? " ro owner=" : " rw owner="); printu(details.owner);
+        print(" size="); printu(details.size);
+        if (e->type == FT_DIR) { print(" items="); printu(details.dir_items); }
+        print("\r\n");
         update_status();
         update_pick_btn();
         invalidate();
@@ -412,6 +438,22 @@ struct FilesApp : ui::Window {
         }
         free(e);
         return rc;
+    }
+    /* du-style recursive usage under `path`: accumulates total bytes + the number of
+     * entries (descendants, not the folder itself). Drives the Get Info recursive
+     * folder size (§8). The volume is tiny (a few MiB) so a synchronous walk on
+     * selection is fine; like copy_tree the per-level listing is heap-allocated. */
+    static void dir_usage(const char *path, unsigned *bytes, unsigned *items) {
+        struct dirent *e = (struct dirent *)malloc(sizeof(struct dirent) * NMAX);
+        if (!e) return;
+        int n = readdir(path, e, NMAX);
+        for (int i = 0; i < n; i++) {
+            (*items)++;
+            char c[256]; join(c, sizeof c, path, e[i].name);
+            if (e[i].type == FT_DIR) dir_usage(c, bytes, items);
+            else                     *bytes += e[i].size;
+        }
+        free(e);
     }
     /* ---- Trash (§9) --------------------------------------------------------- *
      * Delete in a normal folder MOVES the item to ~/.Trash (a rename, so it's cheap
@@ -910,11 +952,7 @@ struct FilesApp : ui::Window {
         up.on_click   = [](void *c) { ((FilesApp *)c)->go_up(); };
         newf.on_click = [](void *c) { ((FilesApp *)c)->make_folder(); };
         del.on_click  = [](void *c) { ((FilesApp *)c)->do_delete(); };
-        info.on_click = [](void *c) {
-            auto *a = (FilesApp *)c;
-            a->details_open = !a->details_open; a->details.visible = a->details_open;
-            a->layout_widgets(); a->invalidate();
-        };
+        info.on_click = [](void *c) { ((FilesApp *)c)->toggle_info(); };
 
         menu.ctx = this;
         menu.on_pick = [](void *c, int tag) { ((FilesApp *)c)->menu_pick(tag); };
@@ -1075,6 +1113,14 @@ struct FilesApp : ui::Window {
     }
     /* the compositor close button: in picker mode, closing == Cancel (empty result). */
     bool on_close() override { if (picker) print("[files] pick cancel\r\n"); return true; }
+    /* §8: toggle the Get Info / Details inspector (the toolbar Info button + Ctrl+I).
+     * No-op in picker mode, where the inspector is hidden. */
+    void toggle_info() {
+        if (picker) return;
+        details_open = !details_open; details.visible = details_open;
+        print("[files] info "); printu(details_open ? 1u : 0u); print("\r\n");
+        layout_widgets(); invalidate();
+    }
     void on_key(int key) override {
         if (menu.open) { if (key == ui::UK_ESC) { menu.dismiss(); invalidate(); } return; }
         if (renaming) { if (key == ui::UK_ESC) cancel_rename(); return; }         /* Esc cancels the rename */
@@ -1085,6 +1131,7 @@ struct FilesApp : ui::Window {
         else if (key == 0x03) copy_sel(false);   /* Ctrl+C */
         else if (key == 0x18) copy_sel(true);    /* Ctrl+X */
         else if (key == 0x16) paste();           /* Ctrl+V */
+        else if (key == 0x09) toggle_info();     /* Ctrl+I (== Tab): show/hide Get Info (§8) */
         else if (key == 'r') load_dir();
     }
     void on_nav(int dir) override { if (dir == 0) go_back(); else go_fwd(); }
