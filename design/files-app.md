@@ -165,6 +165,15 @@ click to anywhere," which is table-stakes for a file manager.
 
 ## 4. Tabs & split view
 
+*(Tabs done 2026-06-09: a `TabStrip` of folder pills under the location bar, hidden with one
+tab. Each tab keeps its own folder + back/forward history + selection (a saved nav state the
+active tab's live `path`/`hist` are swapped in/out of; store is a growable heap array). New Tab
+(File ▸ / Ctrl+T / the strip ＋), Close Tab (the pill ×, File ▸ / Ctrl+W), click-to-switch, and
+**Open in New Tab** (folder context menu) all work; the pill relabels on navigation. Unit
+`t_tabtitle`, e2e `t_files_tabs`. Still TODO: Next/Prev (Ctrl Tab — collides with the Ctrl+I/Tab
+keycode, needs a real chord), reopen-closed-tab (Ctrl Shift T), middle-click-to-new-tab, and
+per-tab drag/reorder.)*
+
 - **Tabs** (Finder ⌘T). One window, several folders; a tab strip under the toolbar; each
   tab owns its own `FileView` + history + view settings. New Tab (Ctrl T), Close Tab
   (Ctrl W), Next/Prev (Ctrl Tab / Ctrl Shift Tab), **Open in New Tab** from the context

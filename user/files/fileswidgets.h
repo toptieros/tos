@@ -199,6 +199,83 @@ public:
     }
 };
 
+/* ----------------------------------------------------------------- TabStrip */
+/* Tabs (design/files-app.md §4): a strip of folder pills under the location bar, shown
+ * only when there's more than one tab. Click a pill to switch; click its × to close it;
+ * the trailing "+" opens a new tab. The app owns the tab *store* (unbounded, heap); the
+ * strip only renders the titles handed to it each frame and reports each pill's geometry
+ * for hit-testing. Pills shrink to share the width when they'd overflow. */
+class TabStrip : public ui::Widget {
+public:
+    static const int VIS = 48;                 /* pills laid out at once (store is unbounded) */
+    static const int XW  = 16;                 /* close-× hit zone on a pill's right edge      */
+    const char *titles[VIS] = {};
+    int  n = 0, cur = 0;
+    int  px[VIS] = {}, pw[VIS] = {};           /* each pill's local x + width                  */
+    int  plusx = 0, plusw = 22;
+    void *ctx = nullptr;
+    void (*on_select)(void *, int) = nullptr;
+    void (*on_close)(void *, int)  = nullptr;
+    void (*on_new)(void *)         = nullptr;
+    TabStrip() { focusable = false; }
+    void set(const char **t, int count, int current) {
+        n = count > VIS ? VIS : count; cur = current;
+        for (int i = 0; i < n; i++) titles[i] = t[i];
+    }
+    void relayout() {
+        int gap = 4, avail = r.w - 8 - (plusw + 6);
+        int natural[VIS], tot = 0;
+        for (int i = 0; i < n; i++) { natural[i] = ugfx_text_w(titles[i]) + 16 + XW; tot += natural[i] + gap; }
+        int cap = (n > 0 && tot > avail) ? (avail / n - gap) : 0;
+        int x = 4;
+        for (int i = 0; i < n; i++) {
+            int pwi = natural[i];
+            if (cap > 0 && pwi > cap) pwi = cap;
+            if (pwi < 40) pwi = 40;
+            px[i] = x; pw[i] = pwi; x += pwi + gap;
+        }
+        plusx = x;
+    }
+    void draw() override {
+        if (!visible) return;
+        int fh = ugfx_font_h();
+        ugfx_fill(r.x, r.y, r.w, r.h, C_TOOLBAR);
+        ugfx_fill_a(r.x, r.y + r.h - 1, r.w, 1, ARGB(70, 0, 0, 0));     /* bottom hairline */
+        ugfx_set_clip(r.x, r.y, r.w, r.h);
+        relayout();
+        for (int i = 0; i < n; i++) {
+            int x = r.x + px[i], wpx = pw[i], y = r.y + 3, hh = r.h - 6;
+            ugfx_fill_a(x, y, wpx, hh, (i == cur) ? C_LIST : ARGB(36, 150, 170, 230));
+            if (i == cur) ugfx_fill_a(x, y, wpx, 2, ARGB(220, 120, 160, 240));   /* active accent */
+            ugfx_set_clip(x + 7, r.y, wpx - 7 - XW, r.h);
+            ugfx_text(x + 9, r.y + (r.h - fh) / 2, titles[i], (i == cur) ? TH_TEXT : TH_MUTED, UGFX_TRANSPARENT);
+            ugfx_set_clip(r.x, r.y, r.w, r.h);
+            int cxx = x + wpx - XW + 5, cyy = r.y + r.h / 2;                /* the × close glyph */
+            uint32_t xc = (i == cur) ? ARGB(220, 220, 228, 240) : ARGB(150, 200, 210, 230);
+            vline_(cxx, cyy - 3, cxx + 5, cyy + 2, 1, xc);
+            vline_(cxx + 5, cyy - 3, cxx, cyy + 2, 1, xc);
+        }
+        int pxx = r.x + plusx, pcy = r.y + r.h / 2, pcx = pxx + plusw / 2;   /* the + new-tab button */
+        uint32_t pc = ARGB(200, 200, 210, 230);
+        vline_(pcx - 4, pcy, pcx + 4, pcy, 1, pc);
+        vline_(pcx, pcy - 4, pcx, pcy + 4, 1, pc);
+        ugfx_clip_none();
+    }
+    bool on_mouse(int x, int y, int) override {
+        (void)y; relayout();
+        int lx = x - r.x;
+        for (int i = 0; i < n; i++) {
+            if (lx >= px[i] && lx < px[i] + pw[i]) {
+                if (lx >= px[i] + pw[i] - XW) { if (on_close) on_close(ctx, i); }
+                else if (on_select) on_select(ctx, i);
+                return true;
+            }
+        }
+        if (lx >= plusx && lx < plusx + plusw && on_new) on_new(ctx);
+        return true;
+    }
+};
+
 /* ---------------------------------------------------------------- Breadcrumb */
 /* The location bar (design/files-app.md §3): the path as clickable segment chips
  * ( / › Users › user › Documents ), each navigating to that ancestor, with a chevron

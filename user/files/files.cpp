@@ -20,6 +20,7 @@
 #include "dupname.h"       /* dup_candidate: Finder-style "X copy" naming (§12) */
 #include "humansize.h"     /* human_bytes: status-bar free-space figure (§6) */
 #include "fileinfo.h"      /* info_is_locked: Get Info owner/lock fields (§8) */
+#include "tabtitle.h"      /* tab_title: the tab-strip pill label (§4)       */
 
 #define NMAX    256
 #define HISTN   32
@@ -50,6 +51,7 @@ struct FilesApp : ui::Window {
     Sidebar      side;
     DetailsPanel details;
     StatusBar    status;
+    TabStrip     tabstrip;                    /* the folder tab strip (§4)             */
     Popup        menu;
 
     /* ---- picker mode (#11): Files run as the system Open/Save dialog ---------
@@ -81,6 +83,15 @@ struct FilesApp : ui::Window {
     int           fw = 0, fh = 0, TBH = 0, SBW = 0, DPW = 0, STH = 0, listy = 0;
     char          hist[HISTN][256] = {};
     int           hist_n = 0, hist_i = -1;
+
+    /* Tabs (§4): each tab is a saved nav state (folder + its own history + selection).
+     * The live `path`/`hist`/`hist_i`/`hist_n` above are the *active* tab's working copy;
+     * switching saves them into the outgoing tab and loads the incoming one. The store is
+     * a growable heap array -- no fixed ceiling on how many tabs you can open. */
+    struct Tab { char path[256]; char hist[HISTN][256]; int hist_n, hist_i, sel; };
+    Tab          *tabs = nullptr; int ntabs = 0, curtab = 0, tabcap = 0;
+    char          tabtitle_buf[TabStrip::VIS][32];
+    const char   *tabtitle_ptr[TabStrip::VIS];
 
     AppEntry      apps[MAXAPPS]; int napps = 0;
     int           menu_mode = 0;                 /* 0 = context actions, 1 = open-with */
@@ -297,6 +308,10 @@ struct FilesApp : ui::Window {
             print(" zoom "); printu((unsigned)zoom); print("\r\n");   /* restored-view telemetry (§2) */
         }
         print("[files] cd "); print(path); print("\r\n");   /* navigation telemetry (breadcrumb/sidebar/edit) */
+        if (tabs && curtab < ntabs) {                        /* §4: relabel the active tab's pill */
+            strncpy(tabs[curtab].path, path, 255); tabs[curtab].path[255] = 0;
+            sync_tabs();
+        }
     }
     void update_nav() { back.enabled = hist_i > 0; fwd.enabled = hist_i < hist_n - 1; }
     void nav_to(const char *p) {
@@ -314,6 +329,88 @@ struct FilesApp : ui::Window {
         int last = -1; for (int i = 0; parent[i]; i++) if (parent[i] == '/') last = i;
         if (last <= 0) { parent[0] = '/'; parent[1] = 0; } else parent[last] = 0;
         nav_to(parent);
+    }
+
+    /* ---- Tabs (§4) ---------------------------------------------------------- *
+     * The live nav state is the active tab; switch/new/close shuttle it to/from the
+     * heap `tabs` store and reload the folder. The tab strip is hidden with one tab. */
+    int  cur_sel() const { return (view_mode == 1) ? grid.sel : list.sel; }
+    void tab_save(int i) {                                /* live nav state -> tabs[i] */
+        if (i < 0 || i >= ntabs) return;
+        Tab &T = tabs[i];
+        strncpy(T.path, path, 255); T.path[255] = 0;
+        for (int k = 0; k < HISTN; k++) { strncpy(T.hist[k], hist[k], 255); T.hist[k][255] = 0; }
+        T.hist_n = hist_n; T.hist_i = hist_i; T.sel = cur_sel();
+    }
+    void tab_apply(int i) {                               /* tabs[i] -> live, reload its folder */
+        Tab &T = tabs[i];
+        for (int k = 0; k < HISTN; k++) { strncpy(hist[k], T.hist[k], 255); hist[k][255] = 0; }
+        hist_n = T.hist_n; hist_i = T.hist_i;
+        load_path(T.path); update_nav();
+        if (T.sel >= 0 && T.sel < list.count) select_row(T.sel);
+        else { details.has = false; list.sel = grid.sel = -1; update_status(); invalidate(); }
+    }
+    void grow_tabs() {
+        if (ntabs < tabcap) return;
+        int nc = tabcap ? tabcap * 2 : 4;
+        Tab *nt = (Tab *)malloc(sizeof(Tab) * nc); if (!nt) return;
+        for (int i = 0; i < ntabs; i++) nt[i] = tabs[i];
+        if (tabs) free(tabs);
+        tabs = nt; tabcap = nc;
+    }
+    void sync_tabs() {                                    /* refresh the strip from the store */
+        int shown = ntabs > TabStrip::VIS ? TabStrip::VIS : ntabs;
+        for (int i = 0; i < shown; i++) { tab_title(tabs[i].path, tabtitle_buf[i], 32); tabtitle_ptr[i] = tabtitle_buf[i]; }
+        tabstrip.set(tabtitle_ptr, shown, curtab < shown ? curtab : shown - 1);
+        layout_widgets();
+        if (tabstrip.visible) {                           /* pill geometry canaries (e2e click targets) */
+            tabstrip.relayout();
+            print("[files] tabbar "); printu((unsigned)tabstrip.r.y); printc(' '); printu((unsigned)tabstrip.r.h);
+            printc(' '); printu((unsigned)ntabs); printc(' '); printu((unsigned)curtab); print("\r\n");
+            for (int i = 0; i < shown; i++) {
+                print("[files] tabpos "); printu((unsigned)i); printc(' ');
+                printu((unsigned)(tabstrip.r.x + tabstrip.px[i])); printc(' '); printu((unsigned)tabstrip.pw[i]); print("\r\n");
+            }
+            print("[files] tabplus "); printu((unsigned)(tabstrip.r.x + tabstrip.plusx)); printc(' ');
+            printu((unsigned)tabstrip.plusw); print("\r\n");
+        }
+        invalidate();
+    }
+    void switch_tab(int j) {
+        if (j < 0 || j >= ntabs || j == curtab) return;
+        tab_save(curtab); curtab = j; tab_apply(curtab);
+        print("[files] tab sel "); printu((unsigned)curtab); printc(' '); print(path); print("\r\n");
+        sync_tabs();
+    }
+    void new_tab(const char *p) {
+        if (picker) return;
+        tab_save(curtab);
+        grow_tabs(); if (ntabs >= tabcap) return;
+        int idx = ntabs++; Tab &T = tabs[idx];
+        strncpy(T.path, p, 255); T.path[255] = 0;
+        for (int k = 0; k < HISTN; k++) T.hist[k][0] = 0;
+        strncpy(T.hist[0], p, 255); T.hist[0][255] = 0; T.hist_n = 1; T.hist_i = 0; T.sel = -1;
+        curtab = idx; tab_apply(curtab);
+        print("[files] tab new "); print(p); print("\r\n");
+        sync_tabs();
+    }
+    void new_tab_here() { new_tab(path); }
+    void close_tab(int i) {
+        if (picker || ntabs <= 1 || i < 0 || i >= ntabs) return;
+        print("[files] tab close "); printu((unsigned)i); print("\r\n");
+        for (int k = i; k < ntabs - 1; k++) tabs[k] = tabs[k + 1];
+        ntabs--;
+        if (curtab > i) curtab--;
+        else if (curtab == i) { if (curtab >= ntabs) curtab = ntabs - 1; }
+        tab_apply(curtab);
+        sync_tabs();
+    }
+    void close_cur_tab() { close_tab(curtab); }
+    void open_sel_new_tab() {                             /* context menu: Open in New Tab */
+        int hu = has_up(); if (list.sel < 0 || (hu && list.sel == 0)) return;
+        struct dirent *e = &ents[list.sel - hu];
+        if (e->type != FT_DIR) return;
+        char t[256]; join(t, sizeof t, path, e->name); new_tab(t);
     }
 
     /* open a non-.app file: use a remembered default app for its extension, else
@@ -853,11 +950,15 @@ struct FilesApp : ui::Window {
         crumbbar.visible = !editing_path;
         pathfld.visible  = editing_path;
         int loc_bottom = locy + loch + 2;                /* where the location bar ends   */
+        int TSH = (!picker && ntabs > 1) ? fh + 12 : 0;  /* the tab strip band (§4); hidden w/ 1 tab */
+        tabstrip.visible = TSH > 0;
+        tabstrip.r = { mainx, loc_bottom, mainw, TSH };
+        int tabs_bottom = loc_bottom + TSH;
         int FBH = filter_open ? fh + 16 : 0;             /* the live-filter bar band       */
         filterfld.visible = filter_open;
-        filterfld.r = { mainx + 10, loc_bottom + 3, mainw - 20, fh + 8 };
+        filterfld.r = { mainx + 10, tabs_bottom + 3, mainw - 20, fh + 8 };
         FTH = picker ? fh + 26 : 0;                      /* the picker footer band         */
-        listy = loc_bottom + FBH;
+        listy = tabs_bottom + FBH;
         int lh = h - listy - STH - FTH; if (lh < fh) lh = fh;
         list.r = { mainx, listy, mainw, lh }; list.row_h = fh + 12;
         grid.r = list.r;                                 /* the icon view shares the content area */
@@ -954,6 +1055,11 @@ struct FilesApp : ui::Window {
         del.on_click  = [](void *c) { ((FilesApp *)c)->do_delete(); };
         info.on_click = [](void *c) { ((FilesApp *)c)->toggle_info(); };
 
+        tabstrip.ctx = this;
+        tabstrip.on_select = [](void *c, int i) { ((FilesApp *)c)->switch_tab(i); };
+        tabstrip.on_close  = [](void *c, int i) { ((FilesApp *)c)->close_tab(i); };
+        tabstrip.on_new    = [](void *c) { ((FilesApp *)c)->new_tab_here(); };
+
         menu.ctx = this;
         menu.on_pick = [](void *c, int tag) { ((FilesApp *)c)->menu_pick(tag); };
 
@@ -982,7 +1088,7 @@ struct FilesApp : ui::Window {
         details.visible = details_open && !picker;
 
         layout_widgets();
-        add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info);
+        add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info); add(&tabstrip);
         add(&crumbbar); add(&pathfld); add(&list); add(&grid); add(&renamefld); add(&details); add(&status);
         add(&footer); add(&nameLbl); add(&nameFld); add(&cancelBtn); add(&okBtn);
         add(&menu); add(&overwrite);                  /* menu + overwrite last = on top + modal */
@@ -992,6 +1098,7 @@ struct FilesApp : ui::Window {
             menu_begin();
             int mf = menu_add("File"); menu_item(mf, "New Folder", 'N'); menu_item(mf, "New File", 0);
                                        menu_item(mf, "Refresh", 0); menu_item(mf, "Empty Trash", 0);
+                                       menu_item(mf, "New Tab", 'T'); menu_item(mf, "Close Tab", 'W');  /* §4 */
             int me = menu_add("Edit"); menu_item(me, "Copy", 'C'); menu_item(me, "Cut", 'X');
                                        menu_item(me, "Paste", 'V'); menu_item(me, "Duplicate", 'D');
                                        menu_item(me, "Delete", 0); menu_item(me, "Rename", 0);
@@ -1017,6 +1124,9 @@ struct FilesApp : ui::Window {
         if (picker && preq.dir[0] && sys_exists(preq.dir, &st) && st.type == FT_DIR) start = preq.dir;
         else if (!sys_exists(HOMEDIR, &st)) start = "/";
         nav_to(start);
+
+        grow_tabs(); ntabs = 1; curtab = 0; tab_save(0);   /* tab 0 mirrors the initial folder (§4) */
+        sync_tabs();
 
         if (picker) {
             if (preq.mode == PICK_SAVE) {             /* pre-fill + select the suggested name */
@@ -1056,6 +1166,7 @@ struct FilesApp : ui::Window {
         case 11: empty_trash();        break;             /* Empty Trash (§9) */
         case 12: duplicate_sel();      break;             /* Duplicate (§12) */
         case 13: make_file();          break;             /* New File (§12)  */
+        case 14: open_sel_new_tab();   break;             /* Open in New Tab (§4) */
         }
         invalidate();
     }
@@ -1082,7 +1193,11 @@ struct FilesApp : ui::Window {
                 menu.add("Put Back", PK_ACTION, 10, 0, 0, 0);
                 menu.add("Delete Immediately", PK_ACTION, 3, 0, 0, 0);
             } else {
-                if (e->type == FT_DIR || is_app_dir(e->type, e->name)) menu.add("Open", PK_ACTION, 1, 0, 0, 0);
+                if (e->type == FT_DIR || is_app_dir(e->type, e->name)) {
+                    menu.add("Open", PK_ACTION, 1, 0, 0, 0);
+                    if (e->type == FT_DIR && !is_app_dir(e->type, e->name))
+                        menu.add("Open in New Tab", PK_ACTION, 14, 0, 0, 0);     /* §4 */
+                }
                 else { menu.add("Open", PK_ACTION, 1, 0, 0, 0); menu.add("Open With...", PK_ACTION, 2, 0, 0, 0);
                        menu.add("Copy", PK_ACTION, 6, 0, 0, 0); menu.add("Cut", PK_ACTION, 7, 0, 0, 0); }
                 menu.add("Duplicate", PK_ACTION, 12, 0, 0, 0);        /* §12 */
@@ -1141,7 +1256,8 @@ struct FilesApp : ui::Window {
     void on_menu(int menu, int item) override {
         print("[files] menu "); printu((unsigned)menu); printc(' '); printu((unsigned)item); print("\r\n");
         if (menu == 0) { if (item == 0) make_folder(); else if (item == 1) make_file();
-                         else if (item == 2) load_dir(); else if (item == 3) empty_trash(); } /* File: New Folder / New File / Refresh / Empty Trash */
+                         else if (item == 2) load_dir(); else if (item == 3) empty_trash();
+                         else if (item == 4) new_tab_here(); else if (item == 5) close_cur_tab(); } /* File: New Folder / New File / Refresh / Empty Trash / New Tab / Close Tab */
         else if (menu == 1) {                                                                 /* Edit */
             if (item == 0) copy_sel(false); else if (item == 1) copy_sel(true);
             else if (item == 2) paste(); else if (item == 3) duplicate_sel();

@@ -976,6 +976,20 @@ def _files_ctx_click(t, wr, idx, before):
     t.click(wr[0] + px + 14, wr[1] + py + 5 + idx * rh + rh // 2)
 
 
+def _files_tab_click(t, wr, i, close=False):
+    """Click tab `i`'s pill body (or its × when close=True) on the Files tab strip, using
+    the latest "[files] tabbar y h n cur" + "[files] tabpos i x w" geometry canaries. The
+    px/w are window-relative; wr is the Files window rect."""
+    bar = re.findall(r"\[files\] tabbar (\d+) (\d+) (\d+) (\d+)", t.serial())
+    assert bar, "the tab strip geometry (tabbar) was not reported"
+    by, bh = int(bar[-1][0]), int(bar[-1][1])
+    pos = {int(a): (int(x), int(w)) for a, x, w in re.findall(r"\[files\] tabpos (\d+) (\d+) (\d+)", t.serial())}
+    assert i in pos, "tab %d position not reported" % i
+    px, pw = pos[i]
+    cx = wr[0] + px + (pw - 8 if close else 12)
+    t.click(cx, wr[1] + by + bh // 2)
+
+
 def t_files_trash(uefi):
     # Trash (files-app §9): Delete in a normal folder MOVES the item to ~/.Trash (a
     # rename, recorded in a .trashinfo sidecar) instead of destroying it; "Put Back"
@@ -999,7 +1013,7 @@ def t_files_trash(uefi):
         c_ctx = t.serial().count("[files] ctxmenu")
         rx, ry = _files_row_xy(t, wr, 1)
         t.rightclick(rx, ry)
-        _files_ctx_click(t, wr, 3, c_ctx)                 # dir menu: Open(0) Duplicate(1) Rename(2) Delete(3)
+        _files_ctx_click(t, wr, 4, c_ctx)                 # dir menu: Open(0) Open-in-New-Tab(1) Duplicate(2) Rename(3) Delete(4)
         assert t.wait_for("[files] trash trashme", 8), "Delete did not move trashme to the Trash"
         # on disk: it physically moved into ~/.Trash. (The "[files] trash" canary alone
         # can't prove this -- move_to_trash logs it even on the rmrf fallback -- so we
@@ -1031,7 +1045,7 @@ def t_files_trash(uefi):
         c_ctx = t.serial().count("[files] ctxmenu")
         rx, ry = _files_row_xy(t, wr, 1)
         t.rightclick(rx, ry)
-        _files_ctx_click(t, wr, 3, c_ctx)                 # Delete again (Open0 Duplicate1 Rename2 Delete3)
+        _files_ctx_click(t, wr, 4, c_ctx)                 # Delete again (Open0 Open-in-New-Tab1 Duplicate2 Rename3 Delete4)
         assert _count_at_least(t, "[files] trash trashme", c_trash + 1, 8), "re-Delete did not re-trash trashme"
         _files_menu_click(t, "File", 3)                   # File > Empty Trash (after New Folder/New File/Refresh)
         assert t.wait_for("[files] trash empty", 8), "Empty Trash did not run"
@@ -1097,7 +1111,7 @@ def t_files_newdup(uefi):
         c_ctx = t.serial().count("[files] ctxmenu")
         rx, ry = _files_row_xy(t, wr, 1)
         t.rightclick(rx, ry)
-        _files_ctx_click(t, wr, 1, c_ctx)                 # folder menu: Open(0) Duplicate(1)
+        _files_ctx_click(t, wr, 2, c_ctx)                 # folder menu: Open(0) Open-in-New-Tab(1) Duplicate(2)
         assert t.wait_for("[files] duplicate box copy", 8), "Duplicate did not clone the folder as 'box copy'"
         # on disk: the recursive copy reproduced the child directory inside 'box copy'
         _dock_focus(t, "Terminal")
@@ -1159,6 +1173,65 @@ def t_files_getinfo(uefi):
             time.sleep(0.1)
         assert m, "a system-owned item did not report read-only / owner=System"
         t.screenshot("/tmp/tos_getinfo_locked.ppm")       # the "Read only" lock badge under the name
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
+def t_files_tabs(uefi):
+    # Tabs (§4): one window, several folders. Each tab keeps its own folder + history +
+    # selection; New Tab (File menu) adds one, clicking a pill switches (restoring that
+    # tab's folder), "Open in New Tab" (folder context menu) spawns one at that folder,
+    # and a pill's × closes it. Canaries: "[files] tab new/sel/close ..." + "[files]
+    # tabbar y h n cur". The strip is hidden with a single tab. Screenshot the strip.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        t.line("mkdir /Users/user/ta")
+        t.line("mkdir /Users/user/tb")
+        t.line("mkdir /Users/user/tp")
+        t.line("mkdir /Users/user/tp/child")
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        assert "[files] tabbar" not in t.serial(), "the tab strip showed with a single tab"
+        # tab 0 -> /Users/user/ta
+        _files_nav(t, wr, "/Users/user/ta")
+        # New Tab (File menu item 4) opens a second tab (at the current folder)
+        nc = t.serial().count("[files] tab new")
+        _files_menu_click(t, "File", 4)
+        assert _count_at_least(t, "[files] tab new", nc + 1, 6), "New Tab did not open a second tab"
+        assert t.wait_for("[files] tabbar", 6), "the tab strip did not appear with 2 tabs"
+        # drive the 2nd (now-active) tab to a different folder
+        _files_nav(t, wr, "/Users/user/tb")
+        # switch back to tab 0 -> it must restore /Users/user/ta (its own folder)
+        cd_a = t.serial().count("[files] cd /Users/user/ta\r")
+        _files_tab_click(t, wr, 0)
+        assert t.wait_for("[files] tab sel 0", 4), "tab 0 selection was not reported"
+        assert _count_at_least(t, "[files] cd /Users/user/ta\r", cd_a + 1, 6), \
+            "switching to tab 0 did not restore its folder"
+        t.screenshot("/tmp/tos_tabs.ppm")                 # two pills under the location bar
+        # switch to tab 1 -> /Users/user/tb
+        cd_b = t.serial().count("[files] cd /Users/user/tb\r")
+        _files_tab_click(t, wr, 1)
+        assert _count_at_least(t, "[files] cd /Users/user/tb\r", cd_b + 1, 6), \
+            "switching to tab 1 did not restore its folder"
+        # Open in New Tab: drive tab 1 to /Users/user/tp (only "child" inside), right-click it
+        _files_nav(t, wr, "/Users/user/tp")
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)                  # row 0 = "..", row 1 = "child"
+        t.rightclick(rx, ry)
+        _files_ctx_click(t, wr, 1, c_ctx)                 # folder menu: Open(0) Open-in-New-Tab(1)
+        assert t.wait_for("[files] tab new /Users/user/tp/child", 6), \
+            "Open in New Tab did not spawn a tab at the folder"
+        bar = re.findall(r"\[files\] tabbar \d+ \d+ (\d+) \d+", t.serial())
+        assert bar and int(bar[-1]) == 3, "the third tab did not register (n=%s)" % (bar[-1] if bar else "none")
+        # close tab 1 via its × -> back to 2 tabs
+        cl = t.serial().count("[files] tab close")
+        _files_tab_click(t, wr, 1, close=True)
+        assert _count_at_least(t, "[files] tab close", cl + 1, 6), "the pill × did not close the tab"
+        bar = re.findall(r"\[files\] tabbar \d+ \d+ (\d+) \d+", t.serial())
+        assert bar and int(bar[-1]) == 2, "closing a tab did not drop the count to 2"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
@@ -1343,7 +1416,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,

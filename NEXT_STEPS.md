@@ -224,6 +224,17 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files tabs §4 (2026-06-09).** One window, many folders: a **tab strip** of folder pills under the
+  location bar (hidden with a single tab), each tab keeping its **own folder + back/forward history +
+  selection**. The live `path`/`hist` are the active tab's working copy; switching shuttles them to/from
+  a growable heap `tabs` store (no fixed tab ceiling). **New Tab** (File menu / Ctrl+T) and the strip's
+  **+** add one; clicking a pill switches (restoring that tab's folder); the pill's **×** (or File ▸ Close
+  Tab / Ctrl+W) closes it; **Open in New Tab** (folder context menu) spawns one at that folder; the pill
+  relabels as you navigate within the tab. New widget `TabStrip` (fileswidgets.h) + pure title helper
+  `tabtitle.h` (unit `t_tabtitle`, 8 checks); e2e `t_files_tabs` (new / switch-restores-folder /
+  open-in-new-tab / close, screenshot-verified two pills + × + ＋). Canaries `[files] tab new|sel|close`
+  + `[files] tabbar/tabpos`. Context-menu reindex: the plain-folder menu gained **Open in New Tab** at
+  index 1 (shifted Duplicate/Delete; updated `t_files_trash` + `t_files_newdup`).
 - **Files rich Get Info / Properties §8 (2026-06-09).** Selecting an item now fills the **Details
   pane** with a real Get Info: a folder's **recursive size + item count** (a `du`-style `dir_usage`
   walk — heap-listed per level like `copy_tree`; the volume is tiny so it runs synchronously on
