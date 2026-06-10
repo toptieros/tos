@@ -114,12 +114,27 @@ public:
         }
         return 0;
     }
-    int row_y(int v) const { return r.y + top_pad + v * row_h; }
+    /* With Tags expanded the rows can outgrow the panel (no fixed cap on favourites
+     * either), so the section area scrolls by whole rows on the wheel, clipped above
+     * the pinned Trash divider. */
+    int scroll = 0;                                      /* first visible row index */
     int trash_y() const { return r.y + r.h - row_h - 8; }
+    int row_limit() const { return trash_path[0] ? trash_y() - 6 : r.y + r.h; }
+    int rows_fit() const { int a = row_limit() - (r.y + top_pad); return a > 0 ? a / row_h : 0; }
+    int max_scroll() const { int m = vrows() - rows_fit(); return m > 0 ? m : 0; }
+    int row_y(int v) const { return r.y + top_pad + (v - scroll) * row_h; }
     int row_at(int y) const {                            /* visible row under y, or -1 */
-        if (y < r.y + top_pad) return -1;
-        int v = (y - r.y - top_pad) / row_h;
+        if (y < r.y + top_pad || y >= row_limit()) return -1;
+        int v = (y - r.y - top_pad) / row_h + scroll;
         return v < vrows() ? v : -1;
+    }
+    bool on_scroll(int delta) override {
+        int ns = scroll - delta;                         /* wheel down (delta<0) reveals later rows */
+        if (ns < 0) ns = 0; if (ns > max_scroll()) ns = max_scroll();
+        if (ns == scroll) return false;
+        scroll = ns;
+        if (on_changed) on_changed(ctx);                 /* fresh siderow dump + repaint */
+        return true;
     }
     /* The Favorites item under (x, y) as an items[] index, or -1 -- favorites are
      * added first, so this doubles as the places-list index. The window uses it
@@ -170,10 +185,12 @@ public:
         ugfx_fill(r.x, r.y, r.w, r.h, C_SIDEBAR);
         ugfx_fill_a(r.x + r.w - 1, r.y, 1, r.h, ARGB(70, 0, 0, 0));
         static const char *sect_name[SIDE_NSECT] = { "Favorites", "Locations", "Tags" };
-        int nv = vrows();
-        for (int v = 0; v < nv; v++) {
+        if (scroll > max_scroll()) scroll = max_scroll();    /* rows shrank (a collapse) */
+        int nv = vrows(), limit = row_limit();
+        for (int v = scroll; v < nv; v++) {
             int s, i; if (!vrow(v, &s, &i)) break;
             int y = row_y(v);
+            if (y + row_h > limit) break;                /* clipped at the Trash divider */
             if (i < 0) {                                 /* section header + disclosure caret */
                 int cy = y + row_h / 2, cx = r.x + 16;   /* (opaque fill: RGB() carries no alpha) */
                 if (collapsed[s]) for (int k = 0; k < 4; k++) ugfx_fill(cx - 2 + k, cy - 3 + k, 1, 7 - 2 * k, TH_MUTED);  /* > */

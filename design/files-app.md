@@ -345,6 +345,24 @@ a single `~/.tags` index), with a fixed palette of named colors first and custom
 later. Set tags from the context menu and Get Info (§8); show a colored dot on the icon.
 P3 — clean follow-up once Get Info and search exist.
 
+**Done (2026-06-10).** Sidecar store: `~/.tags`, one `"<mask>\t<path>\n"` line per tagged
+item, via the pure codec `user/lib/tagstore.h` (get/set/move; unit-tested in
+`tests/unit/t_tagstore.c`); renames, move-to-trash, and Put Back carry tags with
+`tagstore_move`. Seven fixed colors (`tag_names_`/`tag_colors_`). UI: context-menu
+**"Tags..."** opens a stay-open Popup of `PK_TOGGLE` rows (per-item `checked` + colour
+`dot`, `on_toggle` fires per flip and writes through immediately — canary
+`[files] tags <path> <mask>`); details rows draw the item's dots overlapped Finder-style,
+right-aligned in the Name column (the name fit reserves their width); the sidebar's
+**Tags** section (collapsed by default) lists the colors and a click filters the listing
+to that tag (click again clears — canary `[files] tagfilter <name|off> <nview>`, status
+shows "N of M shown"). The expanded sections outgrow the panel, so the sidebar now
+**scrolls by whole rows on the wheel**, clipped above the pinned Trash divider, and
+`side_dump` only reports rows actually on screen (the original overflow misrouted a tag
+click to Trash). Tag masks load per folder with one sidecar slurp in `load_dir`
+(`etags[]`, aligned after the sort). Verified per design/testing.md with units + one
+disposable boot (`tests/repro_tags.py`) + screenshots. Not yet: tag editing in Get Info,
+icon-view dots, tag search (§5).
+
 ## 11. Thumbnails, Quick Look & richer iconography
 
 - **Thumbnails**: render real previews for images instead of the generic image glyph —

@@ -74,7 +74,7 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   the pane. Pure helpers `fileinfo.h` (owner label / lock rule / item-count, unit `t_fileinfo`), e2e
   `t_files_getinfo` (recursive folder size + a locked system item, screenshot-verified), canary
   `[files] sel <name> (ro|rw) owner=<uid> size=<n> [items=<n>]`. **Left, cheapest-first:**
-  tabs/split §4, column/gallery views §1, search/thumbnails §11, tags/undo §10/§12.
+  recursive search §5, thumbnails/Quick Look §11, gallery view §1, background jobs §12.
   → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
   of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
@@ -247,6 +247,18 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Tags / labels §10 + a scrolling sidebar (2026-06-10).** Finder-style colored tags on a
+  `~/.tags` sidecar (no fs xattrs): pure codec `tagstore.h` (get/set/move; unit `t_tagstore`),
+  carried across rename / move-to-trash / Put Back. Context-menu **"Tags..."** opens a
+  stay-open picker (Popup grew per-item `checked` + colour `dot` + an `on_toggle` callback;
+  Open With's shared toggle untouched) that writes through per flip (`[files] tags <path>
+  <mask>`); details rows draw the dots overlapped, right-aligned in the Name column; the
+  sidebar's **Tags section** (collapsed by default) filters the listing per color, click
+  again to clear (`[files] tagfilter <name|off> <n>`, status "N of M shown"). Found via the
+  verification boot: the expanded sections **overflowed past the pinned Trash row** and
+  misrouted clicks to Trash — the sidebar now wheel-scrolls by whole rows, clips at the
+  Trash divider, and `side_dump` reports only on-screen rows. Verified the NEW way: units +
+  one disposable boot (`tests/repro_tags.py`) + screenshots; smoke tier 13/13, no new e2e.
 - **Test-suite restructure: smoke tier + in-OS selftest (2026-06-10).** The suite had
   crept back to "boot full QEMU for every little thing" (56 boots per `make test`, re-run
   per increment). Now: **`make test` = a smoke tier** of 13 deliberate journeys

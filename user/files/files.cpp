@@ -368,9 +368,10 @@ struct FilesApp : ui::Window {
     /* trace the sidebar's visible rows (click centres, window coords) for the e2e
      * harness; deduped by a content+geometry signature so relayouts don't spam. */
     void side_dump() {
-        int nv = side.vrows();
-        unsigned sig = 2166136261u ^ (unsigned)nv;
-        for (int v = 0; v < nv; v++) {
+        int nv = side.vrows(), limit = side.row_limit();  /* only the rows actually on screen
+                                                           * (scroll + Trash clipping) are clickable */
+        unsigned sig = 2166136261u ^ (unsigned)nv ^ ((unsigned)side.scroll << 8);
+        for (int v = side.scroll; v < nv && side.row_y(v) + side.row_h <= limit; v++) {
             int s, i; if (!side.vrow(v, &s, &i)) break;
             if (i >= 0) for (const char *p = side.items[i].label; *p; p++) sig = (sig ^ (unsigned char)*p) * 16777619u;
             sig = (sig ^ (unsigned)side.row_y(v)) * 16777619u;
@@ -378,7 +379,7 @@ struct FilesApp : ui::Window {
         sig = (sig ^ (unsigned)side.trash_y()) * 16777619u;
         if (sig == side_sig) return;
         side_sig = sig;
-        for (int v = 0; v < nv; v++) {
+        for (int v = side.scroll; v < nv && side.row_y(v) + side.row_h <= limit; v++) {
             int s, i; if (!side.vrow(v, &s, &i)) break;
             print("[files] siderow "); printu((unsigned)v); printc(' ');
             printu((unsigned)(side.r.x + side.r.w / 2)); printc(' ');
@@ -1247,12 +1248,17 @@ struct FilesApp : ui::Window {
         /* details view: each cell aligned to the column header (§1) */
         int *cx = a->header.colx, *cwd = a->header.colw, base = cell.x;
         int ix = base + cx[0] + 10; row_icon(a, idx, type, name, ix, iyy);
-        char nm[64]; fit_col(label, nm, sizeof nm, cwd[0] - 40);
+        int ndots = 0;                                       /* §10: tag dots, right-aligned in the Name
+                                                              * column (overlapping, Finder-style) so the
+                                                              * fitted column never clips them out */
+        if (idx >= 0) for (int tt = 0; tt < TAG_NCOLORS; tt++) if (a->etags[idx] & (1u << tt)) ndots++;
+        int dotw = ndots ? 8 + 5 * (ndots - 1) + 6 : 0;
+        char nm[64]; fit_col(label, nm, sizeof nm, cwd[0] - 40 - dotw);
         ugfx_text(ix + 28, ty, nm, txt, UGFX_TRANSPARENT);
-        if (idx >= 0 && a->etags[idx]) {                     /* §10: the item's tag dots after the name */
-            int dx = ix + 28 + ugfx_text_w(nm) + 8, dy = cell.y + (cell.h - 8) / 2;
-            for (int t = 0; t < TAG_NCOLORS && dx + 8 <= base + cx[1]; t++)
-                if (a->etags[idx] & (1u << t)) { ugfx_rrect_aa(dx, dy, 8, 8, 4, tag_colors_[t]); dx += 11; }
+        if (ndots) {
+            int dx = base + cx[1] - dotw - 4, dy = cell.y + (cell.h - 8) / 2;
+            for (int tt = 0; tt < TAG_NCOLORS; tt++)
+                if (a->etags[idx] & (1u << tt)) { ugfx_rrect_aa(dx, dy, 8, 8, 4, tag_colors_[tt]); dx += 5; }
         }
         char kd[24], buf[40]; kind_label(type, name, kd, sizeof kd);
         fit_col(kd, buf, sizeof buf, cwd[1] - 14); ugfx_text(base + cx[1] + 10, ty, buf, mut, UGFX_TRANSPARENT);
