@@ -4,10 +4,12 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **56/56** (45 e2e journeys on BIOS + a UEFI subset 11) + **344 host
-unit checks** (`make unit`, no QEMU). *(Earlier status lines undercounted the BIOS list; this
-is the tally an actual full run reports.)* Pyramid policy in [`design/testing.md`](design/testing.md);
-the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
+**Status:** `make check` = **344 host unit checks** (`make unit`, no QEMU) + the **smoke
+tier** (13 deliberate boots: 10 BIOS incl. the in-OS `selftest` batch of 46 native checks,
+3 UEFI). The full catalog (46 BIOS + 11 UEFI journeys) is `make test-all` — the release /
+cross-cutting-change gate, **not** the per-increment loop. Pyramid + tier policy in
+[`design/testing.md`](design/testing.md); the phased plan in
+[`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
 Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unless asked).
 
@@ -245,7 +247,43 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
-- **Files editable Places sidebar §7 (2026-06-10).** The 8 hardcoded sidebar rows became a real
+- **Test-suite restructure: smoke tier + in-OS selftest (2026-06-10).** The suite had
+  crept back to "boot full QEMU for every little thing" (56 boots per `make test`, re-run
+  per increment). Now: **`make test` = a smoke tier** of 13 deliberate journeys
+  (`SMOKE_BIOS`/`SMOKE_UEFI_LIST`); the full catalog moved behind **`make test-all`**
+  (`--all`) as the release / cross-cutting-change gate. New **`selftest`** userspace
+  program (`/System/bin/selftest`, shell command) runs **46 native fs / registry /
+  fork-wait / statfs / clipboard assertions in one boot** — replacing a boot-per-area in
+  the smoke tier — and prints `selftest: N/N OK` (failures name the expression). Policy
+  sharpened in design/testing.md: features verify with **units + one disposable ad-hoc
+  boot + screenshot**; new permanent e2e only for a critical journey or a pinned bug, and
+  new in-OS checks go into `selftest` first.
+- **Cursor hints + the press-vs-hover compositor bug; folder sizes + working column resize
+  (2026-06-10).** Two user asks ("folders should show a Size too — that's why .apps sort but show
+  nothing" and "make the header dividers actually draggable, with a cursor change, as a global UI
+  thing") turned into three layers of work. **(1) Root-caused a real twm input bug:** on the press
+  frame the hover block saw `!down` go false, recomputed `hov=-1` and posted the **hover-leave packet
+  (0xfff,0xfff,0)** to the window — which the toolkit reads as a **button-up**, so a divider grab was
+  committed + focus restored to the list before the first WEV_MOUSE_DRAG arrived (the drag then went
+  to the list, not the header). Fix: **hover posting is frozen while a button is held**, and the
+  release edge now posts an **explicit btn-0 packet to the `cdrag` owner** (previously the
+  leave/enter pair was, by accident, the app's only up signal). Regression probe kept as
+  `tests/repro_hdr_drag.py`. **(2) Global cursor hints (SYS_WIN_SETCURSOR, syscall 70):** an app
+  declares its client-area cursor (`win_setcursor(id, CUR_*)`, ids shared in `syscall.h`, pixmaps
+  stay twm-only in `cursors.h`); the kernel stores it per window, `wm_windows` snapshots carry it,
+  twm's context-cursor block shows it over that client (and **keeps the drag owner's hint live
+  mid-drag**) — the hardcoded `title=="Terminal"` I-beam hack is gone (term now declares
+  `CUR_IBEAM` itself). Toolkit side: `ui::Widget` grew `cursor` + `cursor_at(x,y)`; `dispatch_hover`
+  relays the hot widget's shape (deduped) — so **every TextField OS-wide shows an I-beam** with zero
+  app code, and `ColumnHeader::cursor_at` returns **`CUR_RESIZE_WE` over a divider's grab zone**
+  (the resize affordance is the ⇔ cursor per user preference — the hover highlight was dropped).
+  **(3) Files:** `load_dir` now fills **directory entries' `size` with the recursive `dir_usage`
+  byte count** (so folders + `.app` bundles render a real Size cell — only the synthetic ".." dashes —
+  and size-sort is meaningful for them), and **View ▸ Info (item 6, ^I, checkmark)** joins the menu
+  (the e2e closes the inspector so colfit has slack to actually widen Name). e2e: `t_files_details`
+  extended — divider drag asserts `[files] colw` + a ≥40px wider fitted Name (screenshot
+  `tos_colresize.ppm` shows the ⇔ cursor on the divider), then with **Folders First off** a
+  size-desc sort must put a stuffed subfolder on top purely by its recursive bytes. The 8 hardcoded sidebar rows became a real
   **sectioned Places list**: **Favorites** (the user's pins) + **Locations** (Applications / System /
   Computer, the volume row carrying an inline **used-space bar** off statfs), each section **collapsing
   on a header click** (disclosure caret), plus **Trash pinned at the bottom** (its own glyph + separator).

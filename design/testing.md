@@ -54,6 +54,31 @@ A good gut check: *"If I delete this test, what real failure slips through — a
 not have noticed it anyway?"* If the honest answer is "nothing / I'd notice instantly,"
 the test is cost without coverage.
 
+## Tiers (2026-06-10): smoke by default, the catalog on demand
+
+The doc above said "keep the e2e set small" — and the suite still ballooned to 56
+boots because every feature kept adding "its" journey and every increment re-ran all
+of them. The structure now enforces the policy:
+
+- **`make test` = the SMOKE tier** (`SMOKE_BIOS`/`SMOKE_UEFI_LIST` in run_tests.py,
+  ~10 BIOS + 3 UEFI boots): boot+fs, the in-OS **selftest** batch, reboot persistence,
+  desktop + window management, the two richest app journeys (Files details, Trash,
+  Notepad edit/save), focus switching, mouse. This is the day-to-day gate (`make check`
+  = `unit` + this).
+- **`make test-all` = the full catalog** (`--all`): every journey we have. Run it for
+  cross-cutting kernel / compositor / toolkit changes and before tagging a release —
+  **not** per feature increment.
+- **`selftest` (user/selftest/selftest.c)**: an in-OS self-check program — dozens of
+  native fs/registry/proc/clipboard assertions in **one** boot, where the suite used to
+  spend a boot per area driving the shell over serial. Type `selftest` in the terminal;
+  it prints `selftest: N/N OK` (failures name the exact expression). **Add checks here
+  before reaching for a new boot test.**
+- **Verification boots are disposable.** While building a feature: unit-test the logic,
+  drive ONE ad-hoc boot (a `tests/repro_*.py` script or a manual harness run) to see it
+  work, screenshot it if it's visible — and that's it. The boot that verified the
+  feature does **not** get enshrined in the suite; at most the feature earns an assert
+  folded into an existing smoke journey.
+
 ## The e2e smoke/journey set (what stays in QEMU)
 
 Keep these because they prove the system is fundamentally alive, and because the thing
@@ -88,7 +113,8 @@ globals), so only **pure** functions unit-test cleanly. The pattern:
 - When logic is tangled in a method or a file full of globals, **extract the pure core**
   into such a header and have the original delegate to it (it's also just better code).
 - `make unit` builds and runs `tests/unit/` with the host `cc` in milliseconds;
-  `make test` runs the e2e suite under QEMU; `make check` runs both.
+  `make test` runs the smoke tier under QEMU (`make test-all` for the full catalog);
+  `make check` runs unit + smoke.
 
 The goal state: adding a feature usually adds a **cheap unit test**, not a boot test, and
 the e2e suite stays a small, trustworthy set of canaries.

@@ -607,6 +607,22 @@ def t_app_crash(uefi):
         assert t.wait_for("a hobby OS", 5), "shell stopped responding after a crash"
 
 
+def t_selftest(uefi):
+    # In-OS self-checks (design/testing.md): ONE boot runs dozens of native
+    # kernel/fs/registry/proc/clipboard assertions (user/selftest/selftest.c) --
+    # the smoke-tier replacement for a pile of per-area console boots. Any
+    # failing check prints "selftest FAIL: <expr>" with the final tally.
+    with Tos(uefi=uefi) as t:
+        assert t.boot_ok(), "shell did not come up"
+        t.line("selftest")
+        assert t.wait_for("selftest: ", 20), "selftest did not finish"
+        out = t.serial()
+        assert "selftest FAIL" not in out, "in-OS self-checks failed:\n" + "\n".join(
+            l for l in out.splitlines() if "selftest" in l)
+        assert re.search(r"selftest: \d+/\d+ OK", out), "selftest did not report OK"
+        assert "[EXCEPTION]" not in out and "PANIC" not in out
+
+
 def t_fs_crud(uefi):
     # The filesystem CRUD surface in one boot: read shipped content (incl. a file two
     # directories deep), the missing-file error, create + read-back, rewrite-in-place
@@ -1403,6 +1419,11 @@ def t_files_details(uefi):
         _files_hdr_click(t, wr, 0)
         assert _count_at_least(t, "[files] sort name asc", s + 1, 6), "Name header did not sort by name"
         # --- drag the Name|Kind divider right -> Name widens; the new widths persist ---
+        # close the Info pane first (View > Info, item 6): in the test-sized window the
+        # open inspector leaves the list so narrow that colfit pins every column at its
+        # floor, and no user width could change the fitted result.
+        _files_menu_click(t, "View", 6)
+        assert t.wait_for("[files] info 0", 6), "View > Info did not close the inspector"
         hx, hy, hh, cols = _files_hdr(t)
         dvx, dvy = hx + cols[0][0] + cols[0][1], hy + hh // 2
         n_colw = t.serial().count("[files] colw")
@@ -1411,6 +1432,7 @@ def t_files_details(uefi):
         _, _, _, cols2 = _files_hdr(t)
         assert cols2[0][1] >= cols[0][1] + 40, \
             "Name did not widen by the drag (%d -> %d)" % (cols[0][1], cols2[0][1])
+        t.screenshot("/tmp/tos_colresize.ppm")           # widened Name column + ⇔ cursor on the divider
         # --- folders carry a real recursive Size (so .apps sort/show too): zsub gets a file,
         # then with Folders First OFF a pure size-desc sort must put zsub on top purely by
         # its recursive byte count (each header/menu sort reloads the dir, re-walking sizes) ---
@@ -1725,9 +1747,13 @@ def t_drivers(uefi):
 # The e2e smoke/journey set -- a tight set of canaries that prove the OS is alive
 # (see design/testing.md). Pure logic lives in the host unit tests (make unit), so
 # per-feature behaviours are NOT re-tested here by booting QEMU.
+# The FULL catalog: every e2e journey we have. This is the release gate
+# (`make test-all`) -- run it when a change cuts across the kernel/compositor/
+# toolkit, before tagging, or when chasing a regression. Day-to-day, run the
+# SMOKE tier below (default `make test`). See design/testing.md.
 BIOS_TESTS = [
     # boot + filesystem
-    t_boot_and_ls, t_partition, t_fs_crud, t_fs_persist, t_registry, t_many_files,
+    t_boot_and_ls, t_partition, t_selftest, t_fs_crud, t_fs_persist, t_registry, t_many_files,
     t_system_ownership, t_statfs,
     # processes / scheduler
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
@@ -1738,6 +1764,21 @@ BIOS_TESTS = [
     # hardware
     t_mouse, t_ram_scales, t_drivers,
 ]
+
+# The SMOKE tier (default `make test`): a small deliberate set that proves the
+# system is alive end-to-end -- boot + fs mounts, the in-OS selftest batch
+# (dozens of native kernel/fs/syscall checks in one boot), reboot persistence,
+# the desktop compositing + window management, the two richest app journeys,
+# focus switching, and the input path. Features verify during development with
+# units + an ad-hoc boot + screenshot; they do NOT each earn a permanent boot
+# test here (design/testing.md).
+SMOKE_BIOS = [
+    t_boot_and_ls, t_selftest, t_fs_persist,
+    t_gui, t_window_mgmt,
+    t_files_details, t_files_trash, t_notepad_edit_save,
+    t_alt_tab, t_mouse,
+]
+SMOKE_UEFI_LIST = [t_boot_and_ls, t_gui, t_mouse]
 # A representative subset on UEFI to confirm both boot paths reach the same OS.
 # t_ram_scales runs here too: its 6G case is the regression guard for the UEFI
 # loader's >4 GiB transition map (the kernel-only path can't catch that bug).
@@ -1765,13 +1806,19 @@ def run(label, tests, uefi):
 def main():
     do_bios = "--uefi-only" not in sys.argv
     do_uefi = "--bios-only" not in sys.argv
+    # Tiers (design/testing.md): the default run is the SMOKE set -- a dozen
+    # deliberate journeys. --all runs the whole catalog (the release gate).
+    full = "--all" in sys.argv
     # Optional positional filter: any bare args name the tests to run (substring
-    # match against the function name), e.g. `run_tests.py t_file_picker`. Without
-    # a filter the full suite runs as before.
+    # match against the function name, over the FULL catalog), e.g.
+    # `run_tests.py t_file_picker`.
     names = [a for a in sys.argv[1:] if not a.startswith("-")]
     def _sel(tests):
         return [t for t in tests if any(n in t.__name__ for n in names)] if names else tests
-    bios_tests, uefi_tests = _sel(BIOS_TESTS), _sel(UEFI_TESTS)
+    if names or full:
+        bios_tests, uefi_tests = _sel(BIOS_TESTS), _sel(UEFI_TESTS)
+    else:
+        bios_tests, uefi_tests = SMOKE_BIOS, SMOKE_UEFI_LIST
     total_pass = total_fail = 0
     if do_bios and bios_tests:
         p, f = run("bios", bios_tests, uefi=False)

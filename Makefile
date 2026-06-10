@@ -67,7 +67,7 @@ ACCEL := -machine accel=kvm:tcg
 MEM  ?= 8G
 
 # --- user programs (each its own app dir + ELF executable, stored on the FS) -
-UPROGS   := init shell ticker twm term fastfetch memtest
+UPROGS   := init shell ticker twm term fastfetch memtest selftest
 CXXPROGS := files notepad clipboard spotlight launchpad settings
 UELFS    := $(patsubst %,$(BUILD)/%.elf,$(UPROGS) $(CXXPROGS))
 ULIBOBJ  := $(BUILD)/$(UDIR)/lib/ulib.o $(BUILD)/$(UDIR)/lib/ugfx.o $(BUILD)/$(UDIR)/lib/libc.o $(BUILD)/$(UDIR)/lib/sys.o $(BUILD)/$(UDIR)/lib/registry.o
@@ -102,7 +102,7 @@ EFIAPP  := $(BUILD)/BOOTX64.EFI
 MKFS    := $(BUILD)/mkfs
 FSIMG   := $(BUILD)/fs.img
 
-.PHONY: all bios uefi run-bios run-uefi test test-bios unit check clean
+.PHONY: all bios uefi run-bios run-uefi test test-all test-bios unit check clean
 all: $(IMG) $(UEFIIMG)
 bios: $(IMG)
 uefi: $(UEFIIMG)
@@ -177,6 +177,7 @@ $(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES)
 	    /System/bin/init=$(BUILD)/init.elf /System/bin/shell=$(BUILD)/shell.elf \
 	    /System/bin/ticker=$(BUILD)/ticker.elf /System/bin/twm=$(BUILD)/twm.elf \
 	    /System/bin/fastfetch=$(BUILD)/fastfetch.elf /System/bin/memtest=$(BUILD)/memtest.elf \
+	    /System/bin/selftest=$(BUILD)/selftest.elf \
 	    /System/bin/clipboard=$(BUILD)/clipboard.elf \
 	    /System/bin/spotlight=$(BUILD)/spotlight.elf \
 	    /System/bin/launchpad=$(BUILD)/launchpad.elf \
@@ -256,9 +257,15 @@ run-uefi: $(UEFIIMG)
 	  -no-reboot $(DISPLAY_OPT) $(QEMU)
 
 # --- tests ----------------------------------------------------------------
-# Boots the OS under QEMU and asserts on its behaviour (see tests/).
+# Tiers (design/testing.md): `make test` boots the SMOKE set -- a dozen
+# deliberate end-to-end journeys (incl. the in-OS `selftest` batch). The full
+# catalog (`make test-all`) is the release gate: run it for cross-cutting
+# kernel/compositor/toolkit changes, not per feature increment.
 test: all
 	cd tests && python3 run_tests.py
+
+test-all: all
+	cd tests && python3 run_tests.py --all
 
 test-bios: $(IMG) $(FSIMG)
 	cd tests && python3 run_tests.py --bios-only
@@ -275,7 +282,7 @@ unit:
 	  $$bin || fail=1; \
 	done; exit $$fail
 
-# Everything: fast unit tests first, then the full e2e suite under QEMU.
+# The day-to-day gate: fast unit tests first, then the smoke journeys.
 check: unit test
 
 clean:

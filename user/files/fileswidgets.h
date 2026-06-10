@@ -14,6 +14,7 @@
 #include "humansize.h"     /* human_bytes: recursive folder size on the Get Info pane  */
 #include "fileinfo.h"      /* info_owner_label / info_count_label: Get Info fields (§8) */
 #include "colfit.h"        /* colfit: details-view column layout (§1)                  */
+#include "tagstore.h"      /* TAG_NCOLORS + tag_names_: the color-tag palette (§10)    */
 
 #define MAXAPPS 16          /* Open With chooser app cap (also FilesApp's apps[])      */
 
@@ -48,15 +49,28 @@ public:
  * in one growable array tagged with a section id; vrow() maps a visible row to a
  * header/item so draw + hit-test share one layout. FilesApp rebuilds the items
  * when the places change, and routes right-clicks here via fav_at(). */
-#define SIDE_FAV 0
-#define SIDE_LOC 1
-#define SIDE_NSECT 2
+#define SIDE_FAV  0
+#define SIDE_LOC  1
+#define SIDE_TAGS 2                /* §10: the seven color tags (rows are "tag:<i>" pseudo-paths) */
+#define SIDE_NSECT 3
+/* §10: the fixed tag palette (indexes match tag_names_ / the ~/.tags bitmask). Content
+ * colors, not chrome -- the slate-blue theme stays untouched. */
+static const uint32_t tag_colors_[TAG_NCOLORS] = {
+    ARGB(255, 235,  95,  95),   /* Red    */
+    ARGB(255, 240, 160,  70),   /* Orange */
+    ARGB(255, 235, 205,  80),   /* Yellow */
+    ARGB(255, 120, 200, 120),   /* Green  */
+    ARGB(255,  96, 152, 252),   /* Blue (the accent family) */
+    ARGB(255, 175, 130, 235),   /* Purple */
+    ARGB(255, 150, 160, 175),   /* Gray   */
+};
 struct SideItem { char label[32]; char path[64]; int sect; };
 class Sidebar : public ui::Widget {
 public:
     SideItem *items = nullptr; int n = 0, cap = 0;       /* grows on demand */
-    int collapsed[SIDE_NSECT] = { 0, 0 };
+    int collapsed[SIDE_NSECT] = { 0, 0, 1 };             /* Tags starts collapsed (§10) */
     int row_h = 26, top_pad = 6, hover_row = -1;
+    int active_tag = -1;            /* §10: the tag row lit as the active filter (-1 none) */
     int vol_permille = -1;          /* used/total on the "/" row (0..1000); <0 hides the bar */
     char trash_path[64] = {0};
     const char *cur = nullptr;

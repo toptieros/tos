@@ -8,7 +8,7 @@
 #pragma once
 
 #define TAG_NCOLORS 7
-static const char *tag_names_[TAG_NCOLORS] = {
+static const char *tag_names_[TAG_NCOLORS] __attribute__((unused)) = {
     "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray"
 };
 

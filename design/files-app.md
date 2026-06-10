@@ -115,6 +115,16 @@ defines `LIST` and `ICONS`. This section fleshes those out and adds two more.
   3 widths, codec back-compatible). e2e `t_files_details`. Still TODO: a Sort-menu Date item,
   the **Date Added** column (needs a create-time fs field), an **owner** column, configurable
   column **add/remove**, and **Show in Groups**.)*
+  *(2026-06-10: the divider drag actually works now — it was silently broken by a compositor
+  press-vs-hover bug (the press frame posted a hover-leave packet the toolkit read as button-up,
+  cancelling the grab; twm now freezes hover while a button is down and posts an explicit
+  release to the drag owner). The resize affordance is the **⇔ cursor** over a divider's grab
+  zone, via the new global widget-cursor mechanism (`SYS_WIN_SETCURSOR` + `Widget::cursor_at`;
+  TextFields OS-wide get the I-beam from the same hook). **Folders now carry a real Size** —
+  `load_dir` fills directory entries with the recursive `dir_usage` byte count, so dirs and
+  `.app` bundles render a Size cell and participate honestly in size-sort (only ".." shows
+  dashes); with Sort ▸ Folders First off, a size-desc sort ranks a folder by its contents.
+  **View ▸ Info** (item 6, ^I, checked) toggles the §8 inspector from the menu bar.)*
 - **Column view (Miller columns)** — horizontally scrolling panes, one per path level;
   selecting a folder in column *n* opens its contents in column *n+1*; the last column
   is a preview. This is *the* Finder navigation idiom for deep trees. P2.

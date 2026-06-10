@@ -562,6 +562,8 @@ void _ustart(void) {
                    print(" crashed; shell and OS still alive\r\n"); }
         } else if (streq(line, "memtest")) {
             run_prog("memtest");             /* stress the multi-region frame pool (RAM across the 4 GiB hole) */
+        } else if (streq(line, "selftest")) {
+            run_prog("selftest");            /* in-OS self-checks: fs/registry/proc/clipboard (design/testing.md) */
         } else {
             print("unknown command: "); print(line); print("\r\n");
         }
