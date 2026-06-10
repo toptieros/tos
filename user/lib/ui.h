@@ -60,6 +60,9 @@ public:
     Window *win = nullptr;          /* set when added to a window */
     bool    focusable = false;      /* whether a click gives this widget key focus */
     bool    hovered  = false;       /* pointer is over this widget (drives state layers) */
+    int     cursor = CUR_ARROW;     /* pointer shape over this widget (CUR_*): the Window
+                                     * relays it to the compositor on hover, so e.g. every
+                                     * TextField shows an I-beam with zero per-app code */
     virtual ~Widget() {}
     virtual void draw() {}
     virtual bool on_mouse(int x, int y, int btn) { (void)x; (void)y; (void)btn; return false; }
@@ -77,6 +80,9 @@ public:
     virtual void on_leave() { hovered = false; }
     /* scroll wheel over the widget; delta>0 = wheel up. Return true if it scrolled. */
     virtual bool on_scroll(int delta) { (void)delta; return false; }
+    /* the pointer shape at (x,y) inside this widget; defaults to the static `cursor`
+     * field. Override for sub-element shapes (a header's ⇔ only over its dividers). */
+    virtual int cursor_at(int x, int y) { (void)x; (void)y; return cursor; }
     /* true if this widget draws a blinking caret while focused; Window pulses a
      * repaint at the blink cadence so the caret keeps blinking when idle. */
     virtual bool shows_caret() const { return false; }
@@ -400,6 +406,7 @@ protected:
     void feed_key(int byte);
     Vec<Widget *> kids;
     Widget *hot = nullptr;                      /* widget currently under the pointer */
+    int cur_shape = CUR_ARROW;                  /* cursor hint last sent to the compositor */
     int esc = 0;                                /* ESC-sequence decoder state */
     char csi[8] = {0};                          /* CSI parameter bytes (e.g. "1;5" for Ctrl) */
     int  csi_n = 0;

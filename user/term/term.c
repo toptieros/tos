@@ -323,6 +323,7 @@ void _ustart(void) {
     win = win_create(&wi);
     if (win < 0) { print("[term] win_create failed\r\n"); proc_exit(); }
     setup_menu(win);                  /* Edit > Copy / Paste / Clear in the bar */
+    win_setcursor(win, CUR_IBEAM);    /* the whole client is a text grid (replaces twm's old title hack) */
     surf = (uint32_t *)wi.vaddr; sw = (int)wi.w; sh = (int)wi.h;
     fw = ugfx_font_w(); fh = ugfx_font_h();
     setup_surface((int)wi.pitch);     /* sets cols/rows first ... */

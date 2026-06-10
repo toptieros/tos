@@ -165,6 +165,7 @@ struct FilesApp : ui::Window {
         menu_check_local(3, 0, view_mode == 1);      /* View: as Icons */
         menu_check_local(3, 1, view_mode == 0);      /* View: as List  */
         menu_check_local(3, 5, split);               /* View: Split View (§4) */
+        menu_check_local(3, 6, details_open);        /* View: Info (§8) */
         menu_check_local(4, 0, sort_key == FSORT_NAME);
         menu_check_local(4, 1, sort_key == FSORT_KIND);
         menu_check_local(4, 2, sort_key == FSORT_SIZE);
@@ -229,6 +230,14 @@ struct FilesApp : ui::Window {
         free_appcache();
         nents = readdir(path, ents, NMAX);
         if (nents < 0) nents = 0;
+        for (int i = 0; i < nents; i++)              /* folders carry their recursive (du) size, so the
+                                                      * Size column + Size sort are real for dirs/.apps
+                                                      * (§1; the volume is tiny, see dir_usage) */
+            if (ents[i].type == FT_DIR) {
+                char c[256]; join(c, sizeof c, path, ents[i].name);
+                unsigned b = 0, cnt = 0; dir_usage(c, &b, &cnt);
+                ents[i].size = b;
+            }
         for (int i = 0; i < nents; i++)
             for (int j = i + 1; j < nents; j++)
                 if (ent_cmp(&ents[j], &ents[i]) < 0) { struct dirent t = ents[i]; ents[i] = ents[j]; ents[j] = t; }
@@ -1155,7 +1164,9 @@ struct FilesApp : ui::Window {
         ugfx_text(ix + 28, ty, nm, txt, UGFX_TRANSPARENT);
         char kd[24], buf[40]; kind_label(type, name, kd, sizeof kd);
         fit_col(kd, buf, sizeof buf, cwd[1] - 14); ugfx_text(base + cx[1] + 10, ty, buf, mut, UGFX_TRANSPARENT);
-        char sz[24]; if (type == FT_FILE) human_bytes(size, sz, sizeof sz); else { sz[0] = '-'; sz[1] = '-'; sz[2] = 0; }
+        char sz[24];                                         /* folders show their recursive size too;
+                                                              * only the synthetic ".." stays a dash */
+        if (idx >= 0) human_bytes(size, sz, sizeof sz); else { sz[0] = '-'; sz[1] = '-'; sz[2] = 0; }
         fit_col(sz, buf, sizeof buf, cwd[2] - 14); ugfx_text(base + cx[2] + 10, ty, buf, mut, UGFX_TRANSPARENT);
         char dt[40];
         if (mt) { int yy, mo, dd, hh, mi; fstime_unpack(mt, &yy, &mo, &dd, &hh, &mi);
@@ -1458,6 +1469,7 @@ struct FilesApp : ui::Window {
             menu_item(mv, "Zoom Out",    0);
             menu_item(mv, "Actual Size", 0);
             menu_item(mv, "Split View",  0, split ? WMI_CHECKED : 0);   /* §4 (item 5) */
+            menu_item(mv, "Info", 'I', details_open ? WMI_CHECKED : 0); /* §8 inspector (item 6) */
             int ms = menu_add("Sort");                          /* Sort by … (§2) */
             menu_item(ms, "Sort by Name", 0, sort_key == FSORT_NAME ? WMI_CHECKED : 0);
             menu_item(ms, "Sort by Kind", 0, sort_key == FSORT_KIND ? WMI_CHECKED : 0);
@@ -1602,6 +1614,7 @@ struct FilesApp : ui::Window {
         if (picker) return;
         details_open = !details_open; details.visible = details_open;
         print("[files] info "); printu(details_open ? 1u : 0u); print("\r\n");
+        sync_menus();                                /* View ▸ Info check mark */
         layout_widgets(); invalidate();
     }
     void on_key(int key) override {
@@ -1643,6 +1656,7 @@ struct FilesApp : ui::Window {
             else if (item == 3) set_zoom(zoom - 1);                /* Zoom Out    */
             else if (item == 4) set_zoom(1);                       /* Actual Size */
             else if (item == 5) set_split(!split);                 /* Split View (§4) */
+            else if (item == 6) toggle_info();                     /* Info inspector (§8) */
         } else if (menu == 4) {                                                               /* Sort by … */
             if      (item == 0) set_sort(FSORT_NAME, sort_desc, sort_ff);
             else if (item == 1) set_sort(FSORT_KIND, sort_desc, sort_ff);

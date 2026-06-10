@@ -84,6 +84,21 @@
 #define SYS_GETPID      67 /* ()                 -> the caller's process id                     */
 #define SYS_GETPPID     68 /* ()                 -> the caller's parent process id (0 if none)  */
 #define SYS_STATFS      69 /* (struct statfs*)   -> fill volume total/free bytes; 0/-1         */
+#define SYS_WIN_SETCURSOR 70 /* (id, shape)      -> app declares the cursor for its client area;
+                              * the compositor shows it while the pointer is over that window.
+                              * Shape ids match user/lib/cursors.h (CUR_ARROW/IBEAM/RESIZE_*...);
+                              * apps update it live from hover, e.g. an I-beam over a text field. */
+
+/* Cursor shape ids for SYS_WIN_SETCURSOR. Must match the baked theme in
+ * user/lib/cursors.h (tools/gencursors.py) -- duplicated (identically) here so
+ * apps can name a shape without pulling in the pixmap tables. */
+#define CUR_ARROW 0
+#define CUR_IBEAM 1
+#define CUR_HAND 2
+#define CUR_RESIZE_NWSE 3
+#define CUR_RESIZE_NESW 4
+#define CUR_RESIZE_WE 5
+#define CUR_RESIZE_NS 6
 
 /* Keyboard modifier bitmask (SYS_KBD_MODS, and packed into WEV_KEY -- see below). */
 #define KMOD_SHIFT 1
@@ -270,6 +285,7 @@ struct wmwin {                /* SYS_WM_WINDOWS snapshot entry (compositor side)
      * client area, so high-frequency partial repaints (hover, caret, typing) are
      * cheap. Reset by the kernel each snapshot. */
     uint32_t dmgx, dmgy, dmgw, dmgh;
+    uint32_t cursor;          /* app-declared cursor hint (SYS_WIN_SETCURSOR), CUR_* id */
 };
 
 /* An app's menu bar (SYS_WIN_SETMENU): a handful of top-level menus (File / Edit /

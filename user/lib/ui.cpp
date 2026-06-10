@@ -227,6 +227,12 @@ void Window::dispatch_hover(int x, int y) {
         if (hot) { hot->hovered = true; invalidate(hot->r); }
     }
     if (hot && hot->on_hover(x, y)) invalidate(hot->r);      /* sub-element hover (rows / tabs) */
+    /* relay the hovered widget's cursor hint to the compositor (an I-beam over a
+     * text field, ⇔ over a column divider). Deduped, so the common arrow-over-
+     * arrow move costs nothing. While a button is held the compositor stops
+     * sending hovers, which conveniently freezes the shape for the drag. */
+    int cs = hot ? hot->cursor_at(x, y) : CUR_ARROW;
+    if (cs != cur_shape) { cur_shape = cs; win_setcursor(id, cs); }
 }
 void Window::dispatch_scroll(int x, int y, int delta) {
     for (int i = kids.size() - 1; i >= 0; i--) {              /* topmost widget under the cursor */

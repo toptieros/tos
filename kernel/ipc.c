@@ -133,6 +133,7 @@ struct window {
     uint32_t flags;                       /* WIN_* the app created the window with */
     uint32_t dmgx, dmgy, dmgw, dmgh;      /* damage rect since the last snapshot (dmgw==0 = none) */
     char     title[32];
+    uint32_t cursor;                      /* app-declared cursor hint (CUR_* id, 0 = arrow) */
     struct winmenu menu;                  /* app-declared menu bar (nmenus==0 = none) */
     volatile int eh, et;                  /* input event ring (compositor -> app) */
     struct winevent ev[WEVQ];
@@ -169,6 +170,7 @@ int win_create(struct wininfo *wi) {
     win->flags = wi->flags;
     win->dmgx = win->dmgy = win->dmgw = win->dmgh = 0;   /* compositor full-paints a new window */
     win->menu.nmenus = 0;                 /* no app menu until SYS_WIN_SETMENU */
+    win->cursor = 0;                      /* arrow until SYS_WIN_SETCURSOR */
     copy_title(win->title, wi->title);
     uint64_t v = vmm_map_surface(vmm_current_pml4(), id, phys, nframes);   /* into the app */
     vmm_flush_self();
@@ -324,6 +326,7 @@ int wm_windows(struct wmwin *buf, int max) {
         buf[n].dmgx = win->dmgx; buf[n].dmgy = win->dmgy;
         buf[n].dmgw = win->dmgw; buf[n].dmgh = win->dmgh;
         win->dmgw = 0; win->dmgh = 0;            /* consumed: the compositor reads it once per change */
+        buf[n].cursor = win->cursor;
         copy_title(buf[n].title, win->title);
         n++;
     }
@@ -357,6 +360,21 @@ int win_set_menu(int id, const struct winmenu *m) {
     if (wins[id].state == W_ALIVE && wins[id].owner == sched_current()) {
         wins[id].menu = *m;
         if (wins[id].menu.nmenus > WINMENU_MAX) wins[id].menu.nmenus = WINMENU_MAX;
+        r = 0;
+    }
+    spin_unlock_irqrestore(&ipc_lock, f);
+    return r;
+}
+
+/* App: declare the cursor shape for one of its own windows (SYS_WIN_SETCURSOR).
+ * Just an int stored on the window; the compositor picks it up from the next
+ * wm_windows snapshot and shows it while the pointer is over that client area. */
+int win_set_cursor(int id, int shape) {
+    if (id < 0 || id >= MAX_WINDOWS || shape < 0 || shape > 31) return -1;
+    uint64_t f = spin_lock_irqsave(&ipc_lock);
+    int r = -1;
+    if (wins[id].state == W_ALIVE && wins[id].owner == sched_current()) {
+        wins[id].cursor = (uint32_t)shape;
         r = 0;
     }
     spin_unlock_irqrestore(&ipc_lock, f);

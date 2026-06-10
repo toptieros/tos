@@ -80,6 +80,7 @@ int getpid(void)               { return (int)sc(SYS_GETPID, 0); }
 int getppid(void)              { return (int)sc(SYS_GETPPID, 0); }
 int win_setmenu(int id, const struct winmenu *m) { return (int)sc3(SYS_WIN_SETMENU, (uint64_t)id, (uint64_t)m, 0); }
 int wm_getmenu(int id, struct winmenu *out)      { return (int)sc3(SYS_WM_GETMENU, (uint64_t)id, (uint64_t)out, 0); }
+int win_setcursor(int id, int shape)             { return (int)sc3(SYS_WIN_SETCURSOR, (uint64_t)id, (uint64_t)shape, 0); }
 unsigned kbd_mods(void)        { return (unsigned)sc(SYS_KBD_MODS, 0); }
 
 /* system clipboard */

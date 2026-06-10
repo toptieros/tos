@@ -70,7 +70,8 @@ struct rect { int x, y, w, h; };
 
 struct cwin { int used, id, wx, wy; uint32_t w, h, seq; uint64_t vaddr; char title[32];
               int min, maxed, sx, sy; uint32_t sw, sh;     /* min/max flags + pre-maximize geometry */
-              int popup, overlay, modal; };                /* WIN_POPUP / WIN_OVERLAY (dim, above dock) / WIN_MODAL (input-locked dialog) */
+              int popup, overlay, modal;                   /* WIN_POPUP / WIN_OVERLAY (dim, above dock) / WIN_MODAL (input-locked dialog) */
+              int curs; };                                 /* app-declared cursor hint (SYS_WIN_SETCURSOR, CUR_*) */
 
 /* The installed-app catalog entry: a /Apps/<Name>.app bundle (name, absolute exec
  * path, loaded icon, and whether its manifest pins it to the dock). */

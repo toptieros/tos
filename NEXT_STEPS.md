@@ -4,8 +4,9 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **52/52** (41 e2e journeys on BIOS + a UEFI subset 11) + **322 host
-unit checks** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
+**Status:** `make test` **56/56** (45 e2e journeys on BIOS + a UEFI subset 11) + **344 host
+unit checks** (`make unit`, no QEMU). *(Earlier status lines undercounted the BIOS list; this
+is the tally an actual full run reports.)* Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
 Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unless asked).

@@ -19,7 +19,7 @@ namespace ui {
 /* a "word" character for double-click select + Ctrl+arrow word jumps */
 static inline bool tf_wordch(char c) { return tu_wordch(c); }  /* pure; unit-tested in tests/unit */
 
-TextField::TextField() { bg = TH_SURF_0; fg = TH_TEXT; focusable = true; }
+TextField::TextField() { bg = TH_SURF_0; fg = TH_TEXT; focusable = true; cursor = CUR_IBEAM; }
 TextField::~TextField() {
     if (buf) free(buf);
     hist_clear(ust, un); hist_clear(rst, rn);

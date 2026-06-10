@@ -63,6 +63,7 @@ int  getpid(void);                          /* SYS_GETPID: the caller's process 
 int  getppid(void);                         /* SYS_GETPPID: the caller's parent process id         */
 int  win_setmenu(int id, const struct winmenu *m); /* SYS_WIN_SETMENU: declare a window's menu bar */
 int  wm_getmenu(int id, struct winmenu *out);      /* SYS_WM_GETMENU: compositor reads it; 1 if any */
+int  win_setcursor(int id, int shape);             /* SYS_WIN_SETCURSOR: cursor over this window (CUR_*) */
 unsigned kbd_mods(void);                    /* SYS_KBD_MODS: live keyboard modifier bitmask (KMOD_*) */
 int  isatty(void);                          /* SYS_ISATTY: 1 if stdio is a pty                    */
 

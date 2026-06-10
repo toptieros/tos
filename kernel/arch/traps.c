@@ -264,6 +264,9 @@ static struct regs *syscall_dispatch(struct regs *r) {
         BUF(r->rsi, sizeof(struct winmenu));
         r->rax = (uint64_t)(int64_t)wm_get_menu((int)r->rdi, (struct winmenu *)r->rsi);
         return r;
+    case SYS_WIN_SETCURSOR:
+        r->rax = (uint64_t)(int64_t)win_set_cursor((int)r->rdi, (int)r->rsi);
+        return r;
     case SYS_PTY_OPEN:
         r->rax = (uint64_t)(int64_t)pty_open();
         return r;

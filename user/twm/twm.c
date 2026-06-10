@@ -738,6 +738,7 @@ void _ustart(void) {
                 cw[k].popup = (snap[j].flags & WIN_POPUP) != 0;  /* borderless centred overlay */
                 cw[k].overlay = (snap[j].flags & WIN_OVERLAY) != 0;  /* Launchpad: dim, above dock */
                 cw[k].modal = (snap[j].flags & WIN_MODAL) != 0;  /* picker: input-locked dialog, scrim behind */
+                cw[k].curs = (int)snap[j].cursor;
                 for (int q = 0; q < 32; q++) cw[k].title[q] = snap[j].title[q];
                 cw[k].wx = (W - owf(&cw[k])) / 2;
                 cw[k].wy = bar_h + (H - bar_h - ohf(&cw[k])) / 2;
@@ -766,6 +767,7 @@ void _ustart(void) {
                     cw[k].seq = snap[j].seq;
                 } else {
                     int tch = !streqz(cw[k].title, snap[j].title);
+                    cw[k].curs = (int)snap[j].cursor;
                     for (int q = 0; q < 32; q++) cw[k].title[q] = snap[j].title[q];
                     if (tch) { dirty_win(&cw[k]); add_dirty(0, 0, W, bar_h); }
                     if (snap[j].seq != cw[k].seq) {     /* the app redrew its surface */
@@ -1152,6 +1154,21 @@ void _ustart(void) {
                     wm_post(rsz, WEV_RESIZE, ((unsigned)nw << 16) | (unsigned)nh);
                 }
             }
+            if (cdrag >= 0) {                           /* release edge: tell the drag owner the
+                                                         * button went up. This is the client's only
+                                                         * up signal -- hover packets are suppressed
+                                                         * while a button is held (below), so without
+                                                         * it a press would never see its release. */
+                int k = find(cdrag);
+                if (k >= 0) {
+                    struct cwin *c = &cw[k];
+                    int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                    int rx = ms.x - cx, ry = ms.y - cy;
+                    if (rx < 0) rx = 0; if (rx >= cwd) rx = cwd - 1;
+                    if (ry < 0) ry = 0; if (ry >= chd) ry = chd - 1;
+                    wm_post(cdrag, WEV_MOUSE, WEV_MOUSE_PACK(rx, ry, 0));
+                }
+            }
             drag = -1; rsz = -1; cdrag = -1;
         }
         /* Client drag-select: while a button-held drag that started in a client area
@@ -1223,12 +1240,16 @@ void _ustart(void) {
                         break;
                     }
             }
-            if (hov != hover_id) {
-                if (hover_id >= 0) wm_post(hover_id, WEV_MOUSE, WEV_MOUSE_PACK(0xfff, 0xfff, 0));
-                hover_id = hov;
-                if (hov >= 0) wm_post(hov, WEV_MOUSE, WEV_MOUSE_PACK(hx, hy, 0));
-            } else if (hov >= 0 && moved) {
-                wm_post(hov, WEV_MOUSE, WEV_MOUSE_PACK(hx, hy, 0));
+            if (!down) {        /* freeze hover state while a button is held: posting the
+                                 * leave packet on the press frame read as a button-up to the
+                                 * app, cancelling a widget drag the press had just started */
+                if (hov != hover_id) {
+                    if (hover_id >= 0) wm_post(hover_id, WEV_MOUSE, WEV_MOUSE_PACK(0xfff, 0xfff, 0));
+                    hover_id = hov;
+                    if (hov >= 0) wm_post(hov, WEV_MOUSE, WEV_MOUSE_PACK(hx, hy, 0));
+                } else if (hov >= 0 && moved) {
+                    wm_post(hov, WEV_MOUSE, WEV_MOUSE_PACK(hx, hy, 0));
+                }
             }
         }
 
@@ -1308,6 +1329,10 @@ void _ustart(void) {
             struct rect dr = { dock_x, dock_y, dock_w, dock_h };
             if (rsz >= 0) {                              /* mid resize-drag: keep the resize cursor */
                 want = CUR_RESIZE_NWSE;
+            } else if (cdrag >= 0) {                     /* mid client drag: keep the drag owner's
+                                                          * hint (e.g. ⇔ while resizing a column) */
+                int k = find(cdrag);
+                if (k >= 0 && cw[k].curs > 0 && cw[k].curs < NCURSORS) want = cw[k].curs;
             } else if (busy_until > frame) {            /* an app is launching */
                 want = CUR_BUSY0 + (busy_frame / 4) % CUR_BUSY_FRAMES;
                 busy_frame++;
@@ -1321,8 +1346,9 @@ void _ustart(void) {
                     if (ms.x < c->wx || ms.x >= c->wx + ow || ms.y < c->wy || ms.y >= c->wy + oh) continue;
                     if (!c->maxed && ms.x >= c->wx + ow - GRIP && ms.y >= c->wy + oh - GRIP)
                         want = CUR_RESIZE_NWSE;         /* resize affordance at the grip */
-                    else if (ms.y >= c->wy + TH && streqz(c->title, "Terminal"))
-                        want = CUR_IBEAM;               /* text area */
+                    else if (in_client(c, ms.x, ms.y) && c->curs > 0 && c->curs < NCURSORS)
+                        want = c->curs;                 /* the app's declared hint (SYS_WIN_SETCURSOR):
+                                                         * I-beam over text, ⇔ over a column divider... */
                     break;
                 }
             }

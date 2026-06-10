@@ -1402,6 +1402,33 @@ def t_files_details(uefi):
         s = t.serial().count("[files] sort name asc")
         _files_hdr_click(t, wr, 0)
         assert _count_at_least(t, "[files] sort name asc", s + 1, 6), "Name header did not sort by name"
+        # --- drag the Name|Kind divider right -> Name widens; the new widths persist ---
+        hx, hy, hh, cols = _files_hdr(t)
+        dvx, dvy = hx + cols[0][0] + cols[0][1], hy + hh // 2
+        n_colw = t.serial().count("[files] colw")
+        t.drag(wr[0] + dvx, wr[1] + dvy, wr[0] + dvx + 60, wr[1] + dvy)
+        assert _count_at_least(t, "[files] colw", n_colw + 1, 6), "the divider drag did not resize"
+        _, _, _, cols2 = _files_hdr(t)
+        assert cols2[0][1] >= cols[0][1] + 40, \
+            "Name did not widen by the drag (%d -> %d)" % (cols[0][1], cols2[0][1])
+        # --- folders carry a real recursive Size (so .apps sort/show too): zsub gets a file,
+        # then with Folders First OFF a pure size-desc sort must put zsub on top purely by
+        # its recursive byte count (each header/menu sort reloads the dir, re-walking sizes) ---
+        _dock_focus(t, "Terminal")
+        t.line("write /Users/user/dv/zsub/big.txt"); t.line("this folder now outweighs every sibling file")
+        assert t.wait_for("saved /Users/user/dv/zsub/big.txt", 6), "could not stage zsub/big.txt"
+        _dock_focus(t, "Files")
+        _files_hdr_click(t, wr, 2)                        # fresh key: size asc
+        _files_hdr_click(t, wr, 2)                        # toggle: size desc (ff still on)
+        s = t.serial().count("[files] sort size desc 0")
+        _files_menu_click(t, "Sort", 4)                   # Sort > Folders First -> off
+        assert _count_at_least(t, "[files] sort size desc 0", s + 1, 6), \
+            "Folders First did not toggle off under size desc"
+        rx, ry = _files_row_xy(t, wr, 1)                  # row0=".." row1 = biggest item
+        sel = t.serial().count("[files] sel zsub")
+        t.click(rx, ry)
+        assert _count_at_least(t, "[files] sel zsub", sel + 1, 6), \
+            "the folder's recursive size did not win the size-desc sort"
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 

@@ -406,7 +406,7 @@ public:
  * divider drag's WEV_MOUSE_DRAG packets reach on_drag; the app restores list focus after. */
 class ColumnHeader : public ui::Widget {
 public:
-    static const int GRAB = 4;                       /* divider grab half-width in px */
+    static const int GRAB = 6;                       /* divider grab half-width in px */
     int  cw[3] = { 230, 96, 96 };                    /* user widths: Name, Kind, Size (Date fills) */
     int  colx[COLFIT_NCOL] = {0}, colw[COLFIT_NCOL] = {0};
     int  sort_key = 0, sort_desc = 0;                /* drives the active label + caret */
@@ -440,18 +440,29 @@ public:
             ugfx_text(cx, ty, lbl[c], active ? TH_TEXT : TH_MUTED, UGFX_TRANSPARENT);
             if (active) caret(cx + ugfx_text_w(lbl[c]) + 7, r.y + r.h / 2 - 2, !sort_desc, TH_ACCENT);
             ugfx_clip_none();
-            if (c < 3) ugfx_fill_a(r.x + colx[c] + colw[c], r.y + 5, 1, r.h - 10, ARGB(70, 0, 0, 0));
+            if (c < 3)                               /* divider; the drag-to-resize affordance is
+                                                      * the ⇔ cursor (cursor_at), not a highlight */
+                ugfx_fill_a(r.x + colx[c] + colw[c], r.y + 5, 1, r.h - 10, ARGB(70, 0, 0, 0));
         }
     }
-    /* press: a divider grab starts a resize; a label body requests a sort */
-    bool on_mouse(int x, int y, int) override {
-        (void)y; relayout();
+    /* the divider whose grab zone covers x, or -1 */
+    int div_at(int x) {
+        relayout();
         for (int c = 0; c < 3; c++) {
             int dvx = r.x + colx[c] + colw[c];
-            if (x >= dvx - GRAB && x <= dvx + GRAB) { drag_div = c; drag_x0 = x; drag_w0 = cw[c]; return true; }
+            if (x >= dvx - GRAB && x <= dvx + GRAB) return c;
         }
+        return -1;
+    }
+    /* the resize affordance: a ⇔ cursor whenever the pointer is in a divider's grab zone */
+    int cursor_at(int x, int) override { return div_at(x) >= 0 ? CUR_RESIZE_WE : CUR_ARROW; }
+    /* press: a divider grab starts a resize; a label body requests a sort */
+    bool on_mouse(int x, int y, int) override {
+        (void)y;
+        int c = div_at(x);
+        if (c >= 0) { drag_div = c; drag_x0 = x; drag_w0 = cw[c]; return true; }
         int lx = x - r.x;
-        for (int c = 0; c < COLFIT_NCOL; c++)
+        for (c = 0; c < COLFIT_NCOL; c++)
             if (lx >= colx[c] && lx < colx[c] + colw[c]) { if (on_sort) on_sort(ctx, col_key(c)); break; }
         return true;
     }
