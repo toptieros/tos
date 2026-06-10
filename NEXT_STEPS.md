@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **51/51** (40 e2e journeys on BIOS + a UEFI subset 11) + **298 host
+**Status:** `make test` **52/52** (41 e2e journeys on BIOS + a UEFI subset 11) + **322 host
 unit checks** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -244,6 +244,23 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files editable Places sidebar §7 (2026-06-10).** The 8 hardcoded sidebar rows became a real
+  **sectioned Places list**: **Favorites** (the user's pins) + **Locations** (Applications / System /
+  Computer, the volume row carrying an inline **used-space bar** off statfs), each section **collapsing
+  on a header click** (disclosure caret), plus **Trash pinned at the bottom** (its own glyph + separator).
+  Favorites are **registry-backed** (`places.n` + `places.<i>` = `"Label|path"`; first run seeds the
+  classic five) and **editable**: a folder's context menu gains **Add to Places** (label = the folder
+  name) and a right-click on a pin offers **Remove from Places** — both persist via `reg_save`. The
+  codec + list ops are a pure host-tested header (`places.h`: encode/decode/clamps, label-from-path,
+  dedupe add, remove; unit `t_places`, 24 checks); the Sidebar widget grew a growable item store +
+  the shared visible-row model (`vrows`/`vrow`) so draw and hit-test agree, and the app dumps row
+  click-centres for the harness (`[files] siderow …`, deduped by signature). e2e `t_files_places`
+  (pin via ctx menu → row appears + navigates → collapse/expand Favorites → the pin survives in the
+  on-disk registry → remove via right-click; screenshot). Canaries `[files] places add/del`,
+  `[files] sidesect`, `[files] sidetrash`. Caught en route: `ugfx_fill_a` with an alpha-less `RGB()`
+  token blends to nothing — the section carets draw with opaque `ugfx_fill`. *(Still TODO from §7:
+  drag-reorder + pin rename — both want DnD/inline-field plumbing — and eject/network when removable
+  volumes exist.)*
 - **Files undo / redo of file ops §12 (2026-06-10).** **Edit ▸ Undo / Redo** (items 8/9, Ctrl+Z/Y)
   invert/re-apply the last file operation. A pure host-tested **journal** (`undojournal.h`, unit
   `t_undojournal`) holds `{type, a→b, isdir}` records (cap 24, oldest evicted; a new push truncates

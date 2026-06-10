@@ -22,6 +22,7 @@
 #include "fileinfo.h"      /* info_is_locked: Get Info owner/lock fields (§8) */
 #include "tabtitle.h"      /* tab_title: the tab-strip pill label (§4)       */
 #include "undojournal.h"   /* undo_journal: the Ctrl+Z/Ctrl+Y op journal (§12) */
+#include "places.h"        /* place codec + list ops: the editable Favorites (§7) */
 
 /* Undo journal op types -- Files interprets these; the journal stores them opaquely.
  * RENAME/MOVE/TRASH move a single item between paths a and b; CREATE/COPY create b
@@ -120,6 +121,13 @@ struct FilesApp : ui::Window {
     bool          have_cut = false;              /* the active clipboard file came from a Cut (Ctrl+X) */
     int           sort_key = FSORT_NAME, sort_desc = 0, sort_ff = 1;  /* the Sort menu state (§2) */
     undo_journal  journal;                       /* §12: the Ctrl+Z / Ctrl+Y op journal */
+
+    /* Places (§7): the editable Favorites the sidebar's first section shows. A growable
+     * heap array mirrored to the registry ("places.n" + "places.<i>" = "Label|path");
+     * absent keys mean first-run, which seeds the classic defaults. */
+    struct place *places = nullptr; int nplaces = 0, placecap = 0;
+    int           ctx_place = -1;                /* favorites row a context menu is open on */
+    unsigned      side_sig = 0;                  /* dedupes the siderow canary dump */
 
     int at_root()  const { return path[0] == '/' && path[1] == 0; }
     int has_up()   const { return at_root() ? 0 : 1; }
@@ -279,14 +287,107 @@ struct FilesApp : ui::Window {
         if (q[0]) { print("[files] filter "); printu((unsigned)nview); print("\r\n"); }
         invalidate();
     }
+    /* ---- Places (§7): the registry-backed editable Favorites ---------------- */
+    void grow_places(int need) {
+        if (need <= placecap) return;
+        int nc = placecap ? placecap * 2 : 8;
+        while (nc < need) nc *= 2;
+        struct place *np = (struct place *)malloc(sizeof(struct place) * nc); if (!np) return;
+        for (int i = 0; i < nplaces; i++) np[i] = places[i];
+        if (places) free(places);
+        places = np; placecap = nc;
+    }
+    void load_places() {
+        nplaces = 0;
+        int cnt = reg_int("places.n", -1);
+        if (cnt < 0) {                               /* first run: the classic defaults */
+            grow_places(5);
+            nplaces = places_add(places, nplaces, placecap, "Home",      HOMEDIR);
+            nplaces = places_add(places, nplaces, placecap, "Desktop",   HOMEDIR "/Desktop");
+            nplaces = places_add(places, nplaces, placecap, "Documents", HOMEDIR "/Documents");
+            nplaces = places_add(places, nplaces, placecap, "Downloads", HOMEDIR "/Downloads");
+            nplaces = places_add(places, nplaces, placecap, "Pictures",  HOMEDIR "/Pictures");
+            return;
+        }
+        grow_places(cnt > 0 ? cnt : 1);
+        for (int i = 0; i < cnt; i++) {
+            char key[24]; snprintf(key, sizeof key, "places.%d", i);
+            struct place p;
+            if (place_decode(reg_get(key, ""), &p) == 0)
+                nplaces = places_add(places, nplaces, placecap, p.label, p.path);
+        }
+    }
+    void save_places() {
+        reg_set_int("places.n", nplaces);
+        for (int i = 0; i < nplaces; i++) {
+            char key[24], val[96];
+            snprintf(key, sizeof key, "places.%d", i);
+            place_encode(&places[i], val, sizeof val);
+            reg_set(key, val);
+        }
+        reg_save();
+    }
+    /* rebuild the sidebar's rows from the places + the fixed Locations section */
+    void sync_side() {
+        side.clear();
+        for (int i = 0; i < nplaces; i++) side.add_item(places[i].label, places[i].path, SIDE_FAV);
+        side.add_item("Applications", "/Apps",   SIDE_LOC);
+        side.add_item("System",       "/System", SIDE_LOC);
+        side.add_item("Computer",     "/",       SIDE_LOC);
+        side.set_trash(TRASHDIR);
+    }
+    /* trace the sidebar's visible rows (click centres, window coords) for the e2e
+     * harness; deduped by a content+geometry signature so relayouts don't spam. */
+    void side_dump() {
+        int nv = side.vrows();
+        unsigned sig = 2166136261u ^ (unsigned)nv;
+        for (int v = 0; v < nv; v++) {
+            int s, i; if (!side.vrow(v, &s, &i)) break;
+            if (i >= 0) for (const char *p = side.items[i].label; *p; p++) sig = (sig ^ (unsigned char)*p) * 16777619u;
+            sig = (sig ^ (unsigned)side.row_y(v)) * 16777619u;
+        }
+        sig = (sig ^ (unsigned)side.trash_y()) * 16777619u;
+        if (sig == side_sig) return;
+        side_sig = sig;
+        for (int v = 0; v < nv; v++) {
+            int s, i; if (!side.vrow(v, &s, &i)) break;
+            print("[files] siderow "); printu((unsigned)v); printc(' ');
+            printu((unsigned)(side.r.x + side.r.w / 2)); printc(' ');
+            printu((unsigned)(side.row_y(v) + side.row_h / 2)); printc(' ');
+            if (i < 0) { printc('#'); printu((unsigned)s); }
+            else print(side.items[i].label);
+            print("\r\n");
+        }
+        print("[files] sidetrash "); printu((unsigned)(side.r.x + side.r.w / 2));
+        printc(' '); printu((unsigned)(side.trash_y() + side.row_h / 2)); print("\r\n");
+    }
+    void add_place(const char *p) {
+        grow_places(nplaces + 1);
+        char lb[PLACE_LABELMAX]; place_label_from(p, lb, sizeof lb);
+        int was = nplaces;
+        nplaces = places_add(places, nplaces, placecap, lb, p);
+        if (nplaces == was) return;                  /* already pinned */
+        save_places(); sync_side();
+        print("[files] places add "); print(p); print("\r\n");
+        side_dump(); invalidate();
+    }
+    void remove_place(int idx) {
+        if (idx < 0 || idx >= nplaces) return;
+        print("[files] places del "); print(places[idx].path); print("\r\n");
+        nplaces = places_remove(places, nplaces, idx);
+        save_places(); sync_side(); side_dump(); invalidate();
+    }
+
     /* refresh the bottom status bar from the folder count + current selection */
     void update_status() {
         if (filtering()) snprintf(status.left, sizeof status.left, "%d of %d shown", nview, nshown);
         else             snprintf(status.left, sizeof status.left, "%d item%s", nshown, nshown == 1 ? "" : "s");
         struct statfs sf;                                /* §6: the volume's free space, shown as a */
         if (statfs_(&sf) == 0) { char fb[24]; human_bytes(sf.free_bytes, fb, sizeof fb);   /* details footer */
-                                 snprintf(details.freeline, sizeof details.freeline, "%s free", fb); }
-        else details.freeline[0] = 0;
+                                 snprintf(details.freeline, sizeof details.freeline, "%s free", fb);
+                                 if (sf.total_bytes)     /* §7: the sidebar volume row's used bar */
+                                     side.vol_permille = (int)(((uint64_t)(sf.total_bytes - sf.free_bytes)) * 1000 / sf.total_bytes); }
+        else { details.freeline[0] = 0; side.vol_permille = -1; }
         int hu = has_up();
         if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
             if (details.is_file)
@@ -1144,7 +1245,7 @@ struct FilesApp : ui::Window {
         int mainx = SBW, mainw = w - SBW - dp;
 
         side.r = { 0, 0, SBW, h };
-        side.row_h = fh + 10; side.head_h = fh + 18;
+        side.row_h = fh + 10;
 
         bar.r = { SBW, 0, w - SBW, TBH };
         int sz = TBH - 12, bx = SBW + 8, by = 6;
@@ -1224,6 +1325,7 @@ struct FilesApp : ui::Window {
                 nameFld.r = { nfx, by2, nfw, bh };
             }
         }
+        side_dump();                                     /* §7: trace the sidebar rows for e2e */
     }
 
     bool build() {
@@ -1264,15 +1366,10 @@ struct FilesApp : ui::Window {
         footer.color = C_TOOLBAR; nameLbl.text = "Name:"; nameLbl.fg = TH_MUTED;
 
         side.ctx = this; side.on_pick = [](void *c, const char *p) { ((FilesApp *)c)->nav_to(p); };
-        side.add_item("Home",         HOMEDIR,              0);
-        side.add_item("Desktop",      HOMEDIR "/Desktop",   0);
-        side.add_item("Documents",    HOMEDIR "/Documents", 0);
-        side.add_item("Downloads",    HOMEDIR "/Downloads", 0);
-        side.add_item("Pictures",     HOMEDIR "/Pictures",  0);
-        side.add_item("Applications", "/Apps",              1);
-        side.add_item("System",       "/System",            0);
-        side.add_item("Computer",     "/",                  0);
-        side.add_item("Trash",        TRASHDIR,             1);   /* §9: set apart at the bottom */
+        side.on_changed = [](void *c) {                  /* a section collapsed/expanded (§7) */
+            ((FilesApp *)c)->side_dump(); ((FilesApp *)c)->invalidate();
+        };
+        load_places(); sync_side();                      /* §7: Favorites from the registry */
         if (!picker) ensure_trash();                              /* so the Trash place is always navigable */
         side.cur = path;
 
@@ -1420,12 +1517,27 @@ struct FilesApp : ui::Window {
         case 13: make_file();          break;             /* New File (§12)  */
         case 14: open_sel_new_tab();   break;             /* Open in New Tab (§4) */
         case 15: copy_to_other(false); break;             /* Copy to Other Pane (§4) */
+        case 16: {                                        /* Add to Places (§7) */
+            int hu = has_up();
+            int real = (list.sel >= 0 && !(hu && list.sel == 0)) ? list.sel - hu : -1;
+            if (real >= 0 && ents[real].type == FT_DIR) {
+                char full[256]; join(full, sizeof full, path, ents[real].name);
+                add_place(full);
+            }
+        } break;
+        case 17: remove_place(ctx_place); ctx_place = -1; break;   /* Remove from Places (§7) */
         }
         invalidate();
     }
 
     /* right-click: select the row under the cursor (if any), then open a menu */
     void on_context(int x, int y) override {
+        int fav = side.fav_at(x, y);                   /* §7: a pinned Favorites row */
+        if (fav >= 0 && !picker) {
+            menu_mode = 0; menu.reset(); ctx_place = fav;
+            menu.add("Remove from Places", PK_ACTION, 17, 0, 0, 0);
+            menu.show(x, y); invalidate(); return;
+        }
         if (x >= list.r.x && x < list.r.x + list.r.w && y >= list.r.y && y < list.r.y + list.r.h) {
             int row = (view_mode == 1) ? grid.index_at(x, y)              /* hit-test the active view */
                                        : list.top + (y - list.r.y) / list.row_h;
@@ -1456,6 +1568,8 @@ struct FilesApp : ui::Window {
                 menu.add("Duplicate", PK_ACTION, 12, 0, 0, 0);        /* §12 */
                 menu.add("Rename", PK_ACTION, 9, 0, 0, 0);
                 menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
+                if (e->type == FT_DIR && !is_app_dir(e->type, e->name))
+                    menu.add("Add to Places", PK_ACTION, 16, 0, 0, 0);            /* §7 */
                 if (split) menu.add("Copy to Other Pane", PK_ACTION, 15, 0, 0, 0);   /* §4 */
             }
             menu.add("", PK_SEP, 0, 0, 0, 0);

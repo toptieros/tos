@@ -80,7 +80,7 @@ value; **P3** = polish / power-user. "Foundation" = specified in
 | **Filter bar** (live name filter) | none | §5 | **P1** |
 | **Search** (recursive, Spotlight-integrated) | none | §5 | P2 |
 | **Status bar** (counts, size, free space, progress) | none | §6 | **P1** |
-| **Editable Places** sidebar + sections + volumes | fixed 8 | §7 | **P1** |
+| **Editable Places** sidebar + sections + volumes | **done 2026-06-10** | §7 | **P1** |
 | **Rich Get Info** (dates, owner, recursive size, perms) | thin pane | §8 | P2 |
 | **Trash** (move-to-trash, restore, empty) | immediate rm | §9 | **P1** |
 | **Tags / labels** (colored, filterable) | none | §10 | P3 |
@@ -244,6 +244,14 @@ A bottom bar (Finder/Dolphin both have one) — currently absent. Shows, left-to
   delayed-progress trick avoids flicker on fast ops).
 
 ## 7. The sidebar / Places (editable, sectioned)
+
+**Status: done 2026-06-10** (minus drag-reorder + pin rename, which wait on DnD/inline-field
+plumbing, and eject/network, which wait on removable volumes). Sections **Favorites**
+(registry-backed pins: `places.n` + `places.<i>` = `"Label|path"`, seeded with the classic
+five on first run) and **Locations** (the volume row carries a statfs used-space bar), each
+collapsible by clicking its header; **Trash** pinned at the bottom. **Add to Places** on a
+folder's context menu / **Remove from Places** on a pin's. Pure codec/list ops in `places.h`
+(unit `t_places`); e2e `t_files_places`.
 
 Today's 8 hardcoded rows become a real **Places sidebar**, Finder/Dolphin-style:
 

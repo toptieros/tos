@@ -41,45 +41,141 @@ public:
 };
 
 /* ------------------------------------------------------------------- Sidebar */
-struct SideItem { const char *label; char path[64]; int sep_before; };
+/* The Places sidebar (files-app §7): a sectioned list -- Favorites (the user's
+ * registry-backed pins, edited via "Add to / Remove from Places") and Locations
+ * (system roots; the volume row carries an inline used-space bar) -- each section
+ * collapsible by clicking its header, plus Trash pinned at the bottom. Rows live
+ * in one growable array tagged with a section id; vrow() maps a visible row to a
+ * header/item so draw + hit-test share one layout. FilesApp rebuilds the items
+ * when the places change, and routes right-clicks here via fav_at(). */
+#define SIDE_FAV 0
+#define SIDE_LOC 1
+#define SIDE_NSECT 2
+struct SideItem { char label[32]; char path[64]; int sect; };
 class Sidebar : public ui::Widget {
 public:
-    SideItem items[10];
-    int   n = 0, row_h = 26, head_h = 0, hover_row = -1;
+    SideItem *items = nullptr; int n = 0, cap = 0;       /* grows on demand */
+    int collapsed[SIDE_NSECT] = { 0, 0 };
+    int row_h = 26, top_pad = 6, hover_row = -1;
+    int vol_permille = -1;          /* used/total on the "/" row (0..1000); <0 hides the bar */
+    char trash_path[64] = {0};
     const char *cur = nullptr;
-    void *ctx = nullptr; void (*on_pick)(void *, const char *) = nullptr;
+    void *ctx = nullptr;
+    void (*on_pick)(void *, const char *) = nullptr;
+    void (*on_changed)(void *) = nullptr;                /* a header was collapsed/expanded */
     Sidebar() { focusable = false; }
+    void clear() { n = 0; }
+    void add_item(const char *label, const char *path, int sect) {
+        if (n >= cap) {
+            int nc = cap ? cap * 2 : 12;
+            SideItem *ni = (SideItem *)malloc(sizeof(SideItem) * nc); if (!ni) return;
+            for (int i = 0; i < n; i++) ni[i] = items[i];
+            if (items) free(items);
+            items = ni; cap = nc;
+        }
+        SideItem *it = &items[n];
+        int i = 0; for (; label[i] && i < 31; i++) it->label[i] = label[i]; it->label[i] = 0;
+        int j = 0; for (; path[j] && j < 63; j++) it->path[j] = path[j]; it->path[j] = 0;
+        it->sect = sect; n++;
+    }
+    void set_trash(const char *path) {
+        int i = 0; for (; path[i] && i < 63; i++) trash_path[i] = path[i]; trash_path[i] = 0;
+    }
+    /* ---- the shared visible-row model ---- */
+    int vrows() const {
+        int v = 0;
+        for (int s = 0; s < SIDE_NSECT; s++) {
+            v++;
+            if (!collapsed[s]) for (int i = 0; i < n; i++) if (items[i].sect == s) v++;
+        }
+        return v;
+    }
+    /* visible row v -> its section + item (a header has *item == -1); 0 = out of range */
+    int vrow(int v, int *sect, int *item) const {
+        int r_ = 0;
+        for (int s = 0; s < SIDE_NSECT; s++) {
+            if (r_++ == v) { *sect = s; *item = -1; return 1; }
+            if (!collapsed[s]) for (int i = 0; i < n; i++) if (items[i].sect == s)
+                if (r_++ == v) { *sect = s; *item = i; return 1; }
+        }
+        return 0;
+    }
+    int row_y(int v) const { return r.y + top_pad + v * row_h; }
+    int trash_y() const { return r.y + r.h - row_h - 8; }
+    int row_at(int y) const {                            /* visible row under y, or -1 */
+        if (y < r.y + top_pad) return -1;
+        int v = (y - r.y - top_pad) / row_h;
+        return v < vrows() ? v : -1;
+    }
+    /* The Favorites item under (x, y) as an items[] index, or -1 -- favorites are
+     * added first, so this doubles as the places-list index. The window uses it
+     * to route a right-click to the "Remove from Places" menu. */
+    int fav_at(int x, int y) const {
+        if (x < r.x || x >= r.x + r.w) return -1;
+        int s, i, v = row_at(y);
+        if (v < 0 || !vrow(v, &s, &i) || i < 0 || s != SIDE_FAV) return -1;
+        return i;
+    }
     bool on_hover(int, int y) override {
-        int i = (y - (r.y + head_h)) / row_h;
-        if (y < r.y + head_h || i < 0 || i >= n) i = -1;
-        if (i == hover_row) return false;
-        hover_row = i; return true;
+        int v = row_at(y);
+        if (trash_path[0] && y >= trash_y() && y < trash_y() + row_h) v = 1000;  /* the pinned Trash row */
+        if (v == hover_row) return false;
+        hover_row = v; return true;
     }
     void on_leave() override { hovered = false; hover_row = -1; }
-    void add_item(const char *label, const char *path, int sep) {
-        SideItem *it = &items[n]; it->label = label; it->sep_before = sep;
-        int i = 0; for (; path[i] && i < 63; i++) it->path[i] = path[i]; it->path[i] = 0; n++;
+    /* one item row (glyph >= 0 swaps the folder icon for a toolbar glyph: Trash) */
+    void draw_item(int y, const char *label, const char *path, int hot, int glyph) {
+        int fh = ugfx_font_h();
+        int sel = cur && eqn(cur, path);
+        if (sel)      ugfx_rrect_a(r.x + 6, y + 1, r.w - 12, row_h - 2, TH_R_SM, ARGB(150, 96, 152, 252));
+        else if (hot) ugfx_state_layer(r.x + 6, y + 1, r.w - 12, row_h - 2, TH_R_SM, TH_HOVER_A);
+        if (glyph >= 0) draw_glyph(glyph, r.x + 21, y + row_h / 2, 7, sel ? RGB(255, 255, 255) : TH_TEXT);
+        else blit_scaled(r.x + 12, y + (row_h - 18) / 2, 18, 18, fileicons_argb[FILEICON_FOLDER], FILEICON_SZ, FILEICON_SZ);
+        ugfx_text(r.x + 38, y + (row_h - fh) / 2, label, sel ? RGB(255, 255, 255) : TH_TEXT, UGFX_TRANSPARENT);
+        if (vol_permille >= 0 && path[0] == '/' && !path[1]) {   /* the volume's used-space bar (§7) */
+            int bx = r.x + 38, bw = r.w - 38 - 14, by = y + row_h - 5;
+            int used = bw * vol_permille / 1000;
+            ugfx_fill_a(bx, by, bw, 3, ARGB(40, 255, 255, 255));
+            ugfx_fill_a(bx, by, used > bw ? bw : used, 3, ARGB(190, 96, 152, 252));
+        }
     }
-    int row_y(int i) const { return r.y + head_h + i * row_h; }
     void draw() override {
         if (!visible) return;
         int fh = ugfx_font_h();
         ugfx_fill(r.x, r.y, r.w, r.h, C_SIDEBAR);
         ugfx_fill_a(r.x + r.w - 1, r.y, 1, r.h, ARGB(70, 0, 0, 0));
-        ugfx_text(r.x + 14, r.y + 9, "Favorites", TH_MUTED, UGFX_TRANSPARENT);
-        for (int i = 0; i < n; i++) {
-            int y = row_y(i), sel = cur && eqn(cur, items[i].path);
-            if (items[i].sep_before) ugfx_fill_a(r.x + 12, y - 3, r.w - 24, 1, ARGB(40, 150, 170, 230));
-            if (sel)                 ugfx_rrect_a(r.x + 6, y + 1, r.w - 12, row_h - 2, TH_R_SM, ARGB(150, 96, 152, 252));
-            else if (i == hover_row) ugfx_state_layer(r.x + 6, y + 1, r.w - 12, row_h - 2, TH_R_SM, TH_HOVER_A);
-            int iy = y + (row_h - 18) / 2;
-            blit_scaled(r.x + 12, iy, 18, 18, fileicons_argb[FILEICON_FOLDER], FILEICON_SZ, FILEICON_SZ);
-            ugfx_text(r.x + 38, y + (row_h - fh) / 2, items[i].label, sel ? RGB(255, 255, 255) : TH_TEXT, UGFX_TRANSPARENT);
+        static const char *sect_name[SIDE_NSECT] = { "Favorites", "Locations" };
+        int nv = vrows();
+        for (int v = 0; v < nv; v++) {
+            int s, i; if (!vrow(v, &s, &i)) break;
+            int y = row_y(v);
+            if (i < 0) {                                 /* section header + disclosure caret */
+                int cy = y + row_h / 2, cx = r.x + 16;   /* (opaque fill: RGB() carries no alpha) */
+                if (collapsed[s]) for (int k = 0; k < 4; k++) ugfx_fill(cx - 2 + k, cy - 3 + k, 1, 7 - 2 * k, TH_MUTED);  /* > */
+                else              for (int k = 0; k < 4; k++) ugfx_fill(cx - 3 + k, cy - 2 + k, 7 - 2 * k, 1, TH_MUTED);  /* v */
+                ugfx_text(r.x + 26, y + (row_h - fh) / 2, sect_name[s], TH_MUTED, UGFX_TRANSPARENT);
+            } else draw_item(y, items[i].label, items[i].path, v == hover_row, -1);
+        }
+        if (trash_path[0]) {                             /* pinned at the bottom, set apart (§9) */
+            int y = trash_y();
+            ugfx_fill_a(r.x + 12, y - 4, r.w - 24, 1, ARGB(40, 150, 170, 230));
+            draw_item(y, "Trash", trash_path, hover_row == 1000, G_TRASH);
         }
     }
     bool on_mouse(int x, int y, int) override {
-        (void)x; int i = (y - (r.y + head_h)) / row_h;
-        if (y >= r.y + head_h && i >= 0 && i < n && on_pick) on_pick(ctx, items[i].path);
+        (void)x;
+        if (trash_path[0] && y >= trash_y() && y < trash_y() + row_h) {
+            if (on_pick) on_pick(ctx, trash_path);
+            return true;
+        }
+        int s, i, v = row_at(y);
+        if (v < 0 || !vrow(v, &s, &i)) return true;
+        if (i < 0) {                                     /* a header click toggles its section */
+            collapsed[s] = !collapsed[s];
+            print("[files] sidesect "); printu((unsigned)s); printc(' ');
+            printu((unsigned)collapsed[s]); print("\r\n");
+            if (on_changed) on_changed(ctx);
+        } else if (on_pick) on_pick(ctx, items[i].path);
         return true;
     }
 };

@@ -1033,6 +1033,22 @@ def _files_hdr_click(t, wr, col):
     t.click(wr[0] + hx + cx + cw // 2, wr[1] + hy + hh // 2)
 
 
+def _files_siderow(t, label, since=0, timeout=6):
+    """Click centre (window coords) of the most recent sidebar-row dump entry labeled
+    `label`, from "[files] siderow v x y label" (section headers dump as "#0"/"#1").
+    Scans serial from offset `since` so a caller can demand a FRESH dump (the dump is
+    deduped by signature and re-emitted whenever the rows change). None on timeout."""
+    deadline = time.time() + timeout
+    while True:
+        ms = re.findall(r"\[files\] siderow \d+ (\d+) (\d+) (\S+)", t.serial()[since:])
+        for x, y, lb in reversed(ms):
+            if lb == label:
+                return int(x), int(y)
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.1)
+
+
 def _files_tab_click(t, wr, i, close=False):
     """Click tab `i`'s pill body (or its × when close=True) on the Files tab strip, using
     the latest "[files] tabbar y h n cur" + "[files] tabpos i x w" geometry canaries. The
@@ -1441,6 +1457,74 @@ def t_files_undo(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_places(uefi):
+    # Editable Places sidebar (files-app §7): the sidebar is sectioned -- Favorites
+    # (registry-backed pins) + Locations (the volume row carries a used-space bar) --
+    # with collapsible headers and Trash pinned at the bottom. A folder's context menu
+    # pins it ("Add to Places", dir-menu item 5); the pin shows in Favorites, navigates
+    # on click, persists in the on-disk registry, and right-clicking it offers "Remove
+    # from Places". Canaries: "[files] siderow v x y label" (deduped geometry dump),
+    # "[files] places add/del <path>", "[files] sidesect <s> <0|1>" on collapse.
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        t.line("mkdir /Users/user/pl"); t.line("mkdir /Users/user/pl/proj"); t.line("echo STAGED")
+        assert t.wait_for("STAGED", 6), "could not stage the folder to pin"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        assert _files_siderow(t, "#0"), "the Favorites section header was not dumped"
+        assert _files_siderow(t, "Home"), "the default Home pin was not dumped"
+        _files_nav(t, wr, "/Users/user/pl")
+        # --- pin "proj": right-click it -> Add to Places ---
+        c_ctx = t.serial().count("[files] ctxmenu")
+        rx, ry = _files_row_xy(t, wr, 1)                  # row0=".." row1="proj"
+        t.rightclick(rx, ry)
+        _files_ctx_click(t, wr, 5, c_ctx)                 # dir menu: ... Rename(3) Delete(4) Add to Places(5)
+        assert _count_at_least(t, "[files] places add /Users/user/pl/proj", 1, 6), \
+            "Add to Places did not pin the folder"
+        row = _files_siderow(t, "proj")
+        assert row, "the pinned folder did not appear in the Favorites section"
+        t.screenshot("/tmp/tos_places.ppm")               # sections + the new pin + volume bar
+        # --- the pin navigates on click ---
+        t.click(wr[0] + row[0], wr[1] + row[1])
+        assert _count_at_least(t, "[files] cd /Users/user/pl/proj\r", 1, 8), \
+            "clicking the pin did not navigate to it"
+        # --- collapse + re-expand Favorites by clicking its header ---
+        hdr = _files_siderow(t, "#0")
+        mark = len(t.serial())
+        t.click(wr[0] + hdr[0], wr[1] + hdr[1])
+        assert _count_at_least(t, "[files] sidesect 0 1", 1, 6), "the header click did not collapse Favorites"
+        assert _files_siderow(t, "#1", since=mark), "no fresh dump after the collapse"
+        assert not _files_siderow(t, "proj", since=mark, timeout=0.5), \
+            "a collapsed Favorites still shows its pins"
+        t.click(wr[0] + hdr[0], wr[1] + hdr[1])
+        assert _count_at_least(t, "[files] sidesect 0 0", 1, 6), "the header click did not expand Favorites"
+        assert _files_siderow(t, "proj", since=mark), "expanding did not bring the pins back"
+        # --- persisted on disk: the user registry carries the pin ---
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("cat /Users/user/.config/registry"); t.line("echo REGDONE")
+        assert t.wait_for("REGDONE", 6), "could not read the registry back"
+        out = t.serial()[mark:]
+        assert "places.n = 6" in out, "the places count was not persisted (%r)" % out[-300:]
+        assert "proj|/Users/user/pl/proj" in out, "the pin was not persisted to the registry"
+        # --- right-click the pin -> Remove from Places ---
+        _dock_focus(t, "Files")
+        row = _files_siderow(t, "proj")
+        c_ctx = t.serial().count("[files] ctxmenu")
+        t.rightclick(wr[0] + row[0], wr[1] + row[1])
+        _files_ctx_click(t, wr, 0, c_ctx)                 # the pin's menu: Remove from Places(0)
+        assert _count_at_least(t, "[files] places del /Users/user/pl/proj", 1, 6), \
+            "Remove from Places did not fire"
+        mark = t.serial().rfind("[files] places del")
+        assert not _files_siderow(t, "proj", since=mark, timeout=1), \
+            "the removed pin still shows in the sidebar"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_statfs(uefi):
     # Free-space query (files-app §6/§7): SYS_STATFS reports the mounted volume's data
     # capacity + free bytes from the sector bitmap. The shell's `df` surfaces it (and the
@@ -1622,7 +1706,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_files_split, t_files_details, t_files_undo, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_files_split, t_files_details, t_files_undo, t_files_places, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,
