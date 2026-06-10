@@ -237,6 +237,9 @@ in a side array — a selected hit shows "in <dir>" in the status bar, Enter/dou
 to the hit's folder with it selected (`[files] search open`), Esc leaves search. Results are
 live-filterable but not re-sortable (v1); scopes ("Everywhere"/Home), kind/tag/size predicates,
 and the shared Spotlight indexer remain TODO. Verified via `tests/repro_jobs.py` + screenshots.
+*(2026-06-11: clicking away from an open-but-**empty** bar dismisses it like Esc — the click
+still lands (a clicked row stays selected); with text in it (a live filter) or results showing,
+clicks act normally and Esc stays the way out. `tests/repro_filterdismiss.py`.)*
 
 Two different things, both formerly missing:
 

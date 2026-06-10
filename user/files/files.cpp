@@ -2092,7 +2092,20 @@ struct FilesApp : ui::Window {
         }
         if (editing_path && !pathfld.r.has(x, y))      leave_path_edit();
         else if (renaming && !renamefld.r.has(x, y))   commit_rename();
+        /* §5: an open-but-EMPTY filter/search bar is dismissed by clicking away, like its
+         * Esc. With text in it (a live filter) or search results showing, clicks act
+         * normally — Esc stays the way out. Routed first so the click lands in the
+         * pre-close layout (closing the bar shifts the list up). */
+        bool drop_bar = filter_open && !search_mode && filterfld.length() == 0 &&
+                        !filterfld.r.has(x, y) && !menu.open && !overwrite.open;
         ui::Window::dispatch_mouse(x, y, btn);
+        if (drop_bar) {                                /* the bar was empty: the view's content is
+                                                        * unchanged, so re-select what the click chose
+                                                        * (close_filter's apply_filter resets sel) */
+            int keep = list.sel;
+            close_filter();
+            if (keep >= 0 && keep < list.count) select_row(keep);
+        }
     }
     /* the compositor close button: in picker mode, closing == Cancel (empty result). */
     bool on_close() override { if (picker) print("[files] pick cancel\r\n"); return true; }
