@@ -278,7 +278,7 @@ struct wmwin {                /* SYS_WM_WINDOWS snapshot entry (compositor side)
  * (packed menu+item index) back to the app when an item is chosen. nmenus==0 ⇒ the
  * app has no menu (the bar shows only the universal About/Quit). */
 #define WINMENU_MAX   5       /* top-level menus                                   */
-#define WINMENU_ITEMS 8       /* items per menu                                    */
+#define WINMENU_ITEMS 12      /* items per menu (Edit carries Copy..Undo/Redo)     */
 #define WINMENU_LBL   18      /* label length (incl. NUL)                          */
 /* Per-item state flags (winmenu.m[].flags[]). An app sets these when it declares
  * the menu; the compositor greys WMI_DISABLED rows (and ignores clicks/accels on

@@ -7,7 +7,7 @@
  * routing that opens these lives in twm.c. */
 #include "twm.h"
 
-#define MENU_MAXI 8                  /* max items in a dropdown (>= WINMENU_ITEMS) */
+#define MENU_MAXI 12                 /* max items in a dropdown (>= WINMENU_ITEMS) */
 #define MENU_ROW  (fh + 12)          /* dropdown row height                */
 #define MENU_PAD  8
 #define MENU_CHECK_W 18              /* left gutter for a check mark (#6)   */

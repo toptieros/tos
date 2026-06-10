@@ -21,6 +21,12 @@
 #include "humansize.h"     /* human_bytes: status-bar free-space figure (§6) */
 #include "fileinfo.h"      /* info_is_locked: Get Info owner/lock fields (§8) */
 #include "tabtitle.h"      /* tab_title: the tab-strip pill label (§4)       */
+#include "undojournal.h"   /* undo_journal: the Ctrl+Z/Ctrl+Y op journal (§12) */
+
+/* Undo journal op types -- Files interprets these; the journal stores them opaquely.
+ * RENAME/MOVE/TRASH move a single item between paths a and b; CREATE/COPY create b
+ * (COPY from source a when a is non-empty, so it can be re-done). */
+enum { OP_RENAME = 0, OP_MOVE = 1, OP_CREATE = 2, OP_COPY = 3, OP_TRASH = 4 };
 
 #define NMAX    256
 #define HISTN   32
@@ -113,6 +119,7 @@ struct FilesApp : ui::Window {
     char          cut_src[256] = {0};            /* full path of a cut file, pending a paste-move */
     bool          have_cut = false;              /* the active clipboard file came from a Cut (Ctrl+X) */
     int           sort_key = FSORT_NAME, sort_desc = 0, sort_ff = 1;  /* the Sort menu state (§2) */
+    undo_journal  journal;                       /* §12: the Ctrl+Z / Ctrl+Y op journal */
 
     int at_root()  const { return path[0] == '/' && path[1] == 0; }
     int has_up()   const { return at_root() ? 0 : 1; }
@@ -135,6 +142,13 @@ struct FilesApp : ui::Window {
         if (on) menu_spec.m[m].flags[i] |= (uint8_t)WMI_CHECKED;
         else    menu_spec.m[m].flags[i] &= (uint8_t)~WMI_CHECKED;
     }
+    /* same, for the greyed/disabled flag (Edit ▸ Undo/Redo track the journal, §12) */
+    void menu_enable_local(int m, int i, bool on) {
+        if (m < 0 || m >= (int)menu_spec.nmenus) return;
+        if (i < 0 || i >= (int)menu_spec.m[m].nitems) return;
+        if (on) menu_spec.m[m].flags[i] &= (uint8_t)~WMI_DISABLED;
+        else    menu_spec.m[m].flags[i] |= (uint8_t)WMI_DISABLED;
+    }
     /* Reflect the active view mode + sort in the menu check marks (View = index 3, Sort =
      * index 4) and publish once. Called on navigation (restored prefs) and the setters. */
     void sync_menus() {
@@ -148,6 +162,8 @@ struct FilesApp : ui::Window {
         menu_check_local(4, 2, sort_key == FSORT_SIZE);
         menu_check_local(4, 3, sort_desc != 0);
         menu_check_local(4, 4, sort_ff   != 0);
+        menu_enable_local(1, 8, undo_can_undo(&journal));   /* Edit ▸ Undo (§12) */
+        menu_enable_local(1, 9, undo_can_redo(&journal));   /* Edit ▸ Redo */
         menu_commit();                               /* single publish for the whole batch */
     }
     /* change the sort, re-read the folder (re-sorted, with icons re-aligned), update
@@ -496,28 +512,57 @@ struct FilesApp : ui::Window {
         invalidate();
     }
     /* copy `name` from `srcdir` into `dstdir` (recursive; dedupes a colliding name) */
-    void copy_across(const char *srcdir, const char *name, const char *dstdir) {
+    /* copy srcdir/name into dstdir (deduping on collision); on success writes the final
+     * destination path into `out` (so the caller can journal it for undo, §12). */
+    void copy_across(const char *srcdir, const char *name, const char *dstdir, char *out = nullptr, int cap = 0) {
         char src[256], dst[256]; join(src, sizeof src, srcdir, name); join(dst, sizeof dst, dstdir, name);
         if (sys_exists(dst, 0)) { char dd[256]; dedup_path(dd, sizeof dd, dst); strncpy(dst, dd, sizeof dst - 1); dst[sizeof dst - 1] = 0; }
-        if (copy_tree(src, dst) == 0) { print("[files] copy-across "); print(name); print(" -> "); print(dstdir); print("\r\n"); }
+        if (copy_tree(src, dst) == 0) { print("[files] copy-across "); print(name); print(" -> "); print(dstdir); print("\r\n");
+                                        if (out) { strncpy(out, dst, cap - 1); out[cap - 1] = 0; } }
+        else if (out && cap) out[0] = 0;
     }
     void copy_to_other(bool move) {                        /* §4: send active selection to the other pane */
         if (!split) return;
-        if (active == 0) {
-            int hu = has_up(); if (list.sel < 0 || (hu && list.sel == 0)) return;
-            struct dirent *e = &ents[list.sel - hu];
-            copy_across(path, e->name, path2);
-            if (move) { char s[256]; join(s, sizeof s, path, e->name); rmrf(s); load_dir(); }
-            load_dir2();
-        } else {
-            if (sel2 < 0 || (has_up2() && sel2 == 0)) return;
-            int idx = sel2 - has_up2(); if (idx < 0 || idx >= nents2) return;
-            struct dirent *e = &ents2[idx];
-            copy_across(path2, e->name, path);
-            if (move) { char s[256]; join(s, sizeof s, path2, e->name); rmrf(s); load_dir2(); }
-            load_dir();
+        const char *srcdir = active == 0 ? path : path2;
+        const char *dstdir = active == 0 ? path2 : path;
+        struct dirent *e;
+        if (active == 0) { int hu = has_up(); if (list.sel < 0 || (hu && list.sel == 0)) return; e = &ents[list.sel - hu]; }
+        else { if (sel2 < 0 || (has_up2() && sel2 == 0)) return; int idx = sel2 - has_up2(); if (idx < 0 || idx >= nents2) return; e = &ents2[idx]; }
+        int isdir = (e->type == FT_DIR);
+        char s[256]; join(s, sizeof s, srcdir, e->name);   /* the source's full path */
+        char did[256]; copy_across(srcdir, e->name, dstdir, did, sizeof did);
+        if (did[0]) {                                      /* the copy succeeded */
+            if (move) { rmrf(s); rec_op(OP_MOVE, s, did, isdir); }
+            else rec_op(OP_COPY, s, did, isdir);
         }
-        invalidate();
+        load_dir(); load_dir2(); invalidate();
+    }
+    /* ---- undo / redo (§12) -------------------------------------------------- */
+    /* journal one reversible op AFTER it has succeeded on disk, then refresh the Edit menu */
+    void rec_op(int type, const char *a, const char *b, int isdir) { undo_push(&journal, type, a, b, isdir); sync_menus(); }
+    void refresh_panes() { load_dir(); if (split) load_dir2(); invalidate(); }
+    void do_undo() {
+        struct undo_rec *r = undo_take_undo(&journal);
+        if (!r) return;
+        switch (r->type) {
+            case OP_RENAME: case OP_MOVE: rename_(r->b, r->a); break;          /* put it back at a */
+            case OP_TRASH:  rename_(r->b, r->a); trashinfo_remove(basename_of(r->b)); break;
+            case OP_CREATE: case OP_COPY: rmrf(r->b); break;                   /* remove what we made */
+        }
+        print("[files] undo "); printu((unsigned)r->type); printc(' '); print(r->b); print("\r\n");
+        sync_menus(); refresh_panes();
+    }
+    void do_redo() {
+        struct undo_rec *r = undo_take_redo(&journal);
+        if (!r) return;
+        switch (r->type) {
+            case OP_RENAME: case OP_MOVE: rename_(r->a, r->b); break;
+            case OP_TRASH:  rename_(r->a, r->b); trashinfo_append(basename_of(r->b), r->a); break;
+            case OP_CREATE: if (r->isdir) mkdir(r->b); else sys_spit(r->b, "", 0); break;
+            case OP_COPY:   if (r->a[0]) copy_tree(r->a, r->b); break;
+        }
+        print("[files] redo "); printu((unsigned)r->type); printc(' '); print(r->b); print("\r\n");
+        sync_menus(); refresh_panes();
     }
     static void render_row2(void *ctx, int i, ui::Rect cell, bool sel) {
         FilesApp *a = (FilesApp *)ctx;
@@ -720,6 +765,7 @@ struct FilesApp : ui::Window {
                                   strncpy(dst, d2, sizeof dst - 1); dst[sizeof dst - 1] = 0; }
         if (rename_(full, dst) != 0) { rmrf(full); return; }           /* fall back to a hard delete */
         trashinfo_append(basename_of(dst), full);
+        struct fstat ts; rec_op(OP_TRASH, full, dst, stat_(dst, &ts) == 0 && ts.type == FT_DIR);  /* §12 */
         print("[files] trash "); print(basename_of(full)); print("\r\n");
     }
     void do_delete() {
@@ -801,7 +847,10 @@ struct FilesApp : ui::Window {
         int n = clip_get(idx, buf, ci.len);
         if (n > 0) sys_spit(dst, buf, n);
         free(buf);
-        if (n > 0 && have_cut && cut_src[0]) { rmrf(cut_src); have_cut = false; cut_src[0] = 0; }
+        if (n > 0) {                                          /* §12: journal the paste */
+            if (have_cut && cut_src[0]) { rmrf(cut_src); rec_op(OP_MOVE, cut_src, dst, 0); have_cut = false; cut_src[0] = 0; }
+            else rec_op(OP_COPY, "", dst, 0);                 /* copy-paste: undo deletes it (redo can't re-source the clipboard) */
+        }
         print("[files] paste "); print(dst); print("\r\n");
         load_dir(); invalidate();
     }
@@ -821,7 +870,7 @@ struct FilesApp : ui::Window {
             join(child, sizeof child, path, name);
             struct fstat st;
             if (stat_(child, &st) < 0) {
-                mkdir(child); load_dir();
+                mkdir(child); rec_op(OP_CREATE, "", child, 1); load_dir();
                 if (select_named(name) >= 0) start_rename();   /* Finder-style: name the new folder now */
                 return;
             }
@@ -836,7 +885,7 @@ struct FilesApp : ui::Window {
             join(child, sizeof child, path, name);
             struct fstat st;
             if (stat_(child, &st) < 0) {
-                sys_spit(child, "", 0); load_dir();
+                sys_spit(child, "", 0); rec_op(OP_CREATE, "", child, 0); load_dir();
                 if (select_named(name) >= 0) start_rename();   /* name it now, Finder-style */
                 return;
             }
@@ -852,6 +901,7 @@ struct FilesApp : ui::Window {
         char dst[256];
         int k = 1; for (; k < 1000; k++) { dup_candidate(dst, sizeof dst, src, k); if (!sys_exists(dst, 0)) break; }
         if (k >= 1000 || copy_tree(src, dst) != 0) return;
+        rec_op(OP_COPY, src, dst, ents[idx].type == FT_DIR);   /* §12: undo deletes the dup */
         print("[files] duplicate "); print(basename_of(dst)); print("\r\n");
         load_dir();
         select_named(basename_of(dst));
@@ -899,7 +949,8 @@ struct FilesApp : ui::Window {
         if (!nn[0] || eqn(nn, oldn)) { invalidate(); return; }   /* empty or unchanged */
         char oldp[512], newp[512]; join(oldp, sizeof oldp, path, oldn); join(newp, sizeof newp, path, nn);
         if (sys_exists(newp, 0)) { invalidate(); return; }       /* don't clobber an existing name */
-        if (rename_(oldp, newp) == 0) { print("[files] rename "); print(oldn); print(" -> "); print(nn); print("\r\n"); }
+        if (rename_(oldp, newp) == 0) { rec_op(OP_RENAME, oldp, newp, ents[idx].type == FT_DIR);
+            print("[files] rename "); print(oldn); print(" -> "); print(nn); print("\r\n"); }
         load_dir(); invalidate();
     }
     void cancel_rename() { if (renaming) { end_rename(); invalidate(); } }
@@ -1201,6 +1252,7 @@ struct FilesApp : ui::Window {
 
         reg_load();
         load_apps();
+        undo_reset(&journal);                            /* §12: start with an empty op journal */
 
         bar.color = C_TOOLBAR; bar.sep_bottom = true;
         list.bg = C_LIST; list.sel_bg = C_SELROW;
@@ -1299,6 +1351,8 @@ struct FilesApp : ui::Window {
                                        menu_item(me, "Delete", 0); menu_item(me, "Rename", 0);
                                        menu_item(me, "Copy to Other Pane", 0, split ? 0 : WMI_DISABLED);   /* §4 (item 6) */
                                        menu_item(me, "Move to Other Pane", 0, split ? 0 : WMI_DISABLED);   /* §4 (item 7) */
+                                       menu_item(me, "Undo", 'Z', WMI_DISABLED);   /* §12 (item 8); sync_menus enables */
+                                       menu_item(me, "Redo", 'Y', WMI_DISABLED);   /* §12 (item 9) */
             int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
             int mv = menu_add("View");                          /* view mode + zoom (§1) */
             menu_item(mv, "as Icons", 0, view_mode == 1 ? WMI_CHECKED : 0);
@@ -1447,6 +1501,8 @@ struct FilesApp : ui::Window {
         else if (key == 0x18) copy_sel(true);    /* Ctrl+X */
         else if (key == 0x16) paste();           /* Ctrl+V */
         else if (key == 0x09) toggle_info();     /* Ctrl+I (== Tab): show/hide Get Info (§8) */
+        else if (key == 0x1a) do_undo();         /* Ctrl+Z (§12) */
+        else if (key == 0x19) do_redo();         /* Ctrl+Y (§12) */
         else if (key == 'r') load_dir();
     }
     void on_nav(int dir) override { if (dir == 0) go_back(); else go_fwd(); }
@@ -1463,6 +1519,7 @@ struct FilesApp : ui::Window {
             else if (item == 2) paste(); else if (item == 3) duplicate_sel();
             else if (item == 4) do_delete(); else if (item == 5) start_rename();
             else if (item == 6) copy_to_other(false); else if (item == 7) copy_to_other(true);  /* §4 */
+            else if (item == 8) do_undo(); else if (item == 9) do_redo();                       /* §12 */
         } else if (menu == 2) {                                                               /* Go */
             if (item == 0) go_up(); else if (item == 1) go_back(); else if (item == 2) go_fwd();
         } else if (menu == 3) {                                                               /* View: mode + zoom */

@@ -740,22 +740,34 @@ def t_files_menu(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def _files_menu_open(t, name):
+    """Open Files' menu-bar menu `name` (click its tile, not the Ctrl accelerator, which
+    races the modifier release). Returns its dropdown geometry (ry, row_h, mx).
+    Takes the LAST appmenu canary for the name -- another app (e.g. the Terminal, which
+    declares its own Edit menu) may have printed the same tile name at a different x
+    while it was focused; the most recent bar repaint is the focused app's. The open
+    is confirmed count-based since the geometry line is a substring stale-match trap."""
+    ms = None
+    for _ in range(50):
+        ms = re.findall(r"\[twm\] appmenu \d+ %s (\d+) (\d+)" % name, t.serial())
+        if ms:
+            break
+        time.sleep(0.1)
+    assert ms, "Files' %s menu tile was not shown" % name
+    fx, fw = int(ms[-1][0]), int(ms[-1][1])
+    opens = t.serial().count("[twm] menu app %s" % name)
+    t.click(fx + fw // 2, 12)
+    assert _count_at_least(t, "[twm] menu app %s" % name, opens + 1, 6), \
+        "the %s menu did not open" % name
+    gs = re.findall(r"\[twm\] menu app %s y (\d+) row (\d+) x (\d+)" % name, t.serial())
+    assert gs, "%s menu geometry not reported" % name
+    return int(gs[-1][0]), int(gs[-1][1]), int(gs[-1][2])
+
+
 def _files_menu_click(t, name, idx):
     """Open Files' menu-bar menu `name` and click item `idx` (a click, not the Ctrl
     accelerator, which races the modifier release -- see the project notes)."""
-    m = None
-    for _ in range(50):
-        m = re.search(r"\[twm\] appmenu \d+ %s (\d+) (\d+)" % name, t.serial())
-        if m:
-            break
-        time.sleep(0.1)
-    assert m, "Files' %s menu tile was not shown" % name
-    fx, fw = int(m.group(1)), int(m.group(2))
-    t.click(fx + fw // 2, 12)
-    assert t.wait_for("[twm] menu app %s" % name, 6), "the %s menu did not open" % name
-    g = re.search(r"\[twm\] menu app %s y (\d+) row (\d+) x (\d+)" % name, t.serial())
-    assert g, "%s menu geometry not reported" % name
-    ry, row, mx = int(g.group(1)), int(g.group(2)), int(g.group(3))
+    ry, row, mx = _files_menu_open(t, name)
     t.click(mx + 20, ry + idx * row + row // 2)
 
 
@@ -948,6 +960,11 @@ def _files_nav(t, wr, path):
     editor isn't up), so the next crumbend click re-opens a FRESH field whose select-all
     discards any garbage a dropped keystroke left behind."""
     cdc = t.serial().count("[files] cd %s\r" % path)
+    # the breadcrumb's geometry canary can lag the window's first paint under host load;
+    # wait for it rather than asserting on the first glance (keeps the nav robust when busy)
+    deadline = time.time() + 8
+    while time.time() < deadline and not re.search(r"\[files\] crumbend \d+ \d+", t.serial()):
+        time.sleep(0.1)
     for attempt in range(3):
         if attempt:
             t.key("esc", delay=0.2)                       # close a stuck editor before reopening
@@ -1372,6 +1389,58 @@ def t_files_details(uefi):
         assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
 
 
+def t_files_undo(uefi):
+    # Undo / redo of file ops (§12): a journal records each reversible op; Edit ▸ Undo
+    # (item 8 / Ctrl+Z) inverts the last one, Edit ▸ Redo (item 9 / Ctrl+Y) re-applies it.
+    # We drive Duplicate (undo deletes the dup, redo re-copies) and Trash (undo puts it
+    # back), confirming each on disk. OP types in the canaries: RENAME0 MOVE1 CREATE2 COPY3
+    # TRASH4. Canaries: "[files] duplicate/trash ...", "[files] undo/redo <type> ...".
+    with Tos(uefi=uefi) as t:
+        assert t.open_terminal(), "desktop/terminal did not come up"
+        assert t.wait_for("[twm] focus Terminal", 8), "terminal never took focus"
+        t.line("mkdir /Users/user/ud")
+        t.line("write /Users/user/ud/doc.txt"); t.line("hello")
+        assert t.wait_for("saved /Users/user/ud/doc.txt", 6), "could not stage doc.txt"
+        xy = t.icon_xy("Files"); assert xy, "Files dock icon coordinates not reported"
+        t.doubleclick(*xy)
+        assert t.wait_for("[files] file manager up", 12), "Files app did not launch"
+        assert t.wait_for("[twm] focus Files", 8), "Files window never took focus"
+        wr = t.win_rect("Files"); assert wr, "Files window rect not reported"
+        _files_nav(t, wr, "/Users/user/ud")
+        # --- Duplicate doc.txt, then undo (remove the dup), then redo (re-create it) ---
+        rx, ry = _files_row_xy(t, wr, 1)                  # row0=".." row1="doc.txt"
+        t.click(rx, ry)
+        d = t.serial().count("[files] duplicate")
+        _files_menu_click(t, "Edit", 3)                   # Edit ▸ Duplicate
+        assert _count_at_least(t, "[files] duplicate", d + 1, 6), "Duplicate did not run"
+        # the Edit menu now shows Undo enabled -- screenshot it open (visible proof of §12)
+        ry0, row, mx = _files_menu_open(t, "Edit")
+        t.screenshot("/tmp/tos_undo.ppm")
+        u = t.serial().count("[files] undo 3")
+        t.click(mx + 20, ry0 + 8 * row + row // 2)        # click Undo (item 8) on the open menu
+        assert _count_at_least(t, "[files] undo 3", u + 1, 6), "Undo of Duplicate (OP_COPY) did not fire"
+        rdo = t.serial().count("[files] redo 3")
+        _files_menu_click(t, "Edit", 9)                   # Edit ▸ Redo -> re-copy the dup
+        assert _count_at_least(t, "[files] redo 3", rdo + 1, 6), "Redo of Duplicate did not fire"
+        # --- Trash the dup, then undo (put it back) ---
+        rx, ry = _files_row_xy(t, wr, 1)                  # row1 = "doc copy.txt" (space < '.', sorts first)
+        t.click(rx, ry)
+        tr = t.serial().count("[files] trash")
+        _files_menu_click(t, "Edit", 4)                   # Edit ▸ Delete -> move to Trash
+        assert _count_at_least(t, "[files] trash", tr + 1, 6), "Delete did not move to Trash"
+        un = t.serial().count("[files] undo 4")
+        _files_menu_click(t, "Edit", 8)                   # Edit ▸ Undo -> un-trash
+        assert _count_at_least(t, "[files] undo 4", un + 1, 6), "Undo of Trash (OP_TRASH) did not fire"
+        # confirm on disk: both doc.txt and the (undeleted) dup are back in the folder
+        _dock_focus(t, "Terminal")
+        mark = len(t.serial())
+        t.line("ls /Users/user/ud"); t.line("echo UNDODONE")
+        assert t.wait_for("UNDODONE", 6), "the listing did not complete"
+        out = t.serial()[mark:]
+        assert "doc.txt" in out and "copy" in out, "the original + undeleted duplicate are not both present"
+        assert "[EXCEPTION]" not in t.serial() and "PANIC" not in t.serial()
+
+
 def t_statfs(uefi):
     # Free-space query (files-app §6/§7): SYS_STATFS reports the mounted volume's data
     # capacity + free bytes from the sector bitmap. The shell's `df` surfaces it (and the
@@ -1553,7 +1622,7 @@ BIOS_TESTS = [
     t_sleep, t_fork, t_orphan_reparent, t_app_crash, t_smp,
     # compositor + GUI journeys
     t_gui, t_window_mgmt, t_launchers_exclusive, t_notif_click_routing, t_fullscreen,
-    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_files_split, t_files_details, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
+    t_app_menu, t_files_menu, t_files_breadcrumb, t_files_sort, t_files_iconview, t_files_rename, t_files_viewmem, t_files_trash, t_files_newdup, t_files_getinfo, t_files_tabs, t_files_split, t_files_details, t_files_undo, t_term_menu, t_alt_tab, t_notepad_edit_save, t_notepad_undo,
     t_notepad_guard, t_file_picker, t_notepad_wordedit, t_notepad_session, t_spotlight,
     # hardware
     t_mouse, t_ram_scales, t_drivers,

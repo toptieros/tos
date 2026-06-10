@@ -87,7 +87,7 @@ value; **P3** = polish / power-user. "Foundation" = specified in
 | **Thumbnails** + **Quick Look** (Space) | none | §11 | P2 |
 | **Richer file-type icons** + custom folder icons | 5 icons | §11 | P2 |
 | **Duplicate**, **New File / templates** | none | §12 | P2 |
-| **Undo / redo** of file ops | none | §12 | P2 |
+| **Undo / redo** of file ops | **done 2026-06-10** | §12 | P2 |
 | **Background jobs + progress** (long copy/delete) | blocking | §12 | P2 |
 | **Keyboard + menu map** | ad hoc | §13 | P2 |
 
@@ -345,13 +345,16 @@ P3 — clean follow-up once Get Info and search exist.
 
 ## 12. File-operation completeness
 
-**Status: Duplicate + New File done (2026-06-08).** Duplicate clones the selection beside
-itself as Finder-style "X copy"/"X copy 2" (pure name math `dupname.h`); files copy their
-bytes, folders recurse via `copy_tree`. New File drops an empty `newfile.txt` and enters
-rename like New Folder. This needed a tosfs fix — `close_l` now persists 0-byte files
-(start_lba 0/size 0) instead of discarding empty writes. e2e `t_files_newdup`. **Remaining:**
-a real template set, **New Folder with Selection**, undo/redo, background jobs + conflict
-prompts (the bullets below).
+**Status: Duplicate + New File done (2026-06-08); undo/redo done (2026-06-10).** Duplicate
+clones the selection beside itself as Finder-style "X copy"/"X copy 2" (pure name math
+`dupname.h`); files copy their bytes, folders recurse via `copy_tree`. New File drops an empty
+`newfile.txt` and enters rename like New Folder. This needed a tosfs fix — `close_l` now
+persists 0-byte files (start_lba 0/size 0) instead of discarding empty writes. e2e
+`t_files_newdup`. **Undo/redo:** Edit ▸ Undo/Redo (Ctrl+Z/Y) walk a pure op journal
+(`undojournal.h`, unit `t_undojournal`; cap 24, push truncates the redo tail) of
+RENAME/MOVE/CREATE/COPY/TRASH records, inverted/re-applied with the existing FS helpers;
+menu items gray off can-undo/can-redo; e2e `t_files_undo`. **Remaining:** a real template
+set, **New Folder with Selection**, background jobs + conflict prompts (the bullets below).
 
 Beyond the foundation's copy/cut/paste/rename:
 
@@ -362,7 +365,8 @@ Beyond the foundation's copy/cut/paste/rename:
 - **Undo / redo** of file operations (Dolphin's `KIO` undo, Finder ⌘Z) — keep a small
   **op journal** (create/rename/move/copy/trash) with inverse actions, so the last
   operation(s) can be undone. Trash + rename make most undo trivial (move back / rename
-  back); copy-undo deletes the created files. High QoL, P2.
+  back); copy-undo deletes the created files. High QoL, P2. *(done 2026-06-10 — see Status;
+  multi-item batches as one journal entry land with the §12 background-jobs work)*
 - **Background jobs + progress.** Long copy/move/delete/search must **not block the UI**.
   Model file ops as **jobs** that run incrementally (a step per event-loop tick, or a
   worker), reporting progress to the status bar (§6) with **cancel**. Pair with **conflict

@@ -4,7 +4,7 @@ How the system works **today** is in [PROJECT.md](PROJECT.md); this file tracks 
 **left** plus a terse log of what's landed. Every item keeps `make test` green (BIOS +
 UEFI) before it's checked off.
 
-**Status:** `make test` **50/50** (39 e2e journeys on BIOS + a UEFI subset 11) + **275 host
+**Status:** `make test` **51/51** (40 e2e journeys on BIOS + a UEFI subset 11) + **298 host
 unit checks** (`make unit`, no QEMU). Pyramid policy in [`design/testing.md`](design/testing.md);
 the phased plan in [`design/roadmap.md`](design/roadmap.md). tOS is early-to-mid development.
 
@@ -244,6 +244,25 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Files undo / redo of file ops §12 (2026-06-10).** **Edit ▸ Undo / Redo** (items 8/9, Ctrl+Z/Y)
+  invert/re-apply the last file operation. A pure host-tested **journal** (`undojournal.h`, unit
+  `t_undojournal`) holds `{type, a→b, isdir}` records (cap 24, oldest evicted; a new push truncates
+  the redo tail); the app interprets the five op types with existing FS helpers: **RENAME** (rename
+  back/forth), **MOVE** (rename b→a / a→b), **CREATE** New Folder/File (undo = rmrf, redo = recreate),
+  **COPY** Duplicate/Paste/Copy-across (undo = rmrf the copy, redo = `copy_tree` again), **TRASH**
+  (undo = move back + drop the trashinfo line, redo = re-trash). Recording hooks in make_folder/
+  make_file/duplicate_sel/commit_rename/move_to_trash/paste/copy_to_other; menu items gray via the
+  journal's can-undo/can-redo (`menu_enable_local`). Bumped the menu-protocol caps **`WINMENU_ITEMS`
+  / twm `MENU_MAXI` 8 → 12** (the Edit menu hit ten items; kernel copies `struct winmenu` by value so
+  both sides stay size-consistent). e2e `t_files_undo` (Duplicate → undo removes the dup → redo
+  re-copies → Trash → undo restores; on-disk `ls` confirms both files; screenshot of the open menu
+  with Undo lit + Redo grayed). Canaries `[files] undo <type> <path>` / `[files] redo <type> <path>`.
+  The shared `_files_menu_open` e2e helper also got a real fix: it took the **first** `[twm] appmenu`
+  serial match for a tile name, which collides when another app declares the same menu name (the
+  Terminal also has an "Edit" — so it clicked the Terminal's stale tile x and the wrong menu opened);
+  it now takes the **last** match (the focused app's most recent bar repaint) and confirms the open
+  count-based. All 13 `t_files*` green in one batch after the fix. *(Not journaled: pane-2 ops as the
+  destination of a Move, multi-step batches as one entry — future polish with §17 background jobs.)*
 - **Files details / column view §1 (2026-06-09).** The list mode is now a real **details view**: a
   **column header** — **Name | Kind | Size | Date Modified** — sits above the rows, each row drawing its
   cells aligned to the header. Header cells **sort on click** (a fresh column goes ascending; re-clicking
@@ -643,6 +662,10 @@ Read [`roadmap.md`](design/roadmap.md) first — the strategic plan and current-
   [`testing.md`](design/testing.md) (the test pyramid).
 - **Planned:** [`ui.md`](design/ui.md) (desktop chrome, iconography, fullscreen, dock) ·
   [`files-and-desktop.md`](design/files-and-desktop.md) (Files + the desktop-as-Finder) ·
+  [`shell.md`](design/shell.md) (the fish-inspired interactive shell + language) ·
+  [`terminal.md`](design/terminal.md) (the ghostty-inspired VT / terminal emulator) ·
+  [`packaging.md`](design/packaging.md) (the `tos` command: install apps & packages) ·
+  [`repository.md`](design/repository.md) (the software repo + `tos get`/`tos sync` remote updates) ·
   [`system-ownership.md`](design/system-ownership.md) (who may delete what) ·
   [`app-runtime.md`](design/app-runtime.md) (capability sandbox) ·
   [`app-porting.md`](design/app-porting.md) (sysroot/libposix) ·
