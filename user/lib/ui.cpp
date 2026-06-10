@@ -444,6 +444,18 @@ int Window::run() {
             case WEV_CLOSE: if (on_close()) running = false; break;
             }
         }
+        /* A bare ESC byte can't be told from an ESC-sequence prefix at the byte
+         * level, so feed_key latches it (esc == 1). The kernel posts a special
+         * key's whole sequence in one burst, so if the latch survives two full
+         * drains, it was a real lone Esc press -- deliver it. */
+        if (esc == 1) {
+            if (++esc_pend >= 2) {
+                esc = 0; esc_pend = 0;
+                bool handled = focus ? focus->on_key(UK_ESC, false) : false;
+                if (!handled) on_key(UK_ESC);
+                dirty = true;
+            }
+        } else esc_pend = 0;
         ticks++;
         on_tick(ticks);                       /* periodic app work (e.g. Notepad session autosave) */
         if (focus && focus->shows_caret() && (ticks % TF_BLINK) == 0)

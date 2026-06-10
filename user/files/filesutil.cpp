@@ -15,16 +15,17 @@ int file_icon_for(int type, const char *n) {
     if (type == FT_DIR) return FILEICON_FOLDER;
     if (endsw(n, ".txt") || eqn(n, "readme") || eqn(n, "motd") ||
         eqn(n, "guide") || eqn(n, "notes") || eqn(n, "shortcuts")) return FILEICON_TEXT;
-    if (endsw(n, ".img") || endsw(n, ".png") || endsw(n, ".bmp")) return FILEICON_IMAGE;
+    if (endsw(n, ".argb") || endsw(n, ".img") || endsw(n, ".png") || endsw(n, ".bmp")) return FILEICON_IMAGE;
+    if (endsw(n, ".md") || endsw(n, ".csv") || endsw(n, ".cfg")) return FILEICON_TEXT;
     if (!hasdot(n)) return FILEICON_EXEC;
     return FILEICON_FILE;
 }
 const char *kind_for(int type, const char *n) {
     if (is_app_dir(type, n)) return "Application";
     if (type == FT_DIR) return "Folder";
-    if (endsw(n, ".txt") || eqn(n, "readme") || eqn(n, "motd") ||
+    if (endsw(n, ".txt") || endsw(n, ".md") || eqn(n, "readme") || eqn(n, "motd") ||
         eqn(n, "guide") || eqn(n, "notes")) return "Text Document";
-    if (endsw(n, ".img") || endsw(n, ".png") || endsw(n, ".bmp")) return "Image";
+    if (endsw(n, ".argb") || endsw(n, ".img") || endsw(n, ".png") || endsw(n, ".bmp")) return "Image";
     if (!hasdot(n)) return "Executable";
     return "Document";
 }
@@ -57,7 +58,8 @@ uint32_t *load_icon_argb(const char *path, int *w, int *h) {
     int fd = fopen(path, O_RDONLY);
     if (fd < 0) return 0;
     uint32_t hdr[2] = { 0, 0 };
-    if (fread_(fd, (char *)hdr, 8) != 8 || !hdr[0] || !hdr[1] || hdr[0] > 256 || hdr[1] > 256) { fclose_(fd); return 0; }
+    /* cap 1024: covers app icons and Quick-Look-sized pictures (4 MB decoded) */
+    if (fread_(fd, (char *)hdr, 8) != 8 || !hdr[0] || !hdr[1] || hdr[0] > 1024 || hdr[1] > 1024) { fclose_(fd); return 0; }
     int need = (int)(hdr[0] * hdr[1] * 4), got = 0;
     uint32_t *px = (uint32_t *)malloc((unsigned)need);
     if (!px) { fclose_(fd); return 0; }

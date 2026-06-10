@@ -130,6 +130,11 @@ defines `LIST` and `ICONS`. This section fleshes those out and adds two more.
   is a preview. This is *the* Finder navigation idiom for deep trees. P2.
 - **Gallery view** — a large preview of the focused item with a filmstrip of the rest;
   for browsing images/docs. P3, rides on thumbnails (§11).
+  *(Done 2026-06-10: **View ▸ as Gallery** (item 7, checked; `[files] view gallery`) renders a
+  full-size decoded preview of the selection (cached one image at a time) over a horizontal
+  filmstrip of §11 thumbnails — wheel pans, click selects, double-click opens, ←/→/Enter work,
+  and the mode round-trips through §2 view memory. Split view forces list mode; rename is
+  list/icons-only for now. Verified with a disposable boot (`tests/repro_gallery.py`) + screenshots.)*
 
 **Zoom / icon size.** A control (status-bar slider §6, and Ctrl `+`/`-`/`0`) scales
 icon-grid tiles and list-row thumbnails through a few discrete levels. `FileView`
@@ -222,7 +227,18 @@ mega-file.
 
 ## 5. Filter bar & search
 
-Two different things, both missing:
+**Status: both v1 done 2026-06-11.** The filter bar ("/", which existed as an orphaned widget,
+is now wired + added to the window) live-filters the current folder per keystroke. **File ▸
+Find** (^F, `[files] searchbar`) opens the same bar *armed*: Enter starts a **recursive walk
+from the current folder as a §12 background job** (2 directories per tick off a pending-dir
+stack; dotfiles + `.app` bundles skipped, `NMAX` cap), streaming case-insensitive substring
+matches into the normal view (`[files] search start/done <n>`), each with its parent dir kept
+in a side array — a selected hit shows "in <dir>" in the status bar, Enter/double-click jumps
+to the hit's folder with it selected (`[files] search open`), Esc leaves search. Results are
+live-filterable but not re-sortable (v1); scopes ("Everywhere"/Home), kind/tag/size predicates,
+and the shared Spotlight indexer remain TODO. Verified via `tests/repro_jobs.py` + screenshots.
+
+Two different things, both formerly missing:
 
 - **Filter bar** (Dolphin `/`, Finder has the search field do this for the current
   folder). A slim bar (toggle from the toolbar or `/`) with a `ui::TextField`; as you
@@ -251,7 +267,9 @@ A bottom bar (Finder/Dolphin both have one) — currently absent. Shows, left-to
 - The **zoom slider** (§1), right-aligned.
 - A **progress area** for the active background job (copy/move/delete/search) with a
   **Stop** button (§12). Hidden when idle; appears only if a job runs >~0.5s (Dolphin's
-  delayed-progress trick avoids flicker on fast ops).
+  delayed-progress trick avoids flicker on fast ops). *(2026-06-11: a copy job shows
+  "Copying k of n..." on the left plus a 2px accent **permille band** along the bar's top
+  edge; Esc cancels. A clickable Stop button + the delayed-show trick are still TODO.)*
 
 ## 7. The sidebar / Places (editable, sectioned)
 
@@ -365,6 +383,17 @@ icon-view dots, tag search (§5).
 
 ## 11. Thumbnails, Quick Look & richer iconography
 
+**Status: thumbnails + Quick Look done 2026-06-10.** `.argb` images get real 96px previews —
+pure `thumb.h` (`thumb_fit` aspect math + `thumb_scale` box-average downscale; unit `t_thumb`),
+decoded eagerly per folder into a RAM cache (`load_icon_argb`'s sanity cap raised 256→1024) and
+drawn by the list rows, icon tiles, and the §1 gallery. **Space** toggles Quick Look
+(`[files] quicklook <kind> <name>`): a full-window scrim + centred card showing the image
+fitted, a text file's first 4KB, or icon + summary; Space/Esc/any click dismisses. The Esc path
+exposed a **toolkit bug — a lone Esc keypress was never delivered** (the ANSI-sequence latch
+held it forever); `ui::Window::run` now flushes a bare Esc after two idle drains as `UK_ESC`
+to the focused widget, then the window (fixes every in-app Esc binding OS-wide). Richer icon
+art / extension→icon growth still TODO. Verified via `tests/repro_quicklook.py` + screenshots.
+
 - **Thumbnails**: render real previews for images instead of the generic image glyph —
   for our native image format (`load_icon_argb` already decodes it) and any later formats,
   downscaled with the existing `ugfx_blit_scaled`. Generate **off the UI path** (a small
@@ -389,8 +418,14 @@ persists 0-byte files (start_lba 0/size 0) instead of discarding empty writes. e
 `t_files_newdup`. **Undo/redo:** Edit ▸ Undo/Redo (Ctrl+Z/Y) walk a pure op journal
 (`undojournal.h`, unit `t_undojournal`; cap 24, push truncates the redo tail) of
 RENAME/MOVE/CREATE/COPY/TRASH records, inverted/re-applied with the existing FS helpers;
-menu items gray off can-undo/can-redo; e2e `t_files_undo`. **Remaining:** a real template
-set, **New Folder with Selection**, background jobs + conflict prompts (the bullets below).
+menu items gray off can-undo/can-redo; e2e `t_files_undo`. **Background jobs + conflict
+prompts: done 2026-06-11.** Cross-pane copy/move runs as a chunked job on the window tick
+(collect the tree pre-order, then 4 items/tick), with §6 progress + Esc cancel; a colliding
+destination raises **Replace / Keep Both / Skip** via the shared `ConfirmDialog` before the
+job starts (`[files] job conflict/start/done/cancel/skip`); a move carries tags and journals
+OP_MOVE, a copy OP_COPY (so undo works); §5 search rides the same engine. **Remaining:** a
+real template set, **New Folder with Selection**, Apply-to-All on conflicts, routing
+Paste/Duplicate/Delete through the job engine, and a Stop button (§6).
 
 Beyond the foundation's copy/cut/paste/rename:
 
@@ -408,7 +443,7 @@ Beyond the foundation's copy/cut/paste/rename:
   worker), reporting progress to the status bar (§6) with **cancel**. Pair with **conflict
   prompts** (Replace / Skip / Keep Both / Apply to All) when a destination exists, instead
   of today's silent "copy of X". This is the difference between "froze copying a folder"
-  and a real file manager.
+  and a real file manager. *(done 2026-06-11 for cross-pane copy/move — see Status)*
 
 ## 13. Keyboard & menu map
 

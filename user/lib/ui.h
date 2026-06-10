@@ -408,6 +408,7 @@ protected:
     Widget *hot = nullptr;                      /* widget currently under the pointer */
     int cur_shape = CUR_ARROW;                  /* cursor hint last sent to the compositor */
     int esc = 0;                                /* ESC-sequence decoder state */
+    int esc_pend = 0;                           /* event-loop drains a lone ESC has survived */
     char csi[8] = {0};                          /* CSI parameter bytes (e.g. "1;5" for Ctrl) */
     int  csi_n = 0;
 };

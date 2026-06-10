@@ -26,159 +26,54 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   Ctrl+N new folder, Enter/Ctrl+O open, Delete (or Backspace) remove, Ctrl+A select-all,
   Backspace/Alt+← up a directory, plus the existing Ctrl+C/X/V — surfaced in the context menu and a
   menu bar (#6) so the accelerators show. → [`files-and-desktop.md`](design/files-and-desktop.md)
-- [~] **Files app feature-completeness (files-app.md).** Turning Files from a single-pane lister into
-  a real manager. **Done (2026-06-06):** **filter bar** + **status bar** (earlier); **location bar §3** —
-  the static path label is now a clickable **breadcrumb** (segment chips → ancestor, chevron separators,
-  middle-ellipsis on overflow) with an **editable path** mode (click the empty bar / Ctrl+L → field,
-  Enter = go, Esc = revert); pure split `pathbar.h` (unit `t_pathbar`), e2e `t_files_breadcrumb`.
-  **Data-driven sort §2** — a **View ▸ Sort by Name/Kind/Size + Reversed + Folders First** menu replacing
-  the hardcoded comparator (natural/numeric name compare); pure `filesort.h` (unit `t_filesort`), e2e
-  `t_files_sort` (under a dedicated **Sort** menu). **Icon (grid) view + zoom §1** — a new `IconGrid`
-  renders the same model as a wrapping icon grid (large icon + centred name), toggled via **View ▸ as
-  Icons / as List** with **Zoom In/Out/Actual Size**; selection is shared with the list; e2e
-  `t_files_iconview`. **In-place rename §foundation** — Edit ▸ Rename / context-menu Rename drops an
-  inline field over the selected tile (list *or* icon view) with the name pre-selected; **New Folder**
-  enters rename immediately (Finder-style); Enter commits (`rename_()` on disk), Esc cancels,
-  **click-away commits**; e2e `t_files_rename`, logs `[files] renaming … / rename <old> -> <new>`.
-  **Path-bar click-away** — clicking outside the editable path field now reverts it the same as Esc
-  (`[files] pathleave`), checked in `t_files_breadcrumb`. **Per-folder view memory §2** — each folder
-  remembers its view mode + sort + zoom in the **registry** (one value per path, `view.<path>`, hashed
-  when too long for `REG_KEYMAX`; a stable `view.default` covers unseen folders); restored on navigate,
-  persisted on every view/sort/zoom change; the menu-check re-sync was **batched into one `win_setmenu`**
-  (was 7/nav, which raced menu clicks). Pure codec `viewmem.h` (unit `t_viewmem`), e2e `t_files_viewmem`,
-  logs `[files] viewmem <path> <mode> zoom <z>`. **Trash §9** — Delete in a normal folder now **moves**
-  the item to `~/.Trash` (a `rename_()`, so it works for whole directories) instead of destroying it; a
-  hidden sidecar `~/.Trash/.trashinfo` records each item's origin so the context-menu **Put Back** restores
-  it where it came from; **Empty Trash** (File menu + Trash context menu) removes for good; Delete *inside*
-  the Trash deletes immediately. A **Trash** place anchors the sidebar; dotfiles (incl. `.Trash`/`.trashinfo`)
-  are now hidden from listings and the status "N items" count. Pure sidecar codec `trashinfo.h` (unit
-  `t_trashinfo`), e2e `t_files_trash` (full move → Put Back → Empty round-trip, confirmed on disk), logs
-  `[files] trash <name> / untrash <name> / trash empty`; new geometry canaries `[files] listrect` +
-  `[files] ctxmenu` (and a `rightclick` harness helper) let e2e drive list rows and context menus.
-  **Duplicate + New File §12** — **Duplicate** (Edit ▸ / context menu) clones the selected item beside
-  itself as Finder-style **"X copy" / "X copy 2"** — files copy their bytes, folders copy **recursively**
-  (`copy_tree`); **New File** (File ▸ / context menu) drops an empty `newfile.txt` and enters rename like
-  New Folder. Enabling empty files needed a **tosfs fix**: `close_l` now persists a real **0-byte entry**
-  (start_lba 0 / size 0, like a directory) instead of discarding empty writes — so New File, truncate-to-
-  empty, and copying an empty file all work. Pure name codec `dupname.h` (unit `t_dupname`), e2e
-  `t_files_newdup` (New File + file Duplicate + recursive folder Duplicate, all confirmed on disk), logs
-  `[files] duplicate <name>`. **fs timestamps §8** — every tosfs entry now carries a packed `mtime`
-  (`fstime.h`, unit `t_fstime`), stamped from the CMOS RTC on create/write/mkdir (+ build time for
-  shipped files via `mkfs`), plumbed through `dirent`/`fstat` to the Details pane's **Modified** line.
-  **statfs §6/§7** — `SYS_STATFS` returns the tosfs volume's total/free bytes (sector bitmap); shown
-  as the shell's `df` + a **"<n> free"** Details-pane footer; pure formatter `humansize.h` (unit
-  `t_humansize`), e2e `t_statfs`. **rich Get Info §8** — selecting an item now fills the Details pane
-  with a folder's **recursive size + item count** (a `du`-style `dir_usage` walk), the **Owner**
-  (System / You from `fstat.owner`), a **"Read only" lock badge** for system-owned items, and **Opens
-  with** (the default app for the type); folder size also lands on the status bar; **Ctrl+I** toggles
-  the pane. Pure helpers `fileinfo.h` (owner label / lock rule / item-count, unit `t_fileinfo`), e2e
-  `t_files_getinfo` (recursive folder size + a locked system item, screenshot-verified), canary
-  `[files] sel <name> (ro|rw) owner=<uid> size=<n> [items=<n>]`. **Left, cheapest-first:**
-  recursive search §5, thumbnails/Quick Look §11, gallery view §1, background jobs §12.
+- [x] **Files app feature-completeness (files-app.md) — the planned catalog is DONE (2026-06-11).**
+  Turning Files from a single-pane lister into a real manager. **Done** (each on a pure
+  host-tested helper + serial canaries; the prose lives in [`files-app.md`](design/files-app.md)
+  and the changelog below): breadcrumb + editable location bar §3 · data-driven sort §2 · icon
+  view + zoom §1 · in-place rename · per-folder view memory §2 · Trash §9 · Duplicate / New File
+  §12 (+ the tosfs 0-byte-file fix) · fs timestamps §8 · statfs free space §6/§7 · rich Get Info
+  §8 · tabs §4 · split view §4 · details/column view §1 (sortable, drag-resizable) · undo/redo
+  §12 · editable Places sidebar §7 · tags/labels §10 + a scrolling sidebar · recursive folder
+  sizes in the Size column · thumbnails + Quick Look §11 · gallery view §1 · background jobs +
+  progress + conflict prompts §12 · filter bar + recursive search §5.
+  **Still open in the doc** (smaller follow-ons, none scheduled): Miller columns §1, multi-select,
+  Show in Groups §2, drag-reorder Places §7 (wants DnD), templates / New Folder with Selection
+  §12, Apply-to-All conflicts §12, jobs for Paste/Duplicate/Delete §12, a Stop button + zoom
+  slider §6, search scopes + Spotlight-shared indexer §5, richer icon art §11.
   → [`files-app.md`](design/files-app.md)
-- [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU` (a `struct winmenu`
-  of up to 5 menus × 8 items), `SYS_WM_GETMENU`, a `WEV_MENU` event, and the `ui::Window`
-  `menu_begin/menu_add/menu_item/menu_commit` + `on_menu()` API; twm draws a bar tile per menu
-  (kind-3 dropdown) and routes a pick back to the app. **Per-item state + accelerators:** items
-  carry `WMI_DISABLED`/`WMI_CHECKED` flags and a Ctrl-accelerator letter — the dropdown greys
-  disabled rows (no hover, non-clickable), draws a leading ✓ for checked rows, and shows the
-  accelerator (e.g. `^S`) right-aligned; the compositor intercepts `Ctrl+<letter>` for the focused
-  window and fires the matching enabled item as a `WEV_MENU` (opt-in per declared menu, so
-  menuless apps keep their raw Ctrl chords). Runtime toggles via `menu_set_checked/_set_enabled`.
-  Notepad ships File [New ^N, Open ^O, Save ^S, Save As, Close Tab ^W] / Edit [Select All ^A,
-  Undo ^Z, Redo ^Y] / View [✓ Status Bar]; **Files** ships File [New Folder ^N, Refresh] /
-  Edit [Copy ^C, Cut ^X, Paste ^V, Delete] /
-  Go [Up, Back, Forward]; **Terminal** (a raw-syscall app, proving the protocol isn't toolkit-only)
-  ships Edit [Copy, Paste, Clear] with no Ctrl accelerators so the shell keeps ^C. **Left:**
-  submenus (needs a `struct winmenu` ABI bump — deferred until something needs nesting). →
-  [`ui.md`](design/ui.md)
+- [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU`/`SYS_WM_GETMENU`
+  (≤5 menus × 12 items), `WEV_MENU` picks, the `ui::Window` menu API + `on_menu()`; per-item
+  `WMI_DISABLED`/`WMI_CHECKED` flags and Ctrl-accelerator letters (greyed rows, ✓ marks; the
+  compositor intercepts `Ctrl+<letter>` for the focused window, opt-in per declared menu).
+  Notepad / Files / Terminal ship bars (Terminal builds `struct winmenu` raw — the protocol
+  isn't toolkit-only — and declares no Ctrl accelerators so ^C still reaches the shell).
+  **Left:** submenus (a `struct winmenu` ABI bump — deferred until something needs nesting).
+  → [`ui.md`](design/ui.md)
 - [ ] **Grow the toolkit + port apps.** A layout system; `fastfetch` and new apps onto the toolkit.
   (term + Files now carry real menu bars; the toolkit layout system is the remaining piece.)
-- [~] **File open/save dialog (reusable picker).** **Done:** an in-process `ui::FileDialog` modal in
-  the toolkit (Open + Save modes), built on the toolkit's own `ListView` + `TextField` so every app
-  gets the same chrome — a **Favorites sidebar**, an **Up button**, a path bar, the directory list,
-  and (Save) a name field — without re-implementing it. It honours system ownership (the Save button
-  greys when the folder isn't user-writable) and raises a nested `ui::ConfirmDialog` **Replace /
-  Cancel** when overwriting. Notepad wired it up: **File > Open…** (`^O`) and **File > Save As…**
-  drive it; e2e `t_file_dialog`. The overwrite warning is **Replace / Keep Both / Cancel** — Keep
-  Both dedupes to `name (N).ext` (`fd_dedup`) rather than clobbering. **Retired (2026-06-06):** the
-  in-process modal looked *plain* (hand-drawn `fd_folder`/`fd_file` shapes, a re-implemented sidebar);
-  it has been **deleted** and replaced by the **Files app launched as a picker process** (#11 below) so
-  the dialog *is* Files (real `icons.h` icons, sidebar, breadcrumb, filter — like a Windows dialog
-  resembles Explorer).
-- [x] **File picker → Files-as-picker process (#11) — DONE (2026-06-06).** Retire `ui::FileDialog`; the system Open/Save
-  picker becomes the **Files app** run in a *picker mode* with parameters, returning the chosen path
-  to the caller. Mechanism extends the existing `/tmp/.open-doc` hand-off (`sys_open_with`): a request
-  temp file in, a result temp file out, caller notices the picker exited via `trywait()`. Gets Files'
-  whole design + feature set for free and can't visually drift from it. Full design (channels, SDK,
-  picker-mode layout, modality, tests, risks) → [`file-picker.md`](design/file-picker.md). Phases,
-  cheapest-first — **all (1)–(6) DONE (2026-06-06)**:
-  - [x] **(1) SDK + codec.** `struct pick_req` + the key=value codec (`pickreq_encode`/`pickreq_parse` +
-    the `ext`-filter `pickreq_ext_match`) live in pure header `user/lib/pickreq.h`; `sys_pick_begin` /
-    `sys_pick_poll` (caller) + `sys_pick_req` (Files) in `user/lib/sys.{h,c}`; `/tmp/.picker-req`
-    (key=value) in, `/tmp/.picker-res` (path or empty) out; begin unlinks stale res, poll wraps
-    `trywait()`. Host unit test `tests/unit/t_pickreq.c` (encode/parse round-trip + ext predicate).
-  - [x] **(2) Files picker mode.** Startup checks `sys_pick_req()` first; if set, a 560×420 dialog-shaped
-    window + a picker footer (Name field on save, Cancel / Open·Save), extension filter (dirs always
-    shown — `pickreq_ext_match`), ownership-greyed Save (`tos_may_write`+`getuid`), overwrite via the
-    existing `ui::ConfirmDialog` (Replace / Keep Both / Cancel), New Folder kept / Delete·Open-With
-    hidden, no menu bar. Writes the result + exits on pick/cancel/close. Logs `[files] picker …` /
-    `[files] picked …` / `[files] pick cancel`. Open + save both done.
-  - [x] **(3) Migrate notepad + tests.** `open_open()`/`save_as()` → `sys_pick_begin` (`start_pick`);
-    `on_tick` polls `sys_pick_poll`; the embedded `ui::FileDialog` is gone. New e2e `t_file_picker`
-    (save-with-rename + overwrite/Keep-Both in the picker window + open-mode round-trip);
-    `t_notepad_edit_save`/`t_notepad_undo`/`t_notepad_guard`/`t_app_menu` rewired via `_accept_save_picker`
-    to the `[files] picker/picked …` markers (read-back persistence checks kept).
-  - [x] **(4) Delete `ui::FileDialog`** + its `fd_*` glyph/dedup helpers — done; one picker, no dead code.
-  - [x] **(5) Modality polish (2026-06-06).** New `WIN_MODAL` flag: twm keeps the picker topmost +
-    focused, draws a full-screen dim scrim behind it (reusing the Launchpad scrim path) and **swallows
-    input outside it** (mouse clicks + the focus-stealing keys Alt-Tab / clipboard / Spotlight / Launchpad),
-    so the windows behind are inert. Implemented **without** `wininfo.parent` — a system-wide scrim needs no
-    kernel ABI/pid-mapping change and gives the same modal feel (everything behind dims, not just the
-    caller). `ui::Window::modal` → flag; Files sets it in picker mode. e2e: `t_file_picker` now asserts a
-    click on the window behind is swallowed; screenshot-verified (parent dimmed, dialog lit on top).
-  - [x] **(6) Hardening (2026-06-06).** Temp files are now pid-namespaced — `/tmp/.picker-<pid>.req/.res`
-    keyed by the *caller's* pid, so two apps can have a picker open at once without clobbering. Added
-    `SYS_GETPID`/`SYS_GETPPID` (kernel `sched_getpid`/`sched_ppid`, ulib `getpid`/`getppid`): the caller
-    names the files from `getpid()`, the picker (its fork+exec child) derives the same pid from `getppid()`.
-    Path-building centralised in `sys.c` (`picker_path`) + a new `sys_pick_result()` so Files no longer
-    hardcodes the result path. All picker e2e (`t_file_picker`/`t_notepad_*`/`t_app_menu`) green.
-- [x] **Notepad redesign: tabs + session autosave (#5).** **DONE** — Notepad is now a tabbed editor.
-  - [x] **Close UX (refined per use)** — closing the **window** never prompts: the session autosave
-    already holds every tab + its unsaved contents, so `on_close` just flushes the latest draft and
-    exits (a relaunch restores everything). Closing a **tab** (the tab's × or **File > Close Tab ^W**)
-    is what asks about unsaved work — a dirty tab raises the modal **Save / Discard / Cancel** sheet
-    (`ui::ConfirmDialog`); **Discard** drops it, **Save** on a named tab writes to its path then
-    closes, and **Save** on a never-saved tab opens the picker to choose where (the tab closes once
-    the pick succeeds). Explicitly closing the *last* tab clears the draft store so a relaunch starts
-    fresh. e2e `t_notepad_guard`.
-  - [x] **Tabs** — the top filename field is gone; each note is a tab in a `TabBar` strip (active
-    highlighted, dirty shows a dot, each has a × to close) + a trailing **`+`** (also **File > New /
-    ^N**); switch/close per tab; one shared `editor` swaps the active tab's text in/out (a `loading`
-    flag stops a load from dirtying the tab). The active tab shows the note's name. *(The window
-    title bar stays "Notepad" — there's no win-set-title syscall yet; the tab is the per-note name.)*
-    *(Per-tab undo history isn't preserved across a switch — acceptable for v1.)* Screenshot-verified.
-  - [x] **Session autosave** — a new `Window::on_tick()` hook drives a periodic draft (~1.8 s, only
-    when the session changed) of every tab's text + the layout (open tabs, active one, per-tab
-    name/dirty, the untitled counter) to `/Users/user/.cache/notepad/` (`session` + `tab<i>`). On a
-    bare relaunch Notepad rebuilds the whole session — even never-saved notes. Two-boot e2e
-    `t_notepad_session`.
-  - [x] **Save / Open flow** — the reusable picker is wired as **File > Open…** (`^O`) / **File >
-    Save As…**. **Save / ^S** writes a named note straight to its path; a **never-saved** note opens
-    the picker (rooted at `~/Documents`) so you always choose where the first time — a draft sitting
-    in the autosave store doesn't count as "saved". e2e `t_notepad_edit_save` (Save→picker→accept) +
-    `t_notepad_undo` (first save→picker, later saves write direct). → [`ui.md`](design/ui.md)
+- [x] **File picker = Files-as-picker (#11) — DONE (2026-06-06).** The system Open/Save dialog
+  *is* the Files app launched in picker mode: `pickreq.h` request codec (unit `t_pickreq`) over
+  pid-namespaced `/tmp/.picker-<pid>.req/.res` temp files (`sys_pick_begin/poll/result`; new
+  `SYS_GETPID`/`SYS_GETPPID`), dialog chrome (Name field on save, Cancel / Open·Save,
+  ownership-greyed Save, Replace / Keep Both / Cancel overwrite), and real modality — a new
+  `WIN_MODAL` flag has twm keep it topmost, dim everything behind a scrim, and swallow outside
+  input. The earlier in-process `ui::FileDialog` toolkit modal was built first, looked plain, and
+  was **deleted** in favour of this. Notepad's Open… / Save As… drive it. e2e `t_file_picker`
+  (+ the notepad suite rewired through the picker). → [`file-picker.md`](design/file-picker.md)
+- [x] **Notepad redesign: tabs + session autosave (#5) — DONE.** A tabbed editor (dirty dot, ×,
+  trailing +, ^N/^W) over one shared editor that swaps per-tab text; a toolkit `on_tick()` hook
+  drives a debounced session autosave (every tab + the layout to `~/.cache/notepad/`), so a
+  relaunch restores the whole session — closing the **window** never prompts; closing a dirty
+  **tab** raises Save / Discard / Cancel, and Save on a never-saved note opens the picker. e2e
+  `t_notepad_guard` / `t_notepad_session` / `t_notepad_edit_save`. → [`ui.md`](design/ui.md)
 
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
 toolkit app for free. **Done:** blink caret, drag-select, Ctrl+A, double-click word-select,
-Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select, **undo/redo
-(Ctrl+Z / Ctrl+Y)**. *(2026-06-06: fixed Ctrl+Backspace closing Notepad — the kernel collapsed it
-to the bare ^W byte 0x17, which the compositor matched as Notepad's "Close Tab ^W" accelerator;
-it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t_notepad_wordedit`.)*
-**Left:**
-- [ ] **I-beam cursor over selectable text.** Blocked on an app→compositor cursor-shape protocol
-  (twm composites the cursor and doesn't know widget regions).
+Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select, undo/redo
+(Ctrl+Z / Ctrl+Y), and the **I-beam cursor over every text field** (2026-06-10, via the
+`SYS_WIN_SETCURSOR` cursor-hint protocol + `Widget::cursor_at` — was blocked on exactly that
+protocol). **Left:**
 - [ ] **Primary selection + cross-app text drag.** Blocked on the DnD protocol.
 
 ### Input / event foundations
@@ -222,6 +117,15 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 - _(nothing queued right now)_
 
 ### Known issues (to investigate)
+- ⚠ **One-off kernel #GP at `isr_restore`'s `iretq` (2026-06-11).** Seen once while typing in
+  the shell right after `tests/repro_jobs.py`'s 40-file copy jobs **with a QEMU monitor
+  `stop`/`cont` freeze around the mid-copy screenshot**: `#GP vector=13 err=0xea9c
+  rip=isr_restore` — i.e. an iretq into a corrupted/garbage interrupt frame, kernel halted.
+  Not reproduced since (same workload passed clean both **without** stop/cont and on a retry
+  **with** it), so it's intermittent; the repro no longer uses stop/cont. If it recurs, suspect
+  the frame/stack handoff in `isr_dispatch`'s return path under preemptible syscalls + heavy
+  ATA PIO, or timer behaviour across a vm pause — not the Files app (userspace can't corrupt a
+  kernel frame legally).
 - ⚠ **Reported desktop freeze on a cross-pane click-drag in Files split view (2026-06-09).** A user
   reported that, in split view, pressing-and-holding inside one pane and dragging onto the other pane
   freezes the whole desktop (input stops everywhere, not just Files — "the Files bug nukes the whole
@@ -240,6 +144,10 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
   real mouse self-heals), so harness "input stalls" after a drag aren't trustworthy evidence. Repro
   scaffold kept at `tests/repro_split_drag.py`. To investigate: instrument twm's button/`cdrag` state
   across a client drag and guarantee input servicing can't wedge on a malformed button sequence.
+  **Update (2026-06-10):** the press-vs-hover fix (hover posting frozen while a button is held +
+  an explicit release packet to the `cdrag` owner — see the changelog) reworked exactly this
+  button/`cdrag` machinery; if the freeze is ever seen again, re-test on a build with that fix
+  first.
 
 ---
 
@@ -247,6 +155,31 @@ it now emits `ESC[127~`, forwarded to the app and decoded to word-delete. e2e `t
 
 Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
 
+- **Background jobs + conflict prompts §12 and recursive search §5 (2026-06-11).** Cross-pane
+  copy/move now runs as a **chunked job on the window tick** (`Window::on_tick` → 4 items/tick
+  over a pre-collected tree list): the status bar shows "Copying k of n..." plus a 2px accent
+  **permille band**, Esc cancels, and a colliding destination raises **Replace / Keep Both /
+  Skip** (the shared `ConfirmDialog`; `[files] job conflict/start/done/skip/cancel`) before
+  anything copies — moves carry tags and journal OP_MOVE for undo. **File ▸ Find** (^F) arms
+  the **filter bar — which existed but was never wired or even add()ed to the window** — and
+  Enter walks the tree from the current folder as the same kind of job (2 dirs/tick, dotfiles +
+  `.app` skipped), streaming hits into the view with "in <dir>" status and double-click
+  jump-to-hit (`[files] search start/done/open/close`). En route: the **`crumbend` e2e canary
+  clamped inside the breadcrumb bar** (a long path pushed the click target past the bar's edge
+  → dead clicks) and **`listrect` re-emitted when the filter bar opens/closes** (it shifts the
+  list 29px). Verified: units + one disposable boot (`tests/repro_jobs.py`) + 4 screenshots
+  (conflict card, frozen mid-copy band, results, jump); smoke 13/13.
+- **Gallery view §1 (2026-06-10).** View ▸ as Gallery (item 7, appended; `[files] view
+  gallery`): a full-size decoded preview (cached one image at a time) over a filmstrip of §11
+  thumbnails — wheel pans, ←/→/Enter + double-click work, round-trips through §2 view memory;
+  split view forces list. Disposable boot `tests/repro_gallery.py` + screenshots.
+- **Thumbnails + Quick Look §11; lone-Esc toolkit fix (2026-06-10).** Real 96px previews for
+  `.argb` images (pure `thumb.h` fit + box-average scale, unit `t_thumb`; eager per-folder RAM
+  cache) in list rows, icon tiles and the gallery; **Space** toggles a Quick Look scrim+card
+  (image fitted / text head / icon+summary), any click or Esc dismisses. Found en route: the
+  toolkit **never delivered a bare Esc keypress** (the ANSI escape-sequence latch ate it);
+  `ui::Window::run` now flushes a lone Esc after two idle drains as `UK_ESC` — fixes every
+  in-app Esc binding OS-wide. Disposable boot `tests/repro_quicklook.py` + screenshots.
 - **Tags / labels §10 + a scrolling sidebar (2026-06-10).** Finder-style colored tags on a
   `~/.tags` sidecar (no fs xattrs): pure codec `tagstore.h` (get/set/move; unit `t_tagstore`),
   carried across rename / move-to-trash / Put Back. Context-menu **"Tags..."** opens a
@@ -270,416 +203,167 @@ Terse one-liners, newest first; the prose lives in git history + PROJECT.md.
   sharpened in design/testing.md: features verify with **units + one disposable ad-hoc
   boot + screenshot**; new permanent e2e only for a critical journey or a pinned bug, and
   new in-OS checks go into `selftest` first.
-- **Cursor hints + the press-vs-hover compositor bug; folder sizes + working column resize
-  (2026-06-10).** Two user asks ("folders should show a Size too — that's why .apps sort but show
-  nothing" and "make the header dividers actually draggable, with a cursor change, as a global UI
-  thing") turned into three layers of work. **(1) Root-caused a real twm input bug:** on the press
-  frame the hover block saw `!down` go false, recomputed `hov=-1` and posted the **hover-leave packet
-  (0xfff,0xfff,0)** to the window — which the toolkit reads as a **button-up**, so a divider grab was
-  committed + focus restored to the list before the first WEV_MOUSE_DRAG arrived (the drag then went
-  to the list, not the header). Fix: **hover posting is frozen while a button is held**, and the
-  release edge now posts an **explicit btn-0 packet to the `cdrag` owner** (previously the
-  leave/enter pair was, by accident, the app's only up signal). Regression probe kept as
-  `tests/repro_hdr_drag.py`. **(2) Global cursor hints (SYS_WIN_SETCURSOR, syscall 70):** an app
-  declares its client-area cursor (`win_setcursor(id, CUR_*)`, ids shared in `syscall.h`, pixmaps
-  stay twm-only in `cursors.h`); the kernel stores it per window, `wm_windows` snapshots carry it,
-  twm's context-cursor block shows it over that client (and **keeps the drag owner's hint live
-  mid-drag**) — the hardcoded `title=="Terminal"` I-beam hack is gone (term now declares
-  `CUR_IBEAM` itself). Toolkit side: `ui::Widget` grew `cursor` + `cursor_at(x,y)`; `dispatch_hover`
-  relays the hot widget's shape (deduped) — so **every TextField OS-wide shows an I-beam** with zero
-  app code, and `ColumnHeader::cursor_at` returns **`CUR_RESIZE_WE` over a divider's grab zone**
-  (the resize affordance is the ⇔ cursor per user preference — the hover highlight was dropped).
-  **(3) Files:** `load_dir` now fills **directory entries' `size` with the recursive `dir_usage`
-  byte count** (so folders + `.app` bundles render a real Size cell — only the synthetic ".." dashes —
-  and size-sort is meaningful for them), and **View ▸ Info (item 6, ^I, checkmark)** joins the menu
-  (the e2e closes the inspector so colfit has slack to actually widen Name). e2e: `t_files_details`
-  extended — divider drag asserts `[files] colw` + a ≥40px wider fitted Name (screenshot
-  `tos_colresize.ppm` shows the ⇔ cursor on the divider), then with **Folders First off** a
-  size-desc sort must put a stuffed subfolder on top purely by its recursive bytes. The 8 hardcoded sidebar rows became a real
-  **sectioned Places list**: **Favorites** (the user's pins) + **Locations** (Applications / System /
-  Computer, the volume row carrying an inline **used-space bar** off statfs), each section **collapsing
-  on a header click** (disclosure caret), plus **Trash pinned at the bottom** (its own glyph + separator).
-  Favorites are **registry-backed** (`places.n` + `places.<i>` = `"Label|path"`; first run seeds the
-  classic five) and **editable**: a folder's context menu gains **Add to Places** (label = the folder
-  name) and a right-click on a pin offers **Remove from Places** — both persist via `reg_save`. The
-  codec + list ops are a pure host-tested header (`places.h`: encode/decode/clamps, label-from-path,
-  dedupe add, remove; unit `t_places`, 24 checks); the Sidebar widget grew a growable item store +
-  the shared visible-row model (`vrows`/`vrow`) so draw and hit-test agree, and the app dumps row
-  click-centres for the harness (`[files] siderow …`, deduped by signature). e2e `t_files_places`
-  (pin via ctx menu → row appears + navigates → collapse/expand Favorites → the pin survives in the
-  on-disk registry → remove via right-click; screenshot). Canaries `[files] places add/del`,
-  `[files] sidesect`, `[files] sidetrash`. Caught en route: `ugfx_fill_a` with an alpha-less `RGB()`
-  token blends to nothing — the section carets draw with opaque `ugfx_fill`. *(Still TODO from §7:
-  drag-reorder + pin rename — both want DnD/inline-field plumbing — and eject/network when removable
-  volumes exist.)*
-- **Files undo / redo of file ops §12 (2026-06-10).** **Edit ▸ Undo / Redo** (items 8/9, Ctrl+Z/Y)
-  invert/re-apply the last file operation. A pure host-tested **journal** (`undojournal.h`, unit
-  `t_undojournal`) holds `{type, a→b, isdir}` records (cap 24, oldest evicted; a new push truncates
-  the redo tail); the app interprets the five op types with existing FS helpers: **RENAME** (rename
-  back/forth), **MOVE** (rename b→a / a→b), **CREATE** New Folder/File (undo = rmrf, redo = recreate),
-  **COPY** Duplicate/Paste/Copy-across (undo = rmrf the copy, redo = `copy_tree` again), **TRASH**
-  (undo = move back + drop the trashinfo line, redo = re-trash). Recording hooks in make_folder/
-  make_file/duplicate_sel/commit_rename/move_to_trash/paste/copy_to_other; menu items gray via the
-  journal's can-undo/can-redo (`menu_enable_local`). Bumped the menu-protocol caps **`WINMENU_ITEMS`
-  / twm `MENU_MAXI` 8 → 12** (the Edit menu hit ten items; kernel copies `struct winmenu` by value so
-  both sides stay size-consistent). e2e `t_files_undo` (Duplicate → undo removes the dup → redo
-  re-copies → Trash → undo restores; on-disk `ls` confirms both files; screenshot of the open menu
-  with Undo lit + Redo grayed). Canaries `[files] undo <type> <path>` / `[files] redo <type> <path>`.
-  The shared `_files_menu_open` e2e helper also got a real fix: it took the **first** `[twm] appmenu`
-  serial match for a tile name, which collides when another app declares the same menu name (the
-  Terminal also has an "Edit" — so it clicked the Terminal's stale tile x and the wrong menu opened);
-  it now takes the **last** match (the focused app's most recent bar repaint) and confirms the open
-  count-based. All 13 `t_files*` green in one batch after the fix. *(Not journaled: pane-2 ops as the
-  destination of a Move, multi-step batches as one entry — future polish with §17 background jobs.)*
-- **Files details / column view §1 (2026-06-09).** The list mode is now a real **details view**: a
-  **column header** — **Name | Kind | Size | Date Modified** — sits above the rows, each row drawing its
-  cells aligned to the header. Header cells **sort on click** (a fresh column goes ascending; re-clicking
-  the active column flips direction, shown by a ▲/▼ **caret**), and the Name/Kind/Size columns are
-  **resized by dragging the divider on their right edge** (Date fills the remainder). Column widths are
-  remembered **per folder** alongside mode/sort/zoom. New **Date Modified** sort key (`FSORT_DATE`, off
-  each entry's `dirent.mtime`). The width math is a pure host-tested header (`colfit.h`, unit `t_colfit`);
-  `filesort.h`/`viewmem.h` grew the date key + the three column widths (their unit suites updated, and the
-  codec stays backward-compatible with old 5-field registry values). New widget `ColumnHeader`
-  (`fileswidgets.h`) is focusable only so a divider drag's `WEV_MOUSE_DRAG` reaches it; the app restores
-  list focus after a click/drag. e2e `t_files_details` (header geometry + screenshot + click-to-sort by
-  Size↔asc/desc, Date, Name); canaries `[files] hdr …`, `[files] sort date …`, `[files] colw …`. The
-  header shows only in list mode (hidden in icons / split / picker, which keep the lean single-column rows).
-  Still TODO: a **Sort menu "Date Modified"** item (skipped to avoid shifting the Sort menu's e2e indices —
-  the Date header is the affordance), per-column **grouping**, and column **add/remove**.
-- **Files split / dual pane §4 (2026-06-09).** **View ▸ Split View** shows a second pane beside the
-  primary one (its own `path2`/`ents2`/selection), with a splitter + a blue **active-pane accent**
-  (`SplitDecor`). The second pane is a lean navigable list (`..` + double-click to drill); **Copy to
-  Other Pane** / **Move to Other Pane** (Edit menu + the file context menu, enabled only in split) send
-  the active pane's selection into the other pane's folder via `copy_tree` + a dedupe. Details pane
-  hides in split; clicking either pane sets the active one. e2e `t_files_split` (toggle on, drive pane
-  2 to a sibling folder, copy a file across — confirmed on disk — screenshot two panes). Canaries
-  `[files] split`, `[files] pane2 cd`, `[files] copy-across`, `[files] listrect2`. Menu adds: View ▸
-  Split View (item 5), Edit ▸ Copy/Move to Other Pane (items 6/7). (A full symmetric `FileView`
-  extraction — breadcrumb/rename/icons per pane + drag-between — is the follow-up.) The shared e2e
-  `_files_nav` helper was also **hardened to retry the whole open→type→Enter as a unit** (Esc-then-reopen
-  on a dropped keystroke, the fresh field's select-all discarding any garbage) — under host load either
-  the crumb click or the commit Enter could be dropped, which had been flaking ~⅓ of the nav-heavy runs;
-  all 11 `t_files*` now pass back-to-back.
-- **Files tabs §4 (2026-06-09).** One window, many folders: a **tab strip** of folder pills under the
-  location bar (hidden with a single tab), each tab keeping its **own folder + back/forward history +
-  selection**. The live `path`/`hist` are the active tab's working copy; switching shuttles them to/from
-  a growable heap `tabs` store (no fixed tab ceiling). **New Tab** (File menu / Ctrl+T) and the strip's
-  **+** add one; clicking a pill switches (restoring that tab's folder); the pill's **×** (or File ▸ Close
-  Tab / Ctrl+W) closes it; **Open in New Tab** (folder context menu) spawns one at that folder; the pill
-  relabels as you navigate within the tab. New widget `TabStrip` (fileswidgets.h) + pure title helper
-  `tabtitle.h` (unit `t_tabtitle`, 8 checks); e2e `t_files_tabs` (new / switch-restores-folder /
-  open-in-new-tab / close, screenshot-verified two pills + × + ＋). Canaries `[files] tab new|sel|close`
-  + `[files] tabbar/tabpos`. Context-menu reindex: the plain-folder menu gained **Open in New Tab** at
-  index 1 (shifted Duplicate/Delete; updated `t_files_trash` + `t_files_newdup`).
-- **Files rich Get Info / Properties §8 (2026-06-09).** Selecting an item now fills the **Details
-  pane** with a real Get Info: a folder's **recursive size + item count** (a `du`-style `dir_usage`
-  walk — heap-listed per level like `copy_tree`; the volume is tiny so it runs synchronously on
-  selection), the **Owner** (System / You, from `fstat.owner`), a gold **"Read only" lock badge** for
-  system-owned items (the `tos_may_write` rule), and **Opens with** (the type's default app from
-  `open.default.<ext>`). The selected folder's size also shows on the status bar; **Ctrl+I** (and the
-  toolbar Info button) toggle the pane. Pure helpers live in `user/lib/fileinfo.h` (owner label / lock
-  rule / singular-plural item count — unit `t_fileinfo`, 14 checks); e2e `t_files_getinfo` stages a
-  nested tree and a system folder, asserting the `[files] sel <name> (ro|rw) owner=<uid> size=<n>
-  [items=<n>]` canary, screenshot-verified for both a user folder ("34 B, 3 items", Owner: You) and a
-  locked one (/Apps "Read only", Owner: System).
-- **statfs / free-space §6/§7 (2026-06-08).** New `SYS_STATFS` (69) fills a `struct statfs`
-  (total/free/block bytes) from the tosfs sector bitmap. Surfaced two ways: the shell's **`df`**
-  (Size/Used/Free) and a **"<n> free"** footer in the Files **Details pane** (the status bar's
-  own bottom-right corner sits under the dock, so the always-visible Details column is the better
-  home). 1024-based formatting is a pure header `humansize.h` (unit `t_humansize`, rounds tenths);
-  e2e `t_statfs` drives `df` + a post-write re-check.
-- **tosfs file timestamps (mtime) §8 (2026-06-08).** Every tosfs entry now carries a packed
-  modification time — a FAT-style 32-bit `year:12 month:4 day:5 hour:5 min:6` (`kernel/fstime.h`,
-  pure + unit `t_fstime`), stamped from the CMOS RTC (`rtc_now`) on file create/overwrite + mkdir,
-  and on files shipped in the image by the host `mkfs` (build time). Plumbed through `struct
-  tosfs_ent` → `struct dirent` (readdir) + `struct fstat` (stat) → the Files **Details pane**, which
-  now shows a **Modified** line (screenshot-verified: the minute tracks the menu-bar clock). FS
-  regression (struct grew): `t_fs_crud` / `t_fs_persist` / `t_many_files` / `t_files_*` all green.
-- **Files Duplicate + New File §12 + tosfs 0-byte files (2026-06-08).** **Duplicate** (Edit ▸ Duplicate /
-  Ctrl D / context menu) clones the selected item beside itself as Finder-style **"X copy"** — files copy
-  their bytes, folders copy **recursively** (new `copy_tree`, heap-allocates each level's listing so deep
-  trees don't blow the stack). **New File** (File ▸ New File / context menu) drops an empty `newfile.txt`
-  and enters rename like New Folder. tosfs couldn't hold empty files — `close_l` discarded any 0-byte write —
-  so it now writes a real **0-byte entry** (start_lba 0 / size 0, like a dir); New File / truncate-to-empty /
-  copying an empty file all persist now. Pure name codec `dupname.h` (unit `t_dupname`, 12 checks), e2e
-  `t_files_newdup` (New File + file Duplicate + recursive folder Duplicate, all confirmed on disk). Menu
-  reindex: File = New Folder / **New File** / Refresh / Empty Trash; Edit gains **Duplicate**; the folder
-  context menu gains Duplicate (shifted t_files_trash's Delete/Empty-Trash indices, updated to match).
-- **Userspace de-clutter — split the big single files into modules (2026-06-08).** The Makefile now
-  compiles + links **every `.c`/`.cpp` in an app's dir** (a generic `app_objs` wildcard rule), so an app
-  can outgrow one file just by dropping another source in. **twm** (was 2325 lines) is now `twm.c` (core:
-  shared state, helpers, desktop, window draw, compose, launch/focus, the event loop) plus a shared
-  `twm.h` contract and the feature files **`bar.c`** (top menu bar + status glyphs), **`dock.c`** (dock +
-  /Apps catalog), **`controlcenter.c`**, **`notify.c`** (toast + notification center), **`switcher.c`**
-  (Alt-Tab), **`menubar.c`** (dropdowns). Panel hit-tests/animation the event loop used to inline now live
-  with their feature (`menu_row_at`, `nc_clear_hit`, `toast_click`, `toast_tick`, `switcher_tick`). **Files**
-  (was 1570) split its custom widgets into header `fileswidgets.h` and the path/icon helpers into
-  `filesutil.{h,cpp}`, leaving `files.cpp` as `FilesApp` + `app_main`. **ui.cpp** (was 785) pulled the
-  330-line `TextField` widget into `ui_textfield.cpp` (the shared `TF_BLINK` caret period moved to `ui.h`).
-  No behaviour change: full unit suite + the e2e suite stay green (the 3 "did-not-launch" flakes pass in
-  isolation, per the known host-load flakiness). Kernel stays single-file by design; `ugfx.c`/`term.c`/
-  `shell.c`/`notepad.cpp` left as cohesive single units (notepad's `TabBar` is back-coupled to its app
-  struct, so it doesn't split cleanly).
-- **Files Trash §9 — move / Put Back / Empty (2026-06-08).** Delete in a normal folder now **moves** the
-  item to `~/.Trash` via `rename_()` (works for whole directories too) instead of destroying it, recording
-  its origin in a hidden `~/.Trash/.trashinfo` sidecar so the context-menu **Put Back** restores it where
-  it came from; **Empty Trash** (File menu + Trash context menu) and Delete-inside-the-Trash remove for
-  good. New **Trash** sidebar place; **dotfiles are now hidden** from listings (so `.Trash`/`.trashinfo`
-  don't show) and excluded from the status "N items" count (new `nshown`). Pure sidecar codec
-  `trashinfo.h` (host unit `t_trashinfo`, 24 checks); e2e `t_files_trash` drives the full move → Put Back →
-  Empty round-trip and confirms each move on disk from the shell. Two reusable e2e canaries landed:
-  `[files] listrect x y w rowh` (click a list row) and `[files] ctxmenu px py rowh n` (click a context-menu
-  item, clamp-aware), plus a `rightclick` harness helper (twm already forwards the right button as a
-  context request). Screenshot-verified (sidebar Trash, two trashed folders, Put Back/Delete Immediately/
-  Empty Trash menu).
-- **Exit-fullscreen no longer leaves black areas (2026-06-06).** Toggling a toolkit app out of
-  fullscreen left most of the window black until you hovered around to repaint it piecemeal. Cause:
-  the `WEV_RESIZE` handler in `ui::Window::run` only set `dirty`, not `dmg_full` — so if any other
-  event in the same drain (e.g. a hover while the cursor crossed the shrinking window) set a *partial*
-  damage rect, `redraw()` did a partial paint and the rest of the freshly-resized surface stayed
-  stale/black. **Fix:** the resize handler now calls `invalidate()` (whole surface). Fixes every
-  toolkit app's fullscreen restore, not just Files. Screenshot-verified (clean full render, cursor
-  parked off-window).
-- **Picker hardening — pid-namespaced temp files + `getpid`/`getppid` (2026-06-06).** The picker handoff
-  files moved from the fixed `/tmp/.picker-req/.res` to `/tmp/.picker-<callerpid>.req/.res`, so concurrent
-  pickers from different apps can't clobber each other. Added `SYS_GETPID`/`SYS_GETPPID` (67/68) with
-  `sched_getpid`/`sched_ppid` in the kernel and `getpid`/`getppid` in ulib: the caller names the files from
-  its own pid, and the picker — a `sys_launch` (fork+exec) child of the caller — derives the *same* pid via
-  `getppid()`. Naming centralised in `sys.c` `picker_path()`; new `sys_pick_result()` retires the hardcoded
-  path in Files' `finish_pick`. Completes the picker (#11) track. All picker e2e green.
-- **Picker modality — `WIN_MODAL` (2026-06-06).** The Files Open/Save picker is now a real modal: a new
-  `WIN_MODAL` window flag (kernel `syscall.h`, SDK `ui::Window::modal`, set by Files in picker mode) tells
-  twm to keep it topmost + focused, paint a full-screen dim scrim behind it (the `modal_slot()`/`modal_on`
-  path next to the Launchpad overlay), and **swallow input outside it** — mouse clicks on other windows/bar/
-  dock and the focus-stealing keys (Alt-Tab, clipboard, Spotlight, Launchpad) are dropped so the dimmed
-  windows are inert. Deliberately skipped `wininfo.parent`: a system-wide scrim needs no kernel ABI change
-  and looks better (everything behind dims). e2e `t_file_picker` gained a click-behind-is-swallowed
-  assertion; `t_launchers_exclusive`/`t_alt_tab` still green. Screenshot-verified.
-- **Files per-folder view memory §2 (2026-06-06).** Each folder now remembers its view mode + sort +
-  zoom across navigations, stored in the registry as one value per path (`view.<path>`, hashed past
-  `REG_KEYMAX`), with a stable `view.default` for never-visited folders. Restored in `load_path()`,
-  persisted in `set_view`/`set_sort`/`set_zoom`. The on-navigate menu-check re-sync was batched into a
-  **single `win_setmenu`** (`sync_menus()` + `menu_check_local`) — the old per-item `menu_set_checked`
-  re-published 7×/nav and raced menu-open clicks. Pure codec `viewmem.h` (unit `t_viewmem`, 22 checks),
-  e2e `t_files_viewmem`, logs `[files] viewmem <path> <mode> zoom <z>`. Screenshot-verified (icon view
-  restored, clean render).
+- **Cursor hints + the press-vs-hover compositor bug; folder sizes + column resize (2026-06-10).**
+  Root-caused a real twm input bug: on the press frame the hover block posted the hover-leave
+  packet (0xfff,0xfff,0), which the toolkit reads as a **button-up** — so a widget grab (the
+  header divider) was cancelled before the first `WEV_MOUSE_DRAG` arrived. Fix: hover posting is
+  frozen while a button is held, and the release edge posts an explicit btn-0 packet to the
+  `cdrag` owner (the leave/enter pair had been, by accident, the app's only up signal). Probe
+  kept: `tests/repro_hdr_drag.py`. On top, **global cursor hints**: `SYS_WIN_SETCURSOR` (70) +
+  per-window snapshot plumbing; twm shows the hint over that client (held live mid-drag); the
+  toolkit's `Widget::cursor`/`cursor_at(x,y)` relays the hot widget's shape — every TextField
+  OS-wide shows an I-beam (term's hardcoded title hack removed), the header divider shows **⇔**
+  (the resize affordance; the hover highlight was dropped per user preference). And in Files:
+  `load_dir` fills directory sizes via the recursive `dir_usage` walk (real Size cells + size
+  sort for folders/.apps), and **View ▸ Info** (item 6, ^I) toggles the inspector. e2e
+  `t_files_details` extended (divider drag widens Name ≥40 px; size-desc ranks a stuffed folder
+  on top; screenshot with the ⇔ cursor).
+- **Editable Places sidebar §7 (2026-06-10).** The 8 hardcoded sidebar rows became a sectioned
+  list: **Favorites** (registry-backed editable pins — pure `places.h` codec, unit `t_places`;
+  context-menu **Add to / Remove from Places**) + **Locations** (the volume row carries a statfs
+  used-space bar), collapsible section headers, Trash pinned at the bottom. Shared `vrows`/`vrow`
+  row model so draw + hit-test agree; rows dumped for e2e (`[files] siderow`, deduped). e2e
+  `t_files_places` (pin → navigates → collapse/expand → survives in the on-disk registry →
+  remove; screenshot). Still open: drag-reorder + pin rename (want DnD / inline-field plumbing).
+
+- **Files undo / redo of file ops §12 (2026-06-10).** Edit ▸ Undo / Redo (Ctrl+Z/Y) invert the
+  last file op via a pure journal (`undojournal.h`, unit `t_undojournal`; cap 24, a push
+  truncates the redo tail) interpreting RENAME / MOVE / CREATE / COPY / TRASH with the existing
+  fs helpers; the menu items grey via can-undo/can-redo. Menu caps `WINMENU_ITEMS`/`MENU_MAXI`
+  8 → 12. e2e `t_files_undo`; canaries `[files] undo|redo <type> <path>`. Also fixed
+  `_files_menu_open` clicking another app's same-named menu tile (take the *last* `[twm] appmenu`
+  match, not the first).
+- **Files details / column view §1 (2026-06-09).** List mode is a real details view: a
+  Name | Kind | Size | Date Modified header — click sorts (▲/▼ caret, re-click flips), dividers
+  drag-resize (Date fills the rest), widths remembered per folder; new `FSORT_DATE` off
+  `dirent.mtime`. Pure width math `colfit.h` (unit `t_colfit`); `filesort.h`/`viewmem.h` extended
+  compatibly. e2e `t_files_details`. Left: a Sort-menu Date item, grouping, column add/remove.
+- **Files split / dual pane §4 (2026-06-09).** View ▸ Split View: a second lean pane (its own
+  path/listing/selection), splitter + active-pane accent, **Copy / Move to Other Pane** (Edit +
+  context menus, split-only) via `copy_tree` + dedupe. e2e `t_files_split`; canaries
+  `[files] split / pane2 cd / copy-across / listrect2`. The shared `_files_nav` e2e helper now
+  retries the whole open→type→Enter as a unit (was the top flake in nav-heavy runs).
+- **Files tabs §4 (2026-06-09).** A tab strip of folder pills (each tab keeps its own folder +
+  history + selection; hidden with one tab): New Tab ^T / the strip's + / Open in New Tab
+  (context menu); the pill's × or ^W closes; relabels on navigate; growable heap store. `TabStrip`
+  widget + pure `tabtitle.h` (unit `t_tabtitle`); e2e `t_files_tabs`; canaries
+  `[files] tab new|sel|close` + `tabbar/tabpos`.
+- **Files rich Get Info / Properties §8 (2026-06-09).** Selecting fills the Details pane with a
+  folder's recursive size + item count (the `du`-style `dir_usage` walk), the Owner (System /
+  You), a gold "Read only" lock badge (the `tos_may_write` rule), and Opens-with; Ctrl+I toggles
+  the pane. Pure `fileinfo.h` (unit `t_fileinfo`); e2e `t_files_getinfo` (screenshots: a user
+  folder + locked /Apps); canary `[files] sel <name> (ro|rw) owner=<uid> size=<n> [items=<n>]`.
+- **statfs / free-space §6/§7 (2026-06-08).** New `SYS_STATFS` (69) off the tosfs sector bitmap;
+  surfaced as the shell's `df` and a "<n> free" Details-pane footer. Pure formatter `humansize.h`
+  (unit `t_humansize`); e2e `t_statfs`.
+- **tosfs file timestamps (mtime) §8 (2026-06-08).** Every entry carries a packed FAT-style
+  mtime (`kernel/fstime.h`, unit `t_fstime`), stamped from the CMOS RTC on create/write/mkdir
+  (+ build time via mkfs), plumbed through `dirent`/`fstat` to the Details pane's Modified line.
+- **Files Duplicate + New File §12 + tosfs 0-byte files (2026-06-08).** Duplicate clones
+  Finder-style "X copy" (folders recursively via the new `copy_tree`); New File drops an empty
+  `newfile.txt` and enters rename — which needed tosfs to persist real **0-byte entries**
+  (`close_l` used to discard empty writes). Pure `dupname.h` (unit `t_dupname`); e2e
+  `t_files_newdup`.
+- **Userspace de-clutter — the big single files split into modules (2026-06-08).** The Makefile
+  now compiles every `.c`/`.cpp` in an app's dir; twm (2325 lines) became `twm.c` + `twm.h` +
+  `bar.c`/`dock.c`/`controlcenter.c`/`notify.c`/`switcher.c`/`menubar.c`; Files split out
+  `fileswidgets.h` + `filesutil.{h,cpp}`; `TextField` moved to `ui_textfield.cpp`. No behaviour
+  change (suites green).
+- **Files Trash §9 — move / Put Back / Empty (2026-06-08).** Delete moves to `~/.Trash`
+  (`rename_`, whole dirs too) with a `.trashinfo` origin sidecar (pure `trashinfo.h`, unit
+  `t_trashinfo`); Put Back restores to the origin, Empty Trash / delete-inside-Trash remove for
+  good; dotfiles hidden from listings + counts. e2e `t_files_trash`; the reusable
+  `[files] listrect`/`ctxmenu` canaries + the `rightclick` harness helper landed here.
+- **Exit-fullscreen no longer leaves black areas (2026-06-06).** `WEV_RESIZE` only set partial
+  damage, so any same-drain hover made `redraw()` partial-paint the freshly resized surface; the
+  resize handler now `invalidate()`s the whole surface (fixes every toolkit app's restore).
+- **Picker hardening + modality (2026-06-06).** Pid-namespaced `/tmp/.picker-<pid>.req/.res`
+  (new `SYS_GETPID`/`SYS_GETPPID` 67/68; naming centralised in `sys.c`) so concurrent pickers
+  can't clobber each other; and `WIN_MODAL` — twm keeps the picker topmost + focused, dims
+  everything behind a full-screen scrim, and swallows input outside it (no `wininfo.parent`
+  ABI change needed). e2e `t_file_picker` + `t_launchers_exclusive`/`t_alt_tab` green.
+- **Files per-folder view memory §2 (2026-06-06).** View mode + sort + zoom per folder in the
+  registry (`view.<path>`, hashed past `REG_KEYMAX`; a stable `view.default` fallback); the
+  on-navigate menu re-sync batched into one `win_setmenu` (the per-item republish raced menu
+  clicks). Pure codec `viewmem.h` (unit `t_viewmem`); e2e `t_files_viewmem`.
 - **Files in-place rename + path-bar/rename click-away (2026-06-06).** Inline rename over the selected
   tile in list or icon view (New Folder enters it Finder-style); Enter/click-away commit, Esc cancels.
   Clicking outside the editable path bar now reverts it like Esc. `dispatch_mouse` made virtual so
   `FilesApp` can hook click-away. e2e `t_files_rename` + extended `t_files_breadcrumb`.
-- **Incremental directory flush — kills the notepad-autosave freeze (2026-06-06).** Found the real
-  culprit behind "saving freezes the desktop": `flush_super()` rewrote the *entire* tosfs directory
-  table on every file create/delete/rename/close. On today's 4096-sector disk that table is
-  **378 sectors / 189 KB**, so each `close()` blasted 189 KB through polled PIO (≈97k VM-exits under
-  KVM, ~15-20 ms on the single core) just to record one changed entry — and a single notepad autosave
-  closes one draft file *per open tab* plus a session file, i.e. several × 189 KB per idle pause.
-  This dwarfs the file data itself and is what the preemptible-syscall work (2026-06-05) couldn't
-  cure: it made the write *preemptible* but not *smaller*. **Fix:** `flush_super_ent(slot)` writes
-  only the 1-2 sectors that hold the one entry a mutating op changed (every op flushes a single slot
-  immediately, so this is byte-identical on disk) — a save's metadata I/O drops ~190× (189 KB → ≤1 KB),
-  making an autosave imperceptible. Pure kernel change in `fs.c`; build clean, unit 62/62, e2e 37/37
-  (the 4 fails were pre-existing load flakes, all green re-run alone). Caveat: this does not make I/O
-  *async*, so a very large file's *data* write still scales with its size — the async/DMA + write-back
-  cache cure in Known issues remains the full fix for big writes.
+- **Incremental directory flush — kills the notepad-autosave freeze (2026-06-06).** The real
+  culprit behind "saving freezes the desktop": `flush_super()` rewrote the entire **189 KB**
+  tosfs directory table through polled PIO on every file close (several times per autosave).
+  New `flush_super_ent(slot)` writes only the 1–2 sectors holding the changed entry (~190× less
+  metadata I/O), byte-identical on disk. Large *data* writes stay synchronous — see Known issues.
 
-- **Preemptible syscalls — long disk ops no longer freeze the machine; short writes still hitch (2026-06-05).** The
-  "typing in notepad freezes the entire OS / the mouse locks up" report. Root cause (measured on
-  KVM, where each 16-bit `rep insw/outsw` word is a VM-exit, so a 128-sector PIO read ≈ 20M cycles
-  ≈ 5–7 ms): **every syscall ran with interrupts disabled** — the `int 0x80` gate is an *interrupt*
-  gate and `isr_common` never `sti`'d — and `fs_lock`/`ata_lock` were `spin_lock_irqsave`, so a slow
-  polled-PIO disk transfer held IF=0 for its whole duration. On a single core the timer then never
-  fired, so the scheduler never ran the compositor and the cursor locked up for the length of the
-  transfer (notepad autosaving on every typing pause = repeated freezes). **Fix:** (1) run syscalls
-  **preemptibly** — `sti` in the `0x80` dispatch; the scheduler already parks a half-finished kernel
-  frame per task (`tasks[].krsp` in `do_switch`), and every kernel lock is `irqsave`, so a timer
-  preemption can never land inside a critical section. (2) New **`spin_lock_preempt` /
-  `spin_unlock_preempt`** (`kernel/arch/spinlock.h`) — a mutual-exclusion lock that leaves IF
-  untouched — for `fs_lock` + `ata_lock`, so the disk transfer itself stays preemptible. (3) **Moved
-  all disk I/O out of `sched_lock`**: `sched_exit` flushes+closes files *before* the lock, and
-  `sched_spawn`/`sched_exec` build the address space + read the ELF *before* the lock — this keeps
-  those paths preemptible (also fixing a pre-existing multi-ms **app-launch freeze**) and avoids a
-  single-CPU deadlock (an IF=0 spinner on a preempt-lock held by a preempted task). (4) Preemptible
-  syscalls exposed one **lost-wakeup**: `SYS_READ` checked the input ring empty and then blocked as
-  two steps, so a keystroke could arrive + wake between them and be lost — the check+block is now
-  interrupt-atomic. (5) Notepad autosave debounce widened (~0.6 s → ~1.3 s idle). `make test`
-  40–41/41 (the lone miss a known compositor toast-timing flake, green in isolation) + 62 unit.
-  **What this does NOT fix (verified by the user — the cursor still freezes on save):** a syscall is
-  only actually *preempted* if it spans a **10 ms** (100 Hz) timer tick. App launches / large reads
-  (tens of ms) now do, so they no longer freeze — but a **short synchronous write that finishes
-  inside one tick still blocks everything, cursor included**, for its duration, because the timer
-  never fires mid-write. notepad's autosave is a handful of small writes (~a few ms) that mostly
-  complete within a tick, so it **still freezes the cursor briefly on every save**. The fix is
-  correct architecture (and removes a deadlock + the multi-ms launch freeze) but is the wrong layer
-  for the autosave hitch — the real cure is **async/DMA disk + a write-back cache** so the UI task
-  never blocks on the platter. See Known issues.
-- **Damage-rect presents + notepad save/close fixes (2026-06-03).** Fixed a notepad lag regression
-  (hovering the tab strip while typing pinned the loop at the frame cap, each frame re-blitting the
-  whole client surface). New **`win_present_rect(id,x,y,w,h)`** syscall (#66): the kernel accumulates
-  a per-window damage rect (union of partial presents, reset each compositor snapshot; full
-  `win_present` ⇒ whole-surface), carried in `struct wmwin`, and twm composites **only** that
-  sub-rect instead of the whole window. The toolkit tracks a damage rect per frame — `invalidate()`
-  = whole, `invalidate(rect)` = union; hover state, the blinking caret, and `TextField` typing now
-  invalidate just their widget's rect, and `Window::redraw()` clips + `win_present_rect`s that band
-  (skipping non-overlapping widgets). Backward-compatible: a full present is just a whole-rect
-  damage, so every existing app is unchanged. **Save bug:** quitting with a dirty background tab used
-  to silently drop it (quit-Save only wrote the active tab). **Close/save UX reworked per use:**
-  closing the **window** never prompts (the autosave draft already holds every tab + unsaved
-  contents — `on_close` flushes + exits, relaunch restores); closing a **tab** is what guards, and
-  **Save** on a never-saved tab (or **Ctrl+S** on one) opens the **picker** to choose where (a draft
-  ≠ saved); closing the *last* tab clears the draft store. **Autosave debounced** so a disk write
-  never stalls active typing (flush after ~0.6 s idle, or a ~3 s backstop). Tests updated
-  (`t_notepad_edit_save`/`_undo`/`_guard`/`t_app_menu` now drive the picker). Screenshot-verified
-  (hover-while-typing clean, picker renders). BIOS 30/30 + UEFI 11/11 + 62 unit.
-- **Notepad tabs + session autosave #5 (2026-06-03).** Notepad is now a tabbed editor. The top
-  filename field is gone; each note is a tab in an app-local `TabBar` strip (active accent-edged,
-  dirty shows a dot, each with a ×) + a trailing `+`; **File > New / ^N** opens a fresh untitled tab
-  (no guard — opening a tab can't lose data), **File > Close Tab / ^W** (or the ×) closes one. One
-  shared `editor` swaps the active tab's text in/out, gated by a `loading` flag so a load doesn't
-  dirty the tab; a `Tab{name,named,dirty,text,caret}` model holds the rest. The unsaved-changes guard
-  moved from New to **tab/window close** (`t_notepad_guard` reworked: two dirty tabs, Discard one +
-  Save the other — which also proves per-tab content isolation). **Session autosave:** a new toolkit
-  `Window::on_tick()` hook drives a periodic draft (~1.8 s, only when changed) of every tab's text +
-  the layout to `~/.cache/notepad/` (`session` + `tab<i>`); a bare relaunch rebuilds the whole
-  session, even never-saved notes — two-boot e2e `t_notepad_session` (restore markers carry each
-  tab's loaded byte count). **Save** is a quick-save (named → its path; untitled → `~/Documents`),
-  **Save As…**/**Open…** use the picker. Window title stays "Notepad" (no set-title syscall yet);
-  per-tab undo isn't kept across a switch (v1). Screenshot-verified. BIOS 30/30 + UEFI 11/11 + 62 unit.
-- **Reusable file picker `ui::FileDialog` #4 (2026-06-03).** A new toolkit modal — the system's one
-  Open/Save browser. Built on the toolkit's own `ListView` + `TextField` (no atlas dep — lean vector
-  folder/file glyphs), so any app gets the same chrome for free: a **Favorites sidebar**
-  (Home/Desktop/Documents/Downloads/Pictures/Applications/Computer), an **Up button** + a path bar
-  (right-truncated), the dirs-first directory list, and — in **Save** mode — a name field that opens
-  pre-filled + select-all'd so the first keystroke replaces the suggestion. Added LAST to a Window
-  (like `ConfirmDialog`), it grabs focus, forwards keys to the embedded name field (a new
-  `TextField::force_focus` keeps its caret blinking while the modal owns focus), and swallows stray
-  clicks. **Open** picks an existing file (the OK button greys until a file is selected; activating a
-  folder navigates); **Save** browses + names, greys OK when the folder isn't user-writable
-  (`tos_may_write` via `kernel/fs/perm.h`), and on an overwrite raises a nested **Replace / Keep
-  Both / Cancel** `ui::ConfirmDialog` — **Keep Both** dedupes to `name (N).ext` (`fd_dedup`) instead
-  of clobbering. `on_pick(ctx, path)` returns the chosen absolute path (or nullptr on Cancel);
-  markers `[filedialog] open …/cd …/pick …/cancel`. **Notepad** wired it up: File > Open… (`^O`)
-  loads a note, File > Save As… writes one (File menu is now New/Open/Save/Save As). e2e
-  `t_file_dialog` (Save As → type a name → Enter → read back; then Save As the same name → Keep Both
-  → `picked (2).txt`); screenshot-verified (Open + Save + the 3-button overwrite warning). BIOS 29/29
-  + UEFI 11/11 + 62 unit.
-- **Notepad default save location = Documents (2026-06-03).** A bare note name now resolves to
-  `/Users/user/Documents/<name>` instead of the home root, so saved notes stop littering `$HOME`;
-  `resolve_path` `mkdir`s `Documents` defensively (init already seeds it). Absolute paths are
-  untouched. The three e2e notepad checks (`t_notepad_edit_save`, `t_notepad_undo`,
-  `t_notepad_guard`) follow the path to `/Users/user/Documents/untitled.txt` and read it back as
-  `cat Documents/untitled.txt`. When the file picker (#4) lands, this becomes its default folder.
-  BIOS 28/28 + UEFI 11/11 + 62 unit (no test count change — paths shifted, not added).
-- **Notepad unsaved-changes guard + reusable ConfirmDialog #5 (2026-06-03).** New (and the
-  compositor's Close button) on a dirty buffer no longer silently nukes it. New toolkit widget
-  `ui::ConfirmDialog`: a modal sheet (dim scrim + centred card + up to 3 buttons, the primary
-  accent-filled on the right) that grabs keyboard focus while open (Enter = primary, swallows the
-  rest) and captures every click (added last to the window, rect = whole window, like Files' Popup);
-  `on_choice(ctx, idx)` returns the button index. Window gained an `on_close()` veto hook (return
-  false to keep the window open). Notepad tracks a `dirty` flag via `editor.on_change`, splits
-  `new_note()` into a guarded entry + `do_new()`, and defers New/Quit until the **Save / Discard /
-  Cancel** answer (Save writes first). The dialog reports its button centres (`[ui] dlgbtn i x y`,
-  client-relative) so tests can click them. e2e `t_notepad_guard` exercises the Discard (click) and
-  Save (Enter) paths; screenshot-verified. The reusable dialog also unblocks the file dialog's
-  overwrite warning (#4). BIOS 28/28 + UEFI 11/11 + 62 unit.
-- **Terminal + Files ported onto the app-menu API #6 (2026-06-03).** Two more apps now carry real
-  menu bars. **Files** (a `ui::Window`) declares File [New Folder ^N, Refresh] / Edit [Copy ^C, Cut
-  ^X, Paste ^V, Delete] / Go [Up, Back, Forward] via `menu_begin/menu_add/menu_item/menu_commit`,
-  routed in `on_menu` to the same actions the toolbar + right-click already run; the ^C/^X/^V/^N
-  accelerators are intercepted by the compositor and arrive as `WEV_MENU` picks (`[files] menu m i`
-  trace). **Terminal** — a raw-syscall app, *not* the toolkit — builds a `struct winmenu` by hand
-  and calls `win_setmenu(win, &m)`, then handles `WEV_MENU` in its event loop: Edit [Copy, Paste,
-  Clear] with **no** Ctrl accelerators on purpose, so a plain ^C still reaches the shell as an
-  interrupt (`[term] menu i` trace). Proves the menu protocol is app-agnostic, not toolkit-only.
-  e2e `t_files_menu` (Ctrl+N → New Folder lands on disk) + `t_term_menu` (click Edit > Clear →
-  WEV_MENU); both menu bars screenshot-verified. BIOS 27/27 + UEFI 11/11 + 62 unit. Still left
-  under #6: submenus (a `struct winmenu` ABI bump, deferred until a use appears).
-- **TextField undo/redo — the global text contract (2026-06-03).** Every toolkit text field now
-  inherits Ctrl+Z / Ctrl+Y. `TextField` carries two bounded ring stacks of insert/delete span
-  records (`{op, pos, span text, caret-before}`); `ins`/`del_range` record each mutation, `undo`/
-  `redo` pop one stack and apply the inverse (which re-records onto the other, so the chain is fully
-  reversible) and restore the caret. A run of single-char typing or backspacing **coalesces** into
-  one step (one Ctrl+Z drops the whole word), broken by a newline or a caret jump/click; a fresh
-  edit clears the redo stack; `set_text` resets the history. The subtle merge rule is factored into
-  a pure `user/lib/editlog.h` (`el_coalesce_kind`) shared by the widget and the new host unit test
-  `t_editlog` (16 checks). Notepad's **Edit > Undo** (was declared-but-disabled) is enabled with
-  accelerator `^Z` and a **Redo `^Y`** item added — the compositor routes the chords as menu picks
-  for the focused window, and the same raw `^Z`/`^Y` bytes drive undo/redo in any non-menu app
-  (Spotlight, Files name fields). e2e `t_notepad_undo` (type → Ctrl+Z → 0-byte save → Ctrl+Y →
-  8-byte save → read back). BIOS 25/25 + UEFI 11/11 + 62 unit; screenshot-verified (Edit dropdown
-  shows enabled Undo ^Z / Redo ^Y).
-- **User-program heap — confirmed already done (2026-06-03).** The "a program is its static image
-  + stack" note was stale: `user/lib/libc.c` already ships a full growable heap over `SYS_MMAP`
-  (`malloc/free/realloc/calloc`, an address-sorted free list with first-fit + split + boundary
-  coalescing, arena grown in ≥1 MiB mmap chunks) — `operator new`/`delete` (crt.cpp) sit on it, and
-  twm/Files/ui all allocate through it. An mmap-backed heap supersedes a `sbrk`; the stale "smaller
-  idea" bullet was removed. (Making the terminal scrollback ring runtime-sized still sits under
-  *Terminal scrollback*.)
-- **LAPIC timer calibrated against the PIT (2026-06-03).** The AP preemption timer was a magic
-  QEMU-tuned count (`1000000`, ~62.5 Hz). `lapic_timer_calibrate(hz)` (apic.c) now measures the
-  local timer's real rate over a PIT-channel-2 one-shot window (gated + polled via port 0x61 bit5,
-  so no IRQs — it runs at boot with interrupts still off) and returns the divide-by-16 count for a
-  defined rate; `smp_init` calls it once on the BSP (`LAPIC_PREEMPT_HZ` = 100, matching the BSP's
-  PIT tick) and the APs reuse the result. Implausible readings / a watchdog timeout fall back to
-  the old fixed count, so the worst case is unchanged. Measured count 626723 on QEMU (≈625000
-  expected: 1 GHz APIC ÷16 ÷100) — `[smp] lapic timer calibrated: count N (~100 hz preempt)`.
-- **Live resize + reflow — verified done (2026-06-03).** twm already streams `WEV_RESIZE` to the
-  app as the grip is dragged (throttled to >7px) and sends the exact size on release (twm.c live-
-  resize block); the terminal recomputes its grid via `setup_surface` and the toolkit's multiline
-  `TextField` re-wraps from the current width on each redraw, so content reflows **live**, not on
-  mouse-up. Screenshot-verified (notepad text re-wrapped as the window narrowed). A separate XOR
-  "ghost outline" is unnecessary now that the content itself resizes live; the stale open bullet
-  was removed.
-- **App-menu accelerators + checkmarks + disabled items #6 (2026-06-03).** `struct winmenu`
-  items gained a `flags` byte (`WMI_DISABLED`/`WMI_CHECKED`) and an `accel` letter. `ui::Window`'s
-  `menu_item(label, accel=0, flags=0)` plus `menu_set_checked/_set_enabled/_is_checked` declare and
-  live-toggle them. twm's dropdown greys disabled rows (no hover, ignored clicks), draws a leading
-  ✓ for checked rows (a two-stroke `draw_check`, no line primitive), and right-aligns the `^X`
-  accelerator hint; the key loop intercepts `Ctrl+<letter>` for the focused window and fires the
-  matching enabled item as a `WEV_MENU` (opt-in per declared menu — menuless apps keep raw chords;
-  Backspace/Tab/Enter/Esc arrive without Ctrl so never match). `menu_sig` folds in flags+accel so a
-  runtime toggle re-publishes. Notepad now ships File [New ^N, Save ^S] / Edit [Select All ^A, Undo
-  disabled] / View [✓ Status Bar]. `[twm] accel <L> <m> <i>` trace; `t_app_menu` extended with the
-  Ctrl+N accelerator path. Build + unit (46) + screenshot-verified.
-- **App menus #6 (2026-06-02).** App→WM menu protocol: `struct winmenu` (≤5 menus × ≤8 items) set
-  via `SYS_WIN_SETMENU`, read by the compositor via `SYS_WM_GETMENU`, with `WEV_MENU` delivering a
-  pick back to the app. `ui::Window` gained `menu_begin/menu_add/menu_item/menu_commit` + an
-  `on_menu(menu,item)` hook; twm fetches the focused window's menu each frame, draws a tile per
-  top-level menu after the app name (a kind-3 dropdown), and posts `WEV_MENU` on a pick. Notepad
-  declares File [New, Save] / Edit [Select All]. `[twm] appmenu`/`menu app` traces; `t_app_menu`.
-- **Maximize hides both bars + hover-reveal (2026-06-02).** Fullscreen (green button /
-  double-click title / new **Super+F**) now makes the client fill the **whole** screen (`W×H`,
-  was `W×(H−TH)`); the window's own title bar becomes a sliding overlay that hides **with** the
-  menu bar as one "top group". A top-edge hover reveals both together and HOLDS while the cursor
-  stays in the revealed band (so you can reach the traffic lights); diving into the content
-  retracts them. Centralized window geometry in `is_fs`/`client_rect`/`outer_rect`/`in_client`
-  helpers + `fs_titlebar_y`; rewired every compositor input path. `[twm] fullscreen <t> 0|1` and
-  `[twm] topbar shown|hidden` traces; `t_fullscreen`. 34/34 + 46 unit.
-- **System ownership #1 (2026-06-02).** tosfs bumped to **v3**: every entry carries an `owner`
-  uid (+ a reserved `mode` byte); `mkfs` stamps `/Users` + `/tmp` = user, the rest = system
-  (shared rule in `kernel/fs/perm.h`, unit-tested). Tasks carry a `uid` (inherited on fork); init
-  (pid 1) is `system` and drops the whole desktop session to `user` via a new `SYS_SETUID` before
-  launching twm. The mutating fs syscalls (unlink/open-create/mkdir/rmdir/rename) enforce
-  `tos_may_write()`, so the user can no longer delete or modify `/System` or `/Apps`; reads/exec
-  stay open. `SYS_GETUID` + `fstat.owner` exposed; shell `rm` prints `permission denied (system
-  file)` and gains an `id` builtin. Unit `t_perm` (18) + e2e `t_system_ownership`. 33/33 + 46 unit.
-- **Notification click routing (2026-06-02).** `struct notif` gained a `target` field; new
-  `notify_to(title, body, target)` (plain `notify()` posts an empty target = no routing).
-  Clicking a toast body or a notification-center row (`notif_activate` + `nc_row_at`) focuses the
-  target app's window (restoring a minimized one) or launches it from the catalog; `[twm] notif
-  open <app>` trace. Shell `notify <app> <body>` posts a routed toast. `t_notif_click_routing`.
+- **Preemptible syscalls — long disk ops no longer freeze the machine (2026-06-05).** Every
+  syscall ran IF=0 (interrupt gate, no `sti`) with `irqsave` fs/ata locks, so a slow polled-PIO
+  transfer starved the timer and froze the single-core desktop (the "typing in notepad freezes
+  the OS" report). Fix: `sti` in the 0x80 dispatch; a new IF-preserving `spin_lock_preempt` for
+  `fs_lock`/`ata_lock`; all disk I/O moved out of `sched_lock` (also fixing a multi-ms app-launch
+  freeze and a 1-CPU deadlock); a `SYS_READ` lost-wakeup made check+block interrupt-atomic.
+  Caveat: a write finishing inside one 10 ms tick still blocks — the full cure is async/DMA +
+  a write-back cache (Known issues).
+- **Damage-rect presents + notepad save/close fixes (2026-06-03).** New `win_present_rect` (66):
+  a per-window damage union carried in `struct wmwin`; twm composites only that sub-rect, and the
+  toolkit invalidates per-widget (typing/caret/hover no longer re-blit the whole client). Also
+  fixed quit dropping a dirty background tab; close/save UX reworked (window close never prompts —
+  the autosave draft holds everything; closing a *tab* guards); autosave debounced.
+- **Notepad tabs + session autosave #5 (2026-06-03).** The tabbed editor + a new toolkit
+  `Window::on_tick()` hook driving the session autosave to `~/.cache/notepad/`; a bare relaunch
+  rebuilds the whole session, even never-saved notes (two-boot e2e `t_notepad_session`); the
+  unsaved guard moved to tab/window close (`t_notepad_guard`).
+- **Reusable file picker `ui::FileDialog` #4 (2026-06-03).** The in-process toolkit Open/Save
+  modal (Favorites sidebar, Up + path bar, Save name field, ownership-greyed OK,
+  Replace/Keep-Both/Cancel overwrite). *(Retired + deleted 2026-06-06 — replaced by
+  Files-as-picker; the entry stays for the history.)*
+- **Notepad default save location = Documents (2026-06-03).** Bare note names resolve to
+  `~/Documents/<name>` instead of littering `$HOME`.
+- **Notepad unsaved-changes guard + reusable `ui::ConfirmDialog` #5 (2026-06-03).** A modal
+  sheet (dim scrim + up to 3 buttons, Enter = primary, swallows outside clicks) + a
+  `Window::on_close()` veto hook; Notepad defers New/Quit on a dirty buffer until
+  Save / Discard / Cancel answers. e2e `t_notepad_guard`; `[ui] dlgbtn` canary.
+- **Terminal + Files ported onto the app-menu API #6 (2026-06-03).** Files declares File/Edit/Go
+  via the toolkit; Terminal builds `struct winmenu` by hand (a raw-syscall app — proving the
+  protocol isn't toolkit-only) with no Ctrl accelerators so ^C still interrupts the shell.
+  e2e `t_files_menu` + `t_term_menu`.
+- **TextField undo/redo — the global text contract (2026-06-03).** Bounded ring stacks of
+  insert/delete span records with typing-run coalescing (pure `editlog.h`, unit `t_editlog`);
+  every toolkit field inherits Ctrl+Z/Y; Notepad's Edit ▸ Undo enabled + Redo ^Y added.
+  e2e `t_notepad_undo`.
+- **User-program heap — confirmed already done (2026-06-03).** `user/lib/libc.c` already ships a
+  full mmap-backed `malloc/free/realloc` (first-fit free list, coalescing, ≥1 MiB arenas); the
+  stale "needs sbrk" bullet was removed.
+- **LAPIC timer calibrated against the PIT (2026-06-03).** `lapic_timer_calibrate(hz)` measures
+  the local timer over a gated PIT channel-2 one-shot at boot (no IRQs needed), replacing the
+  magic QEMU-tuned count; implausible readings fall back to the old constant.
+- **Live resize + reflow — verified already done (2026-06-03).** twm already streams `WEV_RESIZE`
+  mid-drag and term/toolkit apps reflow live; the stale open bullet was removed.
+- **App-menu accelerators + checkmarks + disabled items #6 (2026-06-03).** `winmenu` items gained
+  `flags` (`WMI_DISABLED`/`WMI_CHECKED`) + an accel letter; twm greys/✓-marks rows, right-aligns
+  `^X`, and fires `Ctrl+<letter>` as the matching `WEV_MENU` (opt-in per declared menu).
+  `t_app_menu` extended.
+- **App menus #6 (2026-06-02).** The app→WM menu protocol: `struct winmenu` via
+  `SYS_WIN_SETMENU`/`SYS_WM_GETMENU`, `WEV_MENU` picks, the `ui::Window` menu API + `on_menu()`;
+  twm draws a dropdown tile per menu. `t_app_menu`.
+- **Maximize hides both bars + hover-reveal (2026-06-02).** Fullscreen fills the whole screen;
+  the title bar + menu bar hide as one top group, revealed (and held) by a top-edge hover.
+  Window geometry centralised in `is_fs`/`client_rect`/`outer_rect`/`in_client`. `t_fullscreen`.
+- **System ownership #1 (2026-06-02).** tosfs v3: a per-entry `owner` uid; tasks carry a `uid`
+  (init = system; the desktop session drops to user via `SYS_SETUID`); the mutating fs syscalls
+  enforce `tos_may_write` (unit `t_perm`, e2e `t_system_ownership`); the shell prints
+  `permission denied (system file)` and gains an `id` builtin.
+- **Notification click routing (2026-06-02).** `notify_to(title, body, target)`: clicking a toast
+  or a notification-center row focuses (or launches) the target app. `t_notif_click_routing`.
 - **Dock pinned | running divider (2026-06-02).** `rebuild_dock()` records the boundary index
   (`dock_runsep`) after the last pinned tile; `draw_dock()` draws a faint 1px vertical separator
   in the gap before the first running-unpinned tile, shown only when one exists. `[twm] docksep`
   trace; asserted in `t_notepad_edit_save`.
-- **Launchers mutually exclusive (2026-06-02).** `dismiss_launchers(except)` at every launcher
-  summon path (the three Super hotkeys + the dock Launchpad button) closes the other two, so
-  Spotlight can't float over the clipboard/Launchpad. Focus telemetry now tracks the window
-  *id* too, so a freed slot reused by a new window in the same frame still reports the focus
-  change + repaints chrome; new `[twm] unmap <title>` trace. `t_launchers_exclusive`. 31/31.
-- **UEFI boot fixed above 4 GiB (2026-06-02).** The loader only identity-mapped 0–4 GiB, so at
-  `MEM ?= 8G` OVMF's high-loaded app `#PF`'d on the CR3 switch; it now reads the UEFI
-  `GetMemoryMap` and maps all of RAM (`ram_top`/`build_tables`). `t_ram_scales` gained a 6G case +
-  runs on UEFI. 30/30.
+- **Launchers mutually exclusive (2026-06-02).** `dismiss_launchers(except)` at every summon
+  path; focus telemetry tracks the window *id* across slot reuse. `t_launchers_exclusive`.
+- **UEFI boot fixed above 4 GiB (2026-06-02).** The loader identity-mapped only 0–4 GiB, so
+  `MEM=8G` #PF'd on the CR3 switch; it now maps all of RAM from `GetMemoryMap`. `t_ram_scales`
+  gained a 6G case.
 - **Settings app uses Lucide glyphs (2026-06-02).** `ui::Button` gained optional `icon`/`value`;
   new `tools/genglyphs.py` → `user/lib/glyphs.h` bakes a reusable Lucide app-glyph set.
 - **Multi-region frame pool across the 4 GiB hole (2026-06-02).** `vmm` reads the e820 map

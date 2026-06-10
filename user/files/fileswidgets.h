@@ -320,12 +320,17 @@ class StatusBar : public ui::Widget {
 public:
     char left[96] = {0};            /* "12 items" / "3 of 12 shown"          */
     char right[96] = {0};           /* "name selected -- 42 bytes" / empty   */
+    int  permille = -1;             /* §12: a running job's progress (0..1000; <0 hides) */
     StatusBar() { focusable = false; }
     void draw() override {
         if (!visible) return;
         int fh = ugfx_font_h();
         ugfx_fill(r.x, r.y, r.w, r.h, C_TOOLBAR);
         ugfx_fill_a(r.x, r.y, r.w, 1, ARGB(70, 0, 0, 0));            /* top hairline */
+        if (permille >= 0) {                                         /* §12: job progress band */
+            int p = permille > 1000 ? 1000 : permille;
+            ugfx_fill_a(r.x, r.y + 1, (int)((long)r.w * p / 1000), 2, ARGB(230, 96, 152, 252));
+        }
         ugfx_set_clip(r.x, r.y, r.w, r.h);
         int ty = r.y + (r.h - fh) / 2;
         ugfx_text(r.x + 14, ty, left, TH_MUTED, UGFX_TRANSPARENT);
@@ -574,6 +579,7 @@ public:
                 printu((unsigned)cy); printc(' '); print(crumbs[slot_idx[s]].path); print("\r\n");
             }
             int endx = nslot ? slot_x[nslot - 1] + slot_w[nslot - 1] + 16 : r.x + 8;   /* empty area past the crumbs */
+            if (endx > r.x + r.w - 8) endx = r.x + r.w - 8;   /* a long path can push the gap past the bar: clamp inside */
             print("[files] crumbend "); printu((unsigned)endx); printc(' '); printu((unsigned)cy); print("\r\n");
         }
         ugfx_set_clip(r.x, r.y, r.w, r.h);
@@ -806,5 +812,158 @@ public:
         dismiss();
         if (on_pick) on_pick(ctx, tag);
         return true;
+    }
+};
+
+/* ------------------------------------------------------------------ QuickLook */
+/* §11: the Space-bar preview overlay -- a dim scrim + a centred card showing the
+ * selected item without opening an app: a decoded image scaled to fit, a text
+ * file's head, or (folders / binaries) a big icon + summary line. Input is
+ * intercepted at the window level (FilesApp's on_key / dispatch_mouse): Space /
+ * Esc / any click dismisses. The widget owns its image + text buffers. */
+class QuickLook : public ui::Widget {
+public:
+    bool open = false;
+    char title[64] = {0}, info[64] = {0};
+    uint32_t *img = nullptr; int iw = 0, ih = 0;      /* decoded image (owned) */
+    char *text = nullptr; int tlen = 0;               /* text head (owned)     */
+    int icon_id = FILEICON_FILE;                      /* fallback glyph        */
+    QuickLook() { visible = false; focusable = false; }
+    void clear() {
+        if (img) { free(img); img = nullptr; }
+        if (text) { free(text); text = nullptr; }
+        iw = ih = tlen = 0; info[0] = 0;
+    }
+    void show() {
+        open = true; visible = true;
+        if (win) r = { 0, 0, win->w, win->h };
+    }
+    void dismiss() { open = false; visible = false; clear(); }
+    void draw() override {
+        if (!open || !win) return;
+        int W = win->w, H = win->h, fh = ugfx_font_h();
+        ugfx_fill_a(0, 0, W, H, ARGB(110, 8, 12, 22));            /* scrim */
+        int cw = W - 110, ch = H - 90;                            /* the card */
+        if (cw > 560) cw = 560; if (ch > 420) ch = 420;
+        int cx = (W - cw) / 2, cy = (H - ch) / 2, rad = TH_R_LG;
+        ugfx_elevation(cx, cy, cw, ch, rad, 5);
+        ugfx_rrect_aa(cx, cy, cw, ch, rad, TH_SURF_2);
+        ugfx_rrect_border(cx, cy, cw, ch, rad, 1, TH_BORDER);
+        int tw = ugfx_text_w(title);                              /* header */
+        ugfx_text(cx + (cw - tw) / 2, cy + 10, title, TH_TEXT, UGFX_TRANSPARENT);
+        int iy0 = cy + fh + 22, iy1 = cy + ch - fh - 18;          /* content band */
+        if (img) {
+            int mw = cw - 36, mh = iy1 - iy0 - 6;
+            int w = iw, h = ih;                                   /* fit, never upscale */
+            if (w > mw) { h = h * mw / w; w = mw; }
+            if (h > mh) { w = w * mh / h; h = mh; }
+            if (w < 1) w = 1; if (h < 1) h = 1;
+            blit_scaled(cx + (cw - w) / 2, iy0 + (iy1 - iy0 - h) / 2, w, h, img, iw, ih);
+        } else if (text) {
+            int x = cx + 22, y = iy0, maxc = (cw - 44) / (ugfx_font_w() > 0 ? ugfx_font_w() : 7);
+            if (maxc > 250) maxc = 250;
+            char line[256];
+            for (int i = 0; i < tlen && y + fh <= iy1; ) {
+                int n = 0;
+                while (i < tlen && text[i] != '\n' && n < maxc) {
+                    char c = text[i++];
+                    line[n++] = (c == '\t') ? ' ' : ((unsigned char)c < 32 ? '.' : c);
+                }
+                while (i < tlen && text[i] != '\n') i++;          /* clip the long tail */
+                if (i < tlen && text[i] == '\n') i++;
+                line[n] = 0;
+                ugfx_text(x, y, line, TH_TEXT, UGFX_TRANSPARENT);
+                y += fh + 3;
+            }
+        } else {                                                  /* icon + summary */
+            int box = 96;
+            blit_scaled(cx + (cw - box) / 2, iy0 + (iy1 - iy0 - box) / 2, box, box,
+                        fileicons_argb[icon_id], FILEICON_SZ, FILEICON_SZ);
+        }
+        int iw_ = ugfx_text_w(info);                              /* footer */
+        ugfx_text(cx + (cw - iw_) / 2, cy + ch - fh - 10, info, TH_MUTED, UGFX_TRANSPARENT);
+    }
+};
+
+/* -------------------------------------------------------------------- Gallery */
+/* §1: the gallery view -- a big preview of the selection on top + a horizontal
+ * filmstrip of tiles along the bottom (Finder's Gallery). Shares the list's row
+ * indexing (0 = ".." when present); the strip reuses the app's render_tile and
+ * the preview is the app's render_preview (full image / big icon). */
+class Gallery : public ui::Widget {
+public:
+    int count = 0, sel = -1, strip_x = 0;            /* strip_x = filmstrip pixel scroll */
+    int tile_w = 76, strip_h = 96, hover_i = -1;
+    uint32_t bg = C_LIST;
+    void *ctx = nullptr;
+    void (*render_tile)(void *, int idx, ui::Rect cell, bool sel, int icon_box) = nullptr;
+    void (*render_preview)(void *, int idx, ui::Rect area) = nullptr;
+    void (*on_select)(void *, int) = nullptr;
+    void (*on_activate)(void *, int) = nullptr;
+    unsigned last_tick = 0; int last_i = -1;         /* double-click detector (as IconGrid) */
+    Gallery() { focusable = true; }
+    ui::Rect prev_rect() const { return { r.x, r.y, r.w, r.h - strip_h }; }
+    int strip_y()  const { return r.y + r.h - strip_h; }
+    int content_w() const { return count * tile_w; }
+    int maxx() const { int m = content_w() - r.w; return m < 0 ? 0 : m; }
+    void clamp_x() { if (strip_x < 0) strip_x = 0; if (strip_x > maxx()) strip_x = maxx(); }
+    void ensure_visible(int i) {
+        int x = i * tile_w;
+        if (x < strip_x) strip_x = x;
+        else if (x + tile_w > strip_x + r.w) strip_x = x + tile_w - r.w;
+        clamp_x();
+    }
+    int index_at(int x, int y) const {
+        if (x < r.x || x >= r.x + r.w || y < strip_y() || y >= r.y + r.h) return -1;
+        int i = (x - r.x + strip_x) / tile_w;
+        return (i >= 0 && i < count) ? i : -1;
+    }
+    void draw() override {
+        if (!visible) return;
+        ugfx_fill(r.x, r.y, r.w, r.h, bg);
+        ui::Rect pv = prev_rect();
+        if (sel >= 0 && render_preview) { ugfx_set_clip(pv.x, pv.y, pv.w, pv.h); render_preview(ctx, sel, pv); ugfx_clip_none(); }
+        int sy = strip_y();
+        ugfx_fill(r.x, sy, r.w, strip_h, C_TOOLBAR);                     /* the filmstrip band */
+        ugfx_fill_a(r.x, sy, r.w, 1, ARGB(70, 0, 0, 0));
+        ugfx_set_clip(r.x, sy, r.w, strip_h);
+        for (int i = 0; i < count; i++) {
+            int x = r.x + i * tile_w - strip_x;
+            if (x + tile_w <= r.x || x >= r.x + r.w) continue;
+            ui::Rect cell = { x, sy + 4, tile_w, strip_h - 8 };
+            if (i == sel)          ugfx_rrect_a(cell.x + 3, cell.y, cell.w - 6, cell.h, TH_R_SM, C_SELROW);
+            else if (i == hover_i) ugfx_state_layer(cell.x + 3, cell.y, cell.w - 6, cell.h, TH_R_SM, TH_HOVER_A);
+            if (render_tile) render_tile(ctx, i, cell, i == sel, 48);
+        }
+        ugfx_clip_none();
+    }
+    bool on_mouse(int x, int y, int) override {
+        int i = index_at(x, y);
+        if (i < 0) return true;
+        sel = i; ensure_visible(i);
+        if (on_select) on_select(ctx, i);
+        unsigned now = win ? win->ticks : 0;
+        if (i == last_i && now - last_tick < 26) { if (on_activate) on_activate(ctx, i); last_i = -1; }
+        else { last_i = i; last_tick = now; }
+        return true;
+    }
+    bool on_hover(int x, int y) override {
+        int i = index_at(x, y);
+        if (i == hover_i) return false;
+        hover_i = i; return true;
+    }
+    void on_leave() override { hovered = false; hover_i = -1; }
+    bool on_scroll(int delta) override {                  /* wheel pans the strip */
+        int nx = strip_x - delta * 48;
+        if (nx < 0) nx = 0; if (nx > maxx()) nx = maxx();
+        if (nx == strip_x) return false;
+        strip_x = nx; return true;
+    }
+    bool on_key(int key, bool shift) override {
+        (void)shift;
+        if (key == ui::UK_LEFT  && sel > 0)         { sel--; ensure_visible(sel); if (on_select) on_select(ctx, sel); return true; }
+        if (key == ui::UK_RIGHT && sel + 1 < count) { sel++; ensure_visible(sel); if (on_select) on_select(ctx, sel); return true; }
+        if (key == ui::UK_ENTER || key == '\n')     { if (sel >= 0 && on_activate) on_activate(ctx, sel); return true; }
+        return false;
     }
 };
