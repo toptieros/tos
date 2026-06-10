@@ -153,12 +153,23 @@ public:
             ugfx_fill_a(bx, by, used > bw ? bw : used, 3, ARGB(190, 96, 152, 252));
         }
     }
+    /* §10: a Tags row -- colour dot + name; lit while it is the active filter */
+    void draw_tag(int y, const SideItem &it, int hot) {
+        int fh = ugfx_font_h();
+        int t = (it.path[4] >= '0' && it.path[4] <= '6') ? it.path[4] - '0' : -1;   /* "tag:N" */
+        int sel = (t >= 0 && t == active_tag);
+        if (sel)      ugfx_rrect_a(r.x + 6, y + 1, r.w - 12, row_h - 2, TH_R_SM, ARGB(150, 96, 152, 252));
+        else if (hot) ugfx_state_layer(r.x + 6, y + 1, r.w - 12, row_h - 2, TH_R_SM, TH_HOVER_A);
+        uint32_t c = (t >= 0) ? tag_colors_[t] : TH_MUTED;
+        ugfx_rrect_aa(r.x + 16, y + (row_h - 10) / 2, 10, 10, 5, c);
+        ugfx_text(r.x + 38, y + (row_h - fh) / 2, it.label, sel ? RGB(255, 255, 255) : TH_TEXT, UGFX_TRANSPARENT);
+    }
     void draw() override {
         if (!visible) return;
         int fh = ugfx_font_h();
         ugfx_fill(r.x, r.y, r.w, r.h, C_SIDEBAR);
         ugfx_fill_a(r.x + r.w - 1, r.y, 1, r.h, ARGB(70, 0, 0, 0));
-        static const char *sect_name[SIDE_NSECT] = { "Favorites", "Locations" };
+        static const char *sect_name[SIDE_NSECT] = { "Favorites", "Locations", "Tags" };
         int nv = vrows();
         for (int v = 0; v < nv; v++) {
             int s, i; if (!vrow(v, &s, &i)) break;
@@ -168,7 +179,8 @@ public:
                 if (collapsed[s]) for (int k = 0; k < 4; k++) ugfx_fill(cx - 2 + k, cy - 3 + k, 1, 7 - 2 * k, TH_MUTED);  /* > */
                 else              for (int k = 0; k < 4; k++) ugfx_fill(cx - 3 + k, cy - 2 + k, 7 - 2 * k, 1, TH_MUTED);  /* v */
                 ugfx_text(r.x + 26, y + (row_h - fh) / 2, sect_name[s], TH_MUTED, UGFX_TRANSPARENT);
-            } else draw_item(y, items[i].label, items[i].path, v == hover_row, -1);
+            } else if (items[i].sect == SIDE_TAGS) draw_tag(y, items[i], v == hover_row);
+            else draw_item(y, items[i].label, items[i].path, v == hover_row, -1);
         }
         if (trash_path[0]) {                             /* pinned at the bottom, set apart (§9) */
             int y = trash_y();
@@ -676,7 +688,8 @@ public:
  * its rect is the whole window so it captures the next click anywhere (modal):
  * inside an item -> pick (callback with the item's tag); a toggle item flips and
  * stays open; outside -> dismiss. */
-struct PopItem { char label[40]; int kind; int tag; const uint32_t *icon; int iw, ih; };
+struct PopItem { char label[40]; int kind; int tag; const uint32_t *icon; int iw, ih;
+                 int checked; uint32_t dot; };   /* per-item toggle state + colour dot (§10 tags) */
 enum { PK_ACTION, PK_TOGGLE, PK_SEP };
 class Popup : public ui::Widget {
 public:
@@ -685,6 +698,7 @@ public:
     PopItem it[MAXAPPS + 6]; int n = 0;
     const char *toggle_label = "";
     void *ctx = nullptr; void (*on_pick)(void *, int tag) = nullptr;
+    void (*on_toggle)(void *, int tag, int on) = nullptr;   /* a PK_TOGGLE flipped (menu stays open) */
     Popup() { visible = false; focusable = false; }
     void reset() { n = 0; toggle = false; pw = 0; hover_item = -1; }
     int item_at(int x, int y) {                          /* index of the row under (x,y), or -1 */
@@ -706,6 +720,7 @@ public:
     void add(const char *label, int kind, int tag, const uint32_t *icon, int iw, int ih) {
         if (n >= (int)(sizeof it / sizeof it[0])) return;
         PopItem *p = &it[n]; p->kind = kind; p->tag = tag; p->icon = icon; p->iw = iw; p->ih = ih;
+        p->checked = 0; p->dot = 0;
         int i = 0; for (; label[i] && i < 39; i++) p->label[i] = label[i]; p->label[i] = 0;
         n++;
     }
@@ -747,10 +762,15 @@ public:
             int tx = px + 12;
             if (it[i].icon) { blit_scaled(px + 10, cy + (rowh - 18) / 2, 18, 18, it[i].icon, it[i].iw, it[i].ih); tx = px + 36; }
             if (it[i].kind == PK_TOGGLE) {                  /* checkbox */
-                uint32_t bc = toggle ? TH_ACCENT : ARGB(120, 150, 160, 180);
+                int on = it[i].checked;
+                uint32_t bc = on ? TH_ACCENT : ARGB(120, 150, 160, 180);
                 ugfx_rrect_a(px + 12, cy + (rowh - 14) / 2, 14, 14, 3, bc);
-                if (toggle) { int bx = px + 14, by = cy + rowh / 2; vline_(bx, by, bx + 3, by + 3, 2, RGB(255,255,255)); vline_(bx + 3, by + 3, bx + 9, by - 4, 2, RGB(255,255,255)); }
+                if (on) { int bx = px + 14, by = cy + rowh / 2; vline_(bx, by, bx + 3, by + 3, 2, RGB(255,255,255)); vline_(bx + 3, by + 3, bx + 9, by - 4, 2, RGB(255,255,255)); }
                 tx = px + 34;
+            }
+            if (it[i].dot) {                                /* §10: the tag's colour swatch */
+                ugfx_rrect_aa(tx, cy + (rowh - 10) / 2, 10, 10, 5, it[i].dot);
+                tx += 16;
             }
             ugfx_text(tx, cy + (rowh - fh) / 2, it[i].label, TH_TEXT, UGFX_TRANSPARENT);
             cy += rowh;
@@ -759,7 +779,12 @@ public:
     bool on_mouse(int x, int y, int) override {
         if (!open) return true;
         int hit = item_at(x, y);
-        if (hit >= 0 && it[hit].kind == PK_TOGGLE) { toggle = !toggle; return true; }  /* stay open */
+        if (hit >= 0 && it[hit].kind == PK_TOGGLE) {                          /* flips, stays open */
+            it[hit].checked = !it[hit].checked;
+            toggle = it[hit].checked;             /* legacy mirror: Open With's single toggle */
+            if (on_toggle) on_toggle(ctx, it[hit].tag, it[hit].checked);
+            return true;
+        }
         int tag = (hit >= 0) ? it[hit].tag : -1;
         dismiss();
         if (on_pick) on_pick(ctx, tag);

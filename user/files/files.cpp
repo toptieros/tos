@@ -34,6 +34,7 @@ enum { OP_RENAME = 0, OP_MOVE = 1, OP_CREATE = 2, OP_COPY = 3, OP_TRASH = 4 };
 #define HOMEDIR "/Users/user"
 #define TRASHDIR  HOMEDIR "/.Trash"        /* move-to-trash store (§9) */
 #define TRASHINFO TRASHDIR "/.trashinfo"   /* sidecar: "<trashedname>\t<origpath>" per line */
+#define TAGSFILE  HOMEDIR "/.tags"         /* tag sidecar: "<mask>\t<path>" per line (§10) */
 
 
 /* an app discovered under /Apps, for the Open With chooser */
@@ -84,6 +85,10 @@ struct FilesApp : ui::Window {
     int           nents = 0;
     int           view[NMAX]; int nview = 0;     /* ents indices currently shown (after filter) */
     int           nshown = 0;                    /* non-hidden, picker-allowed item count (status "N items") */
+    unsigned char etags[NMAX] = {};              /* §10: tag bitmask per ents[] entry (from ~/.tags) */
+    int           tag_filter = -1;               /* §10: only show items with this tag (-1 = off) */
+    char          tag_path[256] = {0};           /* §10: the item the Tags... picker targets */
+    int           tag_ent = -1;                  /* its ents[] index (etags refresh on toggle) */
     bool          filter_open = false;           /* the live filter bar is up ("/") */
     bool          loading = false;               /* guard: set_text() fires on_change mid-load */
     uint32_t     *appicon[NMAX] = {};
@@ -241,6 +246,16 @@ struct FilesApp : ui::Window {
         for (int i = 0; i < nents; i++)
             for (int j = i + 1; j < nents; j++)
                 if (ent_cmp(&ents[j], &ents[i]) < 0) { struct dirent t = ents[i]; ents[i] = ents[j]; ents[j] = t; }
+        {   /* §10: each entry's tag mask, from one slurp of the sidecar (after the sort
+             * so etags[i] stays aligned with ents[i]) */
+            int tlen = 0; char *tidx = sys_slurp(TAGSFILE, &tlen);
+            for (int i = 0; i < nents; i++) {
+                etags[i] = 0;
+                if (tidx) { char c[256]; join(c, sizeof c, path, ents[i].name);
+                            etags[i] = (unsigned char)tagstore_get(tidx, tlen, c); }
+            }
+            if (tidx) free(tidx);
+        }
         for (int i = 0; i < nents; i++) {
             if (!is_app_dir(ents[i].type, ents[i].name)) continue;
             char base[256]; join(base, sizeof base, path, ents[i].name);
@@ -284,6 +299,7 @@ struct FilesApp : ui::Window {
              * is in the request's allowed list (empty list = all). */
             if (picker && ents[i].type == FT_FILE && !pickreq_ext_match(ents[i].name, preq.ext)) continue;
             nshown++;                                        /* a real (non-hidden, allowed) item */
+            if (tag_filter >= 0 && !(etags[i] & (1u << tag_filter))) continue;   /* §10 */
             char label[64]; disp_name(ents[i].name, label, sizeof label);
             if (!tu_ci_contains(label, q)) continue;
             view[nview++] = i;
@@ -343,6 +359,10 @@ struct FilesApp : ui::Window {
         side.add_item("Applications", "/Apps",   SIDE_LOC);
         side.add_item("System",       "/System", SIDE_LOC);
         side.add_item("Computer",     "/",       SIDE_LOC);
+        for (int t = 0; t < TAG_NCOLORS; t++) {              /* §10: the seven tag rows */
+            char tp[6] = { 't', 'a', 'g', ':', (char)('0' + t), 0 };
+            side.add_item(tag_names_[t], tp, SIDE_TAGS);
+        }
         side.set_trash(TRASHDIR);
     }
     /* trace the sidebar's visible rows (click centres, window coords) for the e2e
@@ -387,10 +407,49 @@ struct FilesApp : ui::Window {
         save_places(); sync_side(); side_dump(); invalidate();
     }
 
+    /* ---- Tags (§10): the sidebar filter + the per-item picker ---------------- */
+    /* a sidebar tag row was clicked: filter the listing to that tag (click again = off) */
+    void set_tag_filter(int t) {
+        if (t < 0 || t >= TAG_NCOLORS) return;
+        tag_filter = (tag_filter == t) ? -1 : t;
+        side.active_tag = tag_filter;
+        apply_filter();
+        print("[files] tagfilter ");
+        if (tag_filter < 0) print("off"); else print(tag_names_[tag_filter]);
+        printc(' '); printu((unsigned)nview); print("\r\n");
+        invalidate();
+    }
+    /* context "Tags...": a stay-open popup of the seven colours, checked = the
+     * item's current mask; toggles write through to ~/.tags immediately. */
+    void open_tag_menu() {
+        int idx = ent_at(list.sel);
+        if (idx < 0) return;
+        join(tag_path, sizeof tag_path, path, ents[idx].name);
+        tag_ent = idx;
+        menu_mode = 2; menu.reset();
+        for (int t = 0; t < TAG_NCOLORS; t++) {
+            menu.add(tag_names_[t], PK_TOGGLE, t, 0, 0, 0);
+            menu.it[menu.n - 1].checked = (etags[idx] >> t) & 1;
+            menu.it[menu.n - 1].dot = tag_colors_[t];
+        }
+        menu.show(menu.px, menu.py);                 /* where the context menu just was */
+    }
+    void tag_toggled(int t, int on) {
+        if (menu_mode != 2 || !tag_path[0] || t < 0 || t >= TAG_NCOLORS) return;
+        unsigned m = tags_get(tag_path);
+        if (on) m |= 1u << t; else m &= ~(1u << t);
+        tags_set(tag_path, m);
+        if (tag_ent >= 0 && tag_ent < nents) etags[tag_ent] = (unsigned char)m;
+        print("[files] tags "); print(tag_path); printc(' '); printu(m); print("\r\n");
+        if (tag_filter >= 0) apply_filter();         /* an active filter reflects the change live */
+        invalidate();
+    }
+
     /* refresh the bottom status bar from the folder count + current selection */
     void update_status() {
-        if (filtering()) snprintf(status.left, sizeof status.left, "%d of %d shown", nview, nshown);
-        else             snprintf(status.left, sizeof status.left, "%d item%s", nshown, nshown == 1 ? "" : "s");
+        if (filtering() || tag_filter >= 0)
+             snprintf(status.left, sizeof status.left, "%d of %d shown", nview, nshown);
+        else snprintf(status.left, sizeof status.left, "%d item%s", nshown, nshown == 1 ? "" : "s");
         struct statfs sf;                                /* §6: the volume's free space, shown as a */
         if (statfs_(&sf) == 0) { char fb[24]; human_bytes(sf.free_bytes, fb, sizeof fb);   /* details footer */
                                  snprintf(details.freeline, sizeof details.freeline, "%s free", fb);
@@ -867,6 +926,32 @@ struct FilesApp : ui::Window {
                    if (n == 0) funlink(TRASHINFO); else sys_spit(TRASHINFO, buf, n); free(buf); }
         free(cur);
     }
+    /* ---- Tags (§10): FS wrappers around the pure tagstore codec ------------- */
+    unsigned tags_get(const char *full) {
+        int len = 0; char *idx = sys_slurp(TAGSFILE, &len);
+        if (!idx) return 0;
+        unsigned m = tagstore_get(idx, len, full);
+        free(idx);
+        return m;
+    }
+    void tags_set(const char *full, unsigned m) {
+        int len = 0; char *idx = sys_slurp(TAGSFILE, &len);
+        char *dst = (char *)malloc(len + 320);
+        if (dst) { int n = tagstore_set(dst, len + 320, idx ? idx : "", idx ? len : 0, full, m);
+                   if (n) sys_spit(TAGSFILE, dst, n); else funlink(TAGSFILE);
+                   free(dst); }
+        if (idx) free(idx);
+    }
+    /* a rename/move/trash carries an item's tags along (no-op when untagged) */
+    void tags_carry(const char *from, const char *to) {
+        int len = 0; char *idx = sys_slurp(TAGSFILE, &len);
+        if (!idx) return;
+        char *dst = (char *)malloc(len + 320);
+        if (dst) { int n = tagstore_move(dst, len + 320, idx, len, from, to);
+                   if (n) sys_spit(TAGSFILE, dst, n); else funlink(TAGSFILE);
+                   free(dst); }
+        free(idx);
+    }
     /* move `full` into the Trash (deduping its name there) and record where it came from */
     void move_to_trash(const char *full) {
         ensure_trash();
@@ -874,6 +959,7 @@ struct FilesApp : ui::Window {
         if (sys_exists(dst, 0)) { char d2[256]; dedup_path(d2, sizeof d2, dst);
                                   strncpy(dst, d2, sizeof dst - 1); dst[sizeof dst - 1] = 0; }
         if (rename_(full, dst) != 0) { rmrf(full); return; }           /* fall back to a hard delete */
+        tags_carry(full, dst);                                         /* tags follow the item (§10) */
         trashinfo_append(basename_of(dst), full);
         struct fstat ts; rec_op(OP_TRASH, full, dst, stat_(dst, &ts) == 0 && ts.type == FT_DIR);  /* §12 */
         print("[files] trash "); print(basename_of(full)); print("\r\n");
@@ -897,7 +983,7 @@ struct FilesApp : ui::Window {
         char dst[256]; if (!trashinfo_lookup(tname, dst, sizeof dst)) join(dst, sizeof dst, HOMEDIR, tname);
         if (sys_exists(dst, 0)) { char d2[256]; dedup_path(d2, sizeof d2, dst);
                                   strncpy(dst, d2, sizeof dst - 1); dst[sizeof dst - 1] = 0; }
-        if (rename_(src, dst) == 0) { trashinfo_remove(tname);
+        if (rename_(src, dst) == 0) { tags_carry(src, dst); trashinfo_remove(tname);
             print("[files] untrash "); print(tname); print("\r\n"); }
         load_dir();
     }
@@ -1059,7 +1145,8 @@ struct FilesApp : ui::Window {
         if (!nn[0] || eqn(nn, oldn)) { invalidate(); return; }   /* empty or unchanged */
         char oldp[512], newp[512]; join(oldp, sizeof oldp, path, oldn); join(newp, sizeof newp, path, nn);
         if (sys_exists(newp, 0)) { invalidate(); return; }       /* don't clobber an existing name */
-        if (rename_(oldp, newp) == 0) { rec_op(OP_RENAME, oldp, newp, ents[idx].type == FT_DIR);
+        if (rename_(oldp, newp) == 0) { tags_carry(oldp, newp);
+            rec_op(OP_RENAME, oldp, newp, ents[idx].type == FT_DIR);
             print("[files] rename "); print(oldn); print(" -> "); print(nn); print("\r\n"); }
         load_dir(); invalidate();
     }
@@ -1162,6 +1249,11 @@ struct FilesApp : ui::Window {
         int ix = base + cx[0] + 10; row_icon(a, idx, type, name, ix, iyy);
         char nm[64]; fit_col(label, nm, sizeof nm, cwd[0] - 40);
         ugfx_text(ix + 28, ty, nm, txt, UGFX_TRANSPARENT);
+        if (idx >= 0 && a->etags[idx]) {                     /* §10: the item's tag dots after the name */
+            int dx = ix + 28 + ugfx_text_w(nm) + 8, dy = cell.y + (cell.h - 8) / 2;
+            for (int t = 0; t < TAG_NCOLORS && dx + 8 <= base + cx[1]; t++)
+                if (a->etags[idx] & (1u << t)) { ugfx_rrect_aa(dx, dy, 8, 8, 4, tag_colors_[t]); dx += 11; }
+        }
         char kd[24], buf[40]; kind_label(type, name, kd, sizeof kd);
         fit_col(kd, buf, sizeof buf, cwd[1] - 14); ugfx_text(base + cx[1] + 10, ty, buf, mut, UGFX_TRANSPARENT);
         char sz[24];                                         /* folders show their recursive size too;
@@ -1376,7 +1468,11 @@ struct FilesApp : ui::Window {
         renamefld.ctx = this; renamefld.on_submit = [](void *c) { ((FilesApp *)c)->commit_rename(); };
         footer.color = C_TOOLBAR; nameLbl.text = "Name:"; nameLbl.fg = TH_MUTED;
 
-        side.ctx = this; side.on_pick = [](void *c, const char *p) { ((FilesApp *)c)->nav_to(p); };
+        side.ctx = this; side.on_pick = [](void *c, const char *p) {
+            FilesApp *a = (FilesApp *)c;                     /* §10: tag rows filter, the rest navigate */
+            if (p[0] == 't' && p[1] == 'a' && p[2] == 'g' && p[3] == ':') a->set_tag_filter(p[4] - '0');
+            else a->nav_to(p);
+        };
         side.on_changed = [](void *c) {                  /* a section collapsed/expanded (§7) */
             ((FilesApp *)c)->side_dump(); ((FilesApp *)c)->invalidate();
         };
@@ -1417,6 +1513,7 @@ struct FilesApp : ui::Window {
 
         menu.ctx = this;
         menu.on_pick = [](void *c, int tag) { ((FilesApp *)c)->menu_pick(tag); };
+        menu.on_toggle = [](void *c, int tag, int on) { ((FilesApp *)c)->tag_toggled(tag, on); };  /* §10 */
 
         /* picker footer widgets (#11) */
         okBtn.ctx = cancelBtn.ctx = overwrite.ctx = this;
@@ -1538,6 +1635,7 @@ struct FilesApp : ui::Window {
             }
         } break;
         case 17: remove_place(ctx_place); ctx_place = -1; break;   /* Remove from Places (§7) */
+        case 18: open_tag_menu(); break;                           /* Tags... picker (§10) */
         }
         invalidate();
     }
@@ -1583,6 +1681,8 @@ struct FilesApp : ui::Window {
                 if (e->type == FT_DIR && !is_app_dir(e->type, e->name))
                     menu.add("Add to Places", PK_ACTION, 16, 0, 0, 0);            /* §7 */
                 if (split) menu.add("Copy to Other Pane", PK_ACTION, 15, 0, 0, 0);   /* §4 */
+                menu.add("Tags...", PK_ACTION, 18, 0, 0, 0);   /* §10 (appended last: e2e clicks
+                                                                * earlier rows by index) */
             }
             menu.add("", PK_SEP, 0, 0, 0, 0);
         }
