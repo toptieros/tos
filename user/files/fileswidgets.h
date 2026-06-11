@@ -712,7 +712,7 @@ public:
  * inside an item -> pick (callback with the item's tag); a toggle item flips and
  * stays open; outside -> dismiss. */
 struct PopItem { char label[40]; int kind; int tag; const uint32_t *icon; int iw, ih;
-                 int checked; uint32_t dot; };   /* per-item toggle state + colour dot (§10 tags) */
+                 int checked; uint32_t dot; int disabled; };   /* per-item toggle state + colour dot (§10 tags) + greyed (locked items) */
 enum { PK_ACTION, PK_TOGGLE, PK_SEP };
 class Popup : public ui::Widget {
 public:
@@ -743,7 +743,7 @@ public:
     void add(const char *label, int kind, int tag, const uint32_t *icon, int iw, int ih) {
         if (n >= (int)(sizeof it / sizeof it[0])) return;
         PopItem *p = &it[n]; p->kind = kind; p->tag = tag; p->icon = icon; p->iw = iw; p->ih = ih;
-        p->checked = 0; p->dot = 0;
+        p->checked = 0; p->dot = 0; p->disabled = 0;
         int i = 0; for (; label[i] && i < 39; i++) p->label[i] = label[i]; p->label[i] = 0;
         n++;
     }
@@ -781,7 +781,8 @@ public:
         int cy = py + 5;
         for (int i = 0; i < n; i++) {
             if (it[i].kind == PK_SEP) { ugfx_fill_a(px + 10, cy + 3, pw - 20, 1, ARGB(50, 150, 170, 230)); cy += 7; continue; }
-            if (i == hover_item) ugfx_state_layer(px + 5, cy, pw - 10, rowh, TH_R_SM, TH_HOVER_A);  /* hover */
+            bool dim = it[i].disabled;
+            if (i == hover_item && !dim) ugfx_state_layer(px + 5, cy, pw - 10, rowh, TH_R_SM, TH_HOVER_A);  /* hover (not on greyed rows) */
             int tx = px + 12;
             if (it[i].icon) { blit_scaled(px + 10, cy + (rowh - 18) / 2, 18, 18, it[i].icon, it[i].iw, it[i].ih); tx = px + 36; }
             if (it[i].kind == PK_TOGGLE) {                  /* checkbox */
@@ -795,13 +796,14 @@ public:
                 ugfx_rrect_aa(tx, cy + (rowh - 10) / 2, 10, 10, 5, it[i].dot);
                 tx += 16;
             }
-            ugfx_text(tx, cy + (rowh - fh) / 2, it[i].label, TH_TEXT, UGFX_TRANSPARENT);
+            ugfx_text(tx, cy + (rowh - fh) / 2, it[i].label, dim ? TH_MUTED : TH_TEXT, UGFX_TRANSPARENT);
             cy += rowh;
         }
     }
     bool on_mouse(int x, int y, int) override {
         if (!open) return true;
         int hit = item_at(x, y);
+        if (hit >= 0 && it[hit].disabled) return true;                        /* greyed row: ignore, stay open */
         if (hit >= 0 && it[hit].kind == PK_TOGGLE) {                          /* flips, stays open */
             it[hit].checked = !it[hit].checked;
             toggle = it[hit].checked;             /* legacy mirror: Open With's single toggle */

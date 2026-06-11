@@ -185,6 +185,7 @@ struct dirent {
     uint32_t type;        /* FT_FILE / FT_DIR */
     uint32_t size;        /* bytes (0 for a directory) */
     uint32_t mtime;       /* packed modification time (fstime.h); 0 = unknown */
+    uint32_t owner;       /* owning uid (TOS_UID_* -- fs/perm.h); for lock badges without a per-row stat */
 };
 
 /* Filled by SYS_STATFS: the mounted volume's data capacity + what's free, in bytes

@@ -61,8 +61,11 @@ protocol). **Left:**
 - [~] **System ownership (#1).** **Done:** tosfs v3 carries a per-entry `owner`; tasks carry a
   `uid` (init=system, the desktop session drops to user); the mutating fs syscalls enforce
   `tos_may_write()`; the shell prints `permission denied (system file)` and ships an `id` builtin.
-  **Remaining (folded into the Files suite below):** the Files/desktop **lock badge** + greyed
-  actions on system-owned items (reads `fstat.owner`). → [`system-ownership.md`](design/system-ownership.md)
+  Files now shows a **gold padlock badge** on system-owned items in the list/icon/split views
+  (off the new `dirent.owner`, no per-row stat) and **greys Cut/Rename/Delete** in the context
+  menu, with a status-bar deny-flash on the keyboard/toolbar paths (2026-06-11).
+  **Remaining (folded into the Desktop suite below):** the same lock badge on the future
+  `WIN_DESKTOP` layer (waits on that layer existing). → [`system-ownership.md`](design/system-ownership.md)
 - [ ] **Capability sandbox.** Wire the manifest `caps` field to a per-task capability set checked
   at the syscall boundary (fs jails, spawn/window/notify gating). → [`app-runtime.md`](design/app-runtime.md)
 - [~] **Ctrl+C/X/V everywhere.** Landed in `TextField`, the terminal (Ctrl+Shift+C/X/V), and Files
@@ -85,8 +88,9 @@ protocol). **Left:**
 - [ ] **Growable filesystem.** Files are contiguous and a metadata change rewrites the whole slot
   table; the partition is fixed-size. Want extent/indirect blocks, a runtime-sized partition, and a
   journaled table.
-- [~] **Terminal scrollback.** Wheel + Shift-PgUp/PgDn over a 256-row ring done; future: a
-  configurable ring size.
+- [x] **Terminal scrollback.** Wheel + Shift-PgUp/PgDn over the ring done; the ring is now
+  **heap-allocated and sized from `term.scrollback`** in the registry (default 256, clamped to
+  at least one screenful), so the depth scales with the setting — no compiled-in wall (2026-06-11).
 
 ### Smaller ideas
 - _(nothing queued right now)_

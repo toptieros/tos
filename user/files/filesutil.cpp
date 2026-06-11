@@ -95,4 +95,14 @@ void draw_glyph(int g, int cx, int cy, int r, uint32_t c) {
         vline_(cx - 1, cy - r + 7, cx - 1, cy + r - 1, 1, c);
         vline_(cx + 2, cy - r + 7, cx + 2, cy + r - 1, 1, c);
     }
+    else if (g == G_LOCK) {                                   /* padlock: shackle + solid body */
+        int sh = r - 1; if (sh < 2) sh = 2;                  /* shackle height */
+        int by  = cy - (2 * r + 1) / 2 + sh;                 /* body top (centres the whole lock on cy) */
+        int top = by - sh;                                   /* shackle top */
+        int sx0 = cx - r + 1, sx1 = cx + r - 1;              /* shackle posts */
+        vline_(sx0, by, sx0, top, 1, c);
+        vline_(sx1, by, sx1, top, 1, c);
+        vline_(sx0, top, sx1, top, 1, c);
+        ugfx_fill(cx - r, by, 2 * r + 1, r + 2, c);          /* lock body */
+    }
 }

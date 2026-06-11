@@ -18,6 +18,6 @@ void blit_scaled(int dx, int dy, int dw, int dh, const uint32_t *src, int sw, in
 uint32_t *load_icon_argb(const char *path, int *w, int *h);
 
 /* thin vector strokes for the toolbar glyphs (ugfx has no line primitive) */
-enum { G_BACK, G_FWD, G_UP, G_NEWF, G_TRASH };
+enum { G_BACK, G_FWD, G_UP, G_NEWF, G_TRASH, G_LOCK };
 void vline_(int x0, int y0, int x1, int y1, int t, uint32_t c);
 void draw_glyph(int g, int cx, int cy, int r, uint32_t c);

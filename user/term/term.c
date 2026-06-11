@@ -7,6 +7,7 @@
  * the grid, twm can move/restack the window freely without losing any text. */
 #include "ulib.h"
 #include "ugfx.h"
+#include "registry.h"     /* term.scrollback: the configurable ring depth */
 
 #define MAXCOLS 220
 #define MAXROWS 70
@@ -33,11 +34,32 @@ static uint8_t ssel[MAXROWS * MAXCOLS];  /* shadow: was this cell drawn selected
 
 /* Scrollback: rows that scrolled off the top are kept in a ring so the wheel can
  * page back through history. view_off = how many rows we've scrolled back from the
- * live bottom (0 = following the live grid). */
-#define SBROWS 256
-static uint8_t sbch[SBROWS * MAXCOLS], sbfg[SBROWS * MAXCOLS], sbbg[SBROWS * MAXCOLS];
-static int sb_count, sb_head;            /* rows stored (<=SBROWS); head = oldest slot */
+ * live bottom (0 = following the live grid). The ring is heap-allocated and sized
+ * from `term.scrollback` in the registry (default 256, never below one screenful),
+ * so the depth scales with the setting -- no compiled-in wall. */
+#define SB_DEFAULT 256
+static uint8_t *sbch, *sbfg, *sbbg;      /* heap ring, sb_rows * MAXCOLS bytes each */
+static int sb_rows = SB_DEFAULT;         /* ring capacity in rows (configurable) */
+static int sb_count, sb_head;            /* rows stored (<=sb_rows); head = oldest slot */
 static int view_off;                     /* rows scrolled back from the live bottom (0 = live) */
+
+/* Allocate the scrollback ring, sized from the registry. Call once at startup, after
+ * cols/rows are known. Falls back to the default size if the configured one won't fit. */
+static void sb_init(void) {
+    reg_load();
+    int n = reg_int("term.scrollback", SB_DEFAULT);
+    if (n < rows) n = rows;                          /* keep at least one full screen */
+    if (n < 16)   n = 16;
+    sb_rows = n;
+    unsigned cells = (unsigned)sb_rows * MAXCOLS;
+    sbch = (uint8_t *)malloc(cells); sbfg = (uint8_t *)malloc(cells); sbbg = (uint8_t *)malloc(cells);
+    if (!sbch || !sbfg || !sbbg) {                   /* config too large: retry at the default */
+        free(sbch); free(sbfg); free(sbbg);
+        sb_rows = SB_DEFAULT; cells = (unsigned)sb_rows * MAXCOLS;
+        sbch = (uint8_t *)malloc(cells); sbfg = (uint8_t *)malloc(cells); sbbg = (uint8_t *)malloc(cells);
+    }
+    print("[term] scrollback "); printu((unsigned)sb_rows); print(" rows\r\n");
+}
 
 static int cx, cy;                       /* cursor cell */
 static int cur_fg = DEF_FG, cur_bg = DEF_BG, bold;
@@ -70,8 +92,9 @@ static void clear_grid(void) { for (int r = 0; r < rows; r++) blank_row(r); cx =
 
 /* Push a grid row into the scrollback ring (oldest is overwritten when full). */
 static void sb_push(int srcrow) {
-    int slot = (sb_head + sb_count) % SBROWS;
-    if (sb_count == SBROWS) sb_head = (sb_head + 1) % SBROWS;   /* full: drop the oldest */
+    if (!sbch) return;                                         /* ring not allocated (OOM) */
+    int slot = (sb_head + sb_count) % sb_rows;
+    if (sb_count == sb_rows) sb_head = (sb_head + 1) % sb_rows;   /* full: drop the oldest */
     else sb_count++;
     for (int c = 0; c < MAXCOLS; c++) {
         int s = srcrow * STRIDE + c, d = slot * MAXCOLS + c;
@@ -83,7 +106,7 @@ static void sb_push(int srcrow) {
 static void view_cell(int r, int c, uint8_t *ch, uint8_t *fg, uint8_t *bg) {
     int logical = (sb_count - view_off) + r;
     if (logical < sb_count) {
-        int i = ((sb_head + logical) % SBROWS) * MAXCOLS + c;
+        int i = ((sb_head + logical) % sb_rows) * MAXCOLS + c;
         *ch = sbch[i]; *fg = sbfg[i]; *bg = sbbg[i];
     } else {
         int i = (logical - sb_count) * STRIDE + c;
@@ -327,6 +350,7 @@ void _ustart(void) {
     surf = (uint32_t *)wi.vaddr; sw = (int)wi.w; sh = (int)wi.h;
     fw = ugfx_font_w(); fh = ugfx_font_h();
     setup_surface((int)wi.pitch);     /* sets cols/rows first ... */
+    sb_init();                        /* ... so the ring can clamp to >= one screenful */
     clear_grid();                     /* ... so this actually blanks the grid (was a no-op when rows==0) */
     print("[term] grid "); printu((unsigned)fw); printc(' '); printu((unsigned)fh);
     printc(' '); printu((unsigned)cols); printc(' '); printu((unsigned)rows); print("\r\n");  /* harness hook */

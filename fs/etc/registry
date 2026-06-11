@@ -14,3 +14,5 @@ clock.format      = 24h
 clock.seconds     = true
 clock.weekday     = true
 dock.pinned       = Terminal,Files
+
+term.scrollback   = 256   # terminal history depth in rows (>= one screenful)

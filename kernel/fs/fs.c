@@ -456,6 +456,7 @@ static int readdir_l(const char *path, struct dirent *out, int max) {
         out[n].type  = super.ents[i].type;
         out[n].size  = super.ents[i].size;
         out[n].mtime = super.ents[i].mtime;
+        out[n].owner = super.ents[i].owner;       /* lock badges read this without a per-row SYS_STAT */
         n++;
     }
     return n;

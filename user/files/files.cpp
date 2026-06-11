@@ -340,6 +340,25 @@ struct FilesApp : ui::Window {
         int v = row - hu;
         return (v >= 0 && v < nview) ? view[v] : -1;
     }
+    /* §1 system ownership: cached caller uid + "may I not write this?" for lock badges +
+     * greyed destructive actions. owner rides on dirent (filled by readdir, no per-row stat). */
+    unsigned my_uid = (unsigned)getuid();
+    bool owner_locked(unsigned owner) const { return info_is_locked(owner, my_uid) != 0; }
+    bool ent_locked(int idx) const { return idx >= 0 && idx < nents && owner_locked(ents[idx].owner); }
+    bool sel_locked() const { return ent_locked(ent_at(list.sel)); }
+    /* a system item refused a mutating action: a transient status flash + e2e canary. */
+    void deny_flash(const char *name) {
+        snprintf(status.left, sizeof status.left, "\"%s\" is a system item (read only)", name);
+        print("[files] denied "); print(name); print("\r\n");
+        invalidate();
+    }
+    /* the badge: a small dark chip + gold padlock at the icon's lower-right (matches the
+     * Get Info "Read only" badge colour). `box` is the icon's drawn size. */
+    static void lock_badge(int icon_x, int icon_y, int box) {
+        int cx = icon_x + box - 5, cy = icon_y + box - 5;        /* badge centre */
+        ugfx_rrect_aa(cx - 6, cy - 6, 13, 13, 6, ARGB(235, 52, 60, 80));   /* chip backing */
+        draw_glyph(G_LOCK, cx, cy, 4, RGB(245, 205, 110));                 /* gold padlock */
+    }
     bool filtering() const { return filter_open && filterfld.length() > 0; }
     /* rebuild the visible set from the current filter text (case-insensitive substring
      * over the display name); resets the selection, like Finder/Dolphin's filter. */
@@ -1010,12 +1029,14 @@ struct FilesApp : ui::Window {
         FilesApp *a = (FilesApp *)ctx;
         if (!sel && (i & 1)) ugfx_fill(cell.x, cell.y, cell.w, cell.h, C_ZEBRA);
         int ix = cell.x + 12, ty = cell.y + (cell.h - a->fh) / 2, iyy = cell.y + (cell.h - 20) / 2;
-        const char *name; int type; unsigned size = 0;
+        const char *name; int type; unsigned size = 0; bool locked = false;
         if (a->has_up2() && i == 0) { name = ".."; type = FT_DIR; }
         else { int idx = i - a->has_up2(); if (idx < 0 || idx >= a->nents2) return;
-               struct dirent *e = &a->ents2[idx]; name = e->name; type = e->type; size = e->size; }
+               struct dirent *e = &a->ents2[idx]; name = e->name; type = e->type; size = e->size;
+               locked = a->owner_locked(e->owner); }
         char label[64]; disp_name(name, label, sizeof label);
         blit_scaled(ix, iyy, 20, 20, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
+        if (locked) lock_badge(ix, iyy, 20);                 /* §1: padlock badge */
         ugfx_text(ix + 30, ty, label, sel ? RGB(255, 255, 255) : TH_TEXT, UGFX_TRANSPARENT);
         if (type == FT_FILE) { char sz[20]; snprintf(sz, sizeof sz, "%u B", size);
             ugfx_text(cell.x + cell.w - ugfx_text_w(sz) - 14, ty, sz, sel ? RGB(230, 238, 250) : TH_MUTED, UGFX_TRANSPARENT); }
@@ -1261,6 +1282,7 @@ struct FilesApp : ui::Window {
         int idx = ent_at(list.sel);
         if (idx < 0) return;
         struct dirent *e = &ents[idx];
+        if (owner_locked(e->owner)) { deny_flash(e->name); return; }   /* §1: system item, read only */
         char child[256]; join(child, sizeof child, path, e->name);
         if (in_trash()) { rmrf(child); trashinfo_remove(e->name); }    /* already trashed: delete for good */
         else            move_to_trash(child);                          /* normal folder: move to Trash */
@@ -1305,6 +1327,7 @@ struct FilesApp : ui::Window {
         if (idx < 0) return;
         struct dirent *e = &ents[idx];
         if (e->type != FT_FILE) return;
+        if (cut && owner_locked(e->owner)) { deny_flash(e->name); return; }   /* §1: can't move a system file */
         char full[256]; join(full, sizeof full, path, e->name);
         int n = 0; char *b = sys_slurp(full, &n);
         if (!b) return;
@@ -1418,6 +1441,7 @@ struct FilesApp : ui::Window {
         int sel = (view_mode == 1) ? grid.sel : list.sel;
         int idx = ent_at(sel);
         if (idx < 0) return;                                 /* can't rename the ".." row */
+        if (owner_locked(ents[idx].owner)) { deny_flash(ents[idx].name); return; }   /* §1: system item, read only */
         if (view_mode == 1) grid.ensure_visible(sel);
         else if (view_mode == 2) gal.ensure_visible(sel);
         else list.ensure_visible(sel);
@@ -1529,6 +1553,7 @@ struct FilesApp : ui::Window {
         }
         else if (idx >= 0 && is_app_dir(type, name) && a->appicon[idx]) blit_scaled(ix, iyy, 20, 20, a->appicon[idx], a->appiw[idx], a->appih[idx]);
         else blit_scaled(ix, iyy, 20, 20, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
+        if (a->ent_locked(idx)) lock_badge(ix, iyy, 20);     /* §1: system-owned -> padlock badge */
     }
     static void render_row(void *ctx, int i, ui::Rect cell, bool sel) {
         FilesApp *a = (FilesApp *)ctx;
@@ -1596,6 +1621,7 @@ struct FilesApp : ui::Window {
             blit_scaled(cx - icon_box / 2, iy, icon_box, icon_box, a->appicon[idx], a->appiw[idx], a->appih[idx]);
         else
             blit_scaled(cx - icon_box / 2, iy, icon_box, icon_box, fileicons_argb[file_icon_for(type, name)], FILEICON_SZ, FILEICON_SZ);
+        if (a->ent_locked(idx)) lock_badge(cx - icon_box / 2, iy, icon_box);   /* §1: padlock badge */
         char trunc[64];                                  /* clamp the name to the tile width */
         int maxc = a->fw > 0 ? (cell.w - 8) / a->fw : 8; if (maxc < 1) maxc = 1; if (maxc > 63) maxc = 63;
         int ll = (int)strlen(label);
@@ -2045,6 +2071,7 @@ struct FilesApp : ui::Window {
         bool trash = in_trash();
         if (real >= 0) {
             struct dirent *e = &ents[real];
+            bool lk = owner_locked(e->owner);                  /* §1: a system-owned item -> grey its mutators */
             if (trash) {                                       /* Trash items: restore or delete for good */
                 menu.add("Put Back", PK_ACTION, 10, 0, 0, 0);
                 menu.add("Delete Immediately", PK_ACTION, 3, 0, 0, 0);
@@ -2055,10 +2082,11 @@ struct FilesApp : ui::Window {
                         menu.add("Open in New Tab", PK_ACTION, 14, 0, 0, 0);     /* §4 */
                 }
                 else { menu.add("Open", PK_ACTION, 1, 0, 0, 0); menu.add("Open With...", PK_ACTION, 2, 0, 0, 0);
-                       menu.add("Copy", PK_ACTION, 6, 0, 0, 0); menu.add("Cut", PK_ACTION, 7, 0, 0, 0); }
+                       menu.add("Copy", PK_ACTION, 6, 0, 0, 0);
+                       menu.add("Cut", PK_ACTION, 7, 0, 0, 0); menu.it[menu.n - 1].disabled = lk; }   /* §1: no Cut on locked */
                 menu.add("Duplicate", PK_ACTION, 12, 0, 0, 0);        /* §12 */
-                menu.add("Rename", PK_ACTION, 9, 0, 0, 0);
-                menu.add("Delete", PK_ACTION, 3, 0, 0, 0);
+                menu.add("Rename", PK_ACTION, 9, 0, 0, 0); menu.it[menu.n - 1].disabled = lk;   /* §1 */
+                menu.add("Delete", PK_ACTION, 3, 0, 0, 0); menu.it[menu.n - 1].disabled = lk;   /* §1 */
                 if (e->type == FT_DIR && !is_app_dir(e->type, e->name))
                     menu.add("Add to Places", PK_ACTION, 16, 0, 0, 0);            /* §7 */
                 if (split) menu.add("Copy to Other Pane", PK_ACTION, 15, 0, 0, 0);   /* §4 */

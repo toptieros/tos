@@ -181,6 +181,7 @@ mode, `PageList`-style paged scrollback (the ring suffices), and **reflow on res
 - The byte-stream transport: the kernel **pty** (`kernel/ipc.c`).
 - Window title / menu / chrome: [`ui.md`](ui.md) (and the `win_settitle` addition).
 - Palette / cursor / scrollback config (kept minimal, per the configurability ethos
-  in [`shell.md`](shell.md)): [`settings.md`](settings.md).
+  in [`shell.md`](shell.md)): [`settings.md`](settings.md). **Scrollback depth is wired:**
+  `term.scrollback` in the registry sizes the heap ring at startup (default 256 rows).
 - Where a terminfo entry lives: [`filesystem-layout.md`](filesystem-layout.md)
   (`/System/share`).

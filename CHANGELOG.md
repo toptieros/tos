@@ -7,6 +7,23 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Terminal configurable scrollback ring size (2026-06-11).** The scrollback ring is now
+  **heap-allocated at startup and sized from `term.scrollback`** in the registry (default 256,
+  clamped up to at least one screenful), replacing the compiled-in 256-row static array — so the
+  history depth scales with the setting instead of hitting a fixed wall. New seed key in
+  `fs/etc/registry`; `sbch/sbfg/sbbg` became heap pointers + a runtime `sb_rows`; `[term]
+  scrollback <n> rows` canary at startup. Disposable boot confirmed a non-default seed (1000)
+  flows through.
+- **Files lock badges + greyed actions on system-owned items #1 (2026-06-11).** Finishes the
+  System-ownership UI: a gold **padlock badge** now sits at the lower-right of every
+  system-owned item's icon in the list / details / icon / split views, and the context menu
+  **greys Cut / Rename / Delete** on those items (a new `disabled` flag on the `Popup` rows).
+  The keyboard/toolbar paths (`do_delete` / `copy_sel(cut)` / `start_rename`) short-circuit with
+  a status-bar **deny-flash** (`[files] denied <name>`) instead of a silently-refused syscall.
+  Owner now rides on `struct dirent` (filled by `readdir` from the tosfs entry), so the badge
+  reads it **without a per-row `SYS_STAT`**; the Get Info pane's "Read only" badge was already
+  there. New `G_LOCK` glyph + cached caller uid. Disposable boot + screenshots (`/Apps` bundles
+  badged; the greyed Rename/Delete menu).
 - **Filter/search bar click-away dismiss §5 (2026-06-11).** Clicking outside an open-but-empty
   filter/search bar dismisses it, like Esc — routed click-first so the click lands in the
   pre-close layout, then the chosen row is re-selected (close's `apply_filter` resets `sel`).
