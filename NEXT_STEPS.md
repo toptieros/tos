@@ -117,10 +117,17 @@ protocol). **Left:**
 - [ ] **Userspace runtime + SDK sysroot.** sysroot + `tos-cc`/`tos-c++`; a hosted C++ runtime
   (STL/exceptions/RTTI/unwind); `libposix`; a QPA-style framebuffer/input shim. The line between
   "teaching OS" and "runs third-party software." → [`app-porting.md`](design/app-porting.md)
-- [ ] **Installer (live → install).** Raw block-write to a target disk, in-OS mkfs/partitioning,
-  copy `/System`+`/Apps`, seed `/Users` + registry. Start on virtio-blk/ATA-slave. → [`installation.md`](design/installation.md)
-- [ ] **Device drivers (Phase 4).** virtio-blk → AHCI/SATA+DMA → NVMe → GPT/ESP(FAT) writer → USB
-  (xHCI+HID+MSC) → ACPI (uACPI/LAI) → virtio-net/e1000 + TCP/IP. GPU accel is VM-only. → [`roadmap.md`](design/roadmap.md)
+- [x] **Installer (live → install) — v1 (2026-06-12).** Whole-disk clone of the boot disk onto a
+  virtio-blk target through the block layer (`install` shell cmd → `SYS_INSTALL` → `kernel/install.c`),
+  MBR verify-read. **fs-on-bdev landed too:** the root fs + ELF loader read through the block layer and
+  the mount scans every disk's MBR for the tosfs partition, so the install **boots independently off
+  virtio-blk** (verified: clone → boot-as-IDE → boot-as-virtio, root mounted from virtio0, no IDE
+  disk). **Left for a "real" installer:** mkfs/partition the target instead of cloning (copy
+  `/System`+`/Apps`, seed `/Users` + registry), and GPT/ESP for UEFI targets. → [`installation.md`](design/installation.md)
+- [~] **Device drivers (Phase 4).** **Done:** **virtio-blk** (legacy virtio-pci, polled DMA) +
+  a **block-device layer** (`blockdev.c`; ata0 + virtio0) (2026-06-12). **Next:** AHCI/SATA+DMA →
+  NVMe → GPT/ESP(FAT) writer → USB (xHCI+HID+MSC) → ACPI (uACPI/LAI) → virtio-net/e1000 + TCP/IP.
+  GPU accel is VM-only. → [`roadmap.md`](design/roadmap.md)
 - [ ] **Growable filesystem.** Files are contiguous and a metadata change rewrites the whole slot
   table; the partition is fixed-size. Want extent/indirect blocks, a runtime-sized partition, and a
   journaled table.

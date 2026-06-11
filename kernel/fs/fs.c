@@ -14,7 +14,7 @@
  * and (for files) frees its sectors back to the bitmap. The bitmap lives only in
  * RAM and is rebuilt from the table at mount, so nothing extra goes on disk. */
 #include "fs.h"
-#include "ata.h"
+#include "blockdev.h"     /* the root fs reads/writes through the block-device layer */
 #include "console.h"
 #include "sched.h"        /* MAX_TASKS, sched_current()/sched_uid() -> fd tables, cwd, identity */
 #include "syscall.h"      /* O_CREATE / O_TRUNC / O_RDONLY, struct dirent / fstat */
@@ -83,39 +83,37 @@ static void copy_name(char *dst, const char *src) {
 
 static uint32_t sectors_for(uint32_t bytes) { return (bytes + 511) / 512; }
 
-/* All FS sector numbers are relative to our partition; these add the base. The
- * count is chunked into <=128-sector ATA transfers (the ATA count register is only
- * 8-bit) so multi-sector I/O like the directory table -- now >256 sectors on a
- * larger disk -- isn't capped to a single command. Lets TOSFS_DISK_SECTORS scale. */
+/* The block device our root fs lives on (set by find_partition; ata0 by default).
+ * All FS sector numbers are relative to our partition; these add the base and let
+ * the block layer chunk the transfer (the ATA adapter splits into 8-bit counts). */
+static int fs_bdev = 0;
 static int fs_sread(uint32_t lba, uint32_t n, void *buf) {
-    uint8_t *p = (uint8_t *)buf;
-    while (n) { uint8_t c = n > 128 ? 128 : (uint8_t)n;
-        if (ata_read(base_lba + lba, c, p) < 0) return -1;
-        lba += c; p += (uint32_t)c * 512; n -= c; }
-    return 0;
+    return bdev_read(fs_bdev, (uint64_t)base_lba + lba, n, buf);
 }
 static int fs_swrite(uint32_t lba, uint32_t n, const void *buf) {
-    const uint8_t *p = (const uint8_t *)buf;
-    while (n) { uint8_t c = n > 128 ? 128 : (uint8_t)n;
-        if (ata_write(base_lba + lba, c, p) < 0) return -1;
-        lba += c; p += (uint32_t)c * 512; n -= c; }
-    return 0;
+    return bdev_write(fs_bdev, (uint64_t)base_lba + lba, n, buf);
 }
 
 uint32_t fs_base_lba(void) { return base_lba; }
+int      fs_disk_bdev(void) { return fs_bdev; }   /* the block device the root fs lives on */
 
-/* Scan the MBR partition table (sector 0) for our tosfs partition and return its
- * first LBA, or 0 if there is no partition table / no such partition (in which
- * case the FS is assumed to sit at LBA 0, as on a bare, unpartitioned image). */
+/* Find the disk our root lives on: scan every registered block device's MBR
+ * (sector 0) for our tosfs partition. Binds `fs_bdev` to the first match and
+ * returns its first LBA. This is what lets tOS boot off whichever disk carries
+ * the install -- the IDE boot disk, or an installed virtio-blk/NVMe target.
+ * Returns 0 (no match) -> caller treats the device as bare tosfs at LBA 0. */
 static uint32_t find_partition(void) {
     uint8_t mbr[512];
-    if (ata_read(0, 1, mbr) < 0) return 0;
-    if (mbr[510] != 0x55 || mbr[511] != 0xAA) return 0;     /* no MBR signature */
-    for (int i = 0; i < 4; i++) {
-        const uint8_t *e = &mbr[446 + i * 16];              /* partition entry */
-        if (e[4] != TOSFS_PART_TYPE) continue;
-        return (uint32_t)e[8] | ((uint32_t)e[9] << 8) |
-               ((uint32_t)e[10] << 16) | ((uint32_t)e[11] << 24);  /* LBA start (LE) */
+    for (int d = 0; d < bdev_count(); d++) {
+        if (bdev_read(d, 0, 1, mbr) < 0) continue;
+        if (mbr[510] != 0x55 || mbr[511] != 0xAA) continue;   /* no MBR signature */
+        for (int i = 0; i < 4; i++) {
+            const uint8_t *e = &mbr[446 + i * 16];            /* partition entry */
+            if (e[4] != TOSFS_PART_TYPE) continue;
+            fs_bdev = d;
+            return (uint32_t)e[8] | ((uint32_t)e[9] << 8) |
+                   ((uint32_t)e[10] << 16) | ((uint32_t)e[11] << 24);  /* LBA start (LE) */
+        }
     }
     return 0;
 }

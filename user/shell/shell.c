@@ -462,6 +462,11 @@ void _ustart(void) {
             cmd_sleep(line + 6);
         } else if (starts(line, "echo ")) {
             print(line + 5); print("\r\n");
+        } else if (streq(line, "install")) {
+            print("Installing tOS onto the target disk...\r\n");   /* clone boot disk -> bdev 1 (e.g. virtio0) */
+            long n = install_disk(1);
+            if (n < 0) print("install failed (no target disk or write/verify error)\r\n");
+            else { print("installed "); printu((unsigned)n); print(" sectors\r\n"); }
         } else if (streq(line, "id")) {
             print("uid="); printu((unsigned)getuid()); print("\r\n");
         } else if (starts(line, "id ")) {

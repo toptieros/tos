@@ -27,6 +27,7 @@ void yield(void)              { sc(SYS_YIELD, 0); }
 void sleep_ticks(unsigned n)  { sc(SYS_SLEEP, (uint64_t)n); }
 void sleep_ms(unsigned ms)    { unsigned t = (ms * TIMER_HZ) / 1000; sc(SYS_SLEEP, t ? t : 1); }
 int  getcpu(void)             { return (int)sc(SYS_GETCPU, 0); }
+long install_disk(int target) { return (long)sc(SYS_INSTALL, (uint64_t)(unsigned)target); }
 void paint_cursor(char c, int inverse) { sc(SYS_CPAINT, ((uint64_t)(inverse & 1) << 8) | (uint8_t)c); }
 int  fbinfo(struct fbinfo *fb)         { return (int)sc(SYS_FBINFO, (uint64_t)fb); }
 void con_window(int x, int y, int w, int h) {

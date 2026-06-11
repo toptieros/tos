@@ -60,6 +60,17 @@ static uint16_t   last_used = 0;
 static struct virtio_blk_req *req_hdr;
 static volatile uint8_t      *req_status;
 
+/* DMA bounce buffer (identity-mapped, phys == virt). The device DMAs only here;
+ * we copy to/from the caller's buffer, which may live in the higher half (kernel
+ * .bss / stack) where virt != phys -- so its address can't be a DMA target. */
+#define BOUNCE_SECTORS 64
+static uint8_t *bounce;
+
+static void bcopy(void *d, const void *s, uint32_t n) {
+    uint8_t *dd = (uint8_t *)d; const uint8_t *ss = (const uint8_t *)s;
+    for (uint32_t i = 0; i < n; i++) dd[i] = ss[i];
+}
+
 static inline uint16_t align_up(uint16_t v, uint16_t a) { return (uint16_t)((v + a - 1) & ~(a - 1)); }
 
 /* Find a virtio-blk function on bus 0. Returns 1 and fills slot/func, else 0. */
@@ -101,9 +112,8 @@ static uint8_t submit_and_wait(void) {
     return *req_status;
 }
 
-static int do_io(uint64_t lba, uint32_t count, void *buf, int write) {
-    if (!present || count == 0) return -1;
-    uint64_t fl = spin_lock_irqsave(&vblk_lock);
+/* One device request: header -> the bounce buffer -> status, then spin. */
+static int io_phys(uint64_t lba, uint32_t count, int write) {
     req_hdr->type = write ? VBLK_T_OUT : VBLK_T_IN;
     req_hdr->reserved = 0;
     req_hdr->sector = lba;
@@ -111,14 +121,31 @@ static int do_io(uint64_t lba, uint32_t count, void *buf, int write) {
 
     desc[0].addr = (uint64_t)(uintptr_t)req_hdr;  desc[0].len = sizeof(struct virtio_blk_req);
     desc[0].flags = VRING_DESC_F_NEXT;            desc[0].next = 1;
-    desc[1].addr = (uint64_t)(uintptr_t)buf;      desc[1].len = 512u * count;
+    desc[1].addr = (uint64_t)(uintptr_t)bounce;   desc[1].len = 512u * count;
     desc[1].flags = VRING_DESC_F_NEXT | (write ? 0 : VRING_DESC_F_WRITE); desc[1].next = 2;
     desc[2].addr = (uint64_t)(uintptr_t)req_status; desc[2].len = 1;
     desc[2].flags = VRING_DESC_F_WRITE;           desc[2].next = 0;
 
-    uint8_t st = submit_and_wait();
+    return submit_and_wait() == 0 ? 0 : -1;
+}
+
+/* Transfer `count` sectors to/from the caller's `buf`, chunked through the bounce
+ * buffer so the caller's pointer never has to be a physical DMA address. */
+static int do_io(uint64_t lba, uint32_t count, void *buf, int write) {
+    if (!present || count == 0) return -1;
+    uint8_t *p = (uint8_t *)buf;
+    uint64_t fl = spin_lock_irqsave(&vblk_lock);
+    int rc = 0;
+    while (count) {
+        uint32_t c = count > BOUNCE_SECTORS ? BOUNCE_SECTORS : count;
+        uint32_t bytes = c * 512u;
+        if (write) bcopy(bounce, p, bytes);
+        if (io_phys(lba, c, write) < 0) { rc = -1; break; }
+        if (!write) bcopy(p, bounce, bytes);
+        lba += c; p += bytes; count -= c;
+    }
     spin_unlock_irqrestore(&vblk_lock, fl);
-    return st == 0 ? 0 : -1;
+    return rc;
 }
 
 int virtio_blk_read(uint64_t lba, uint32_t count, void *buf)        { return do_io(lba, count, buf, 0); }
@@ -184,9 +211,11 @@ void virtio_blk_init(void) {
     last_used = 0;
 
     uint64_t scratch = vmm_alloc_surface(1);
-    if (!scratch) { console_puts("[virtio-blk] req page alloc failed\r\n"); outb(io_base + VIO_STATUS, VST_FAILED); return; }
+    uint64_t bb = vmm_alloc_surface((BOUNCE_SECTORS * 512) / 4096);
+    if (!scratch || !bb) { console_puts("[virtio-blk] DMA alloc failed\r\n"); outb(io_base + VIO_STATUS, VST_FAILED); return; }
     req_hdr    = (struct virtio_blk_req *)(uintptr_t)scratch;
     req_status = (volatile uint8_t *)(uintptr_t)(scratch + sizeof(struct virtio_blk_req));
+    bounce     = (uint8_t *)(uintptr_t)bb;
 
     outl(io_base + VIO_QUEUE_PFN, (uint32_t)(vbase >> 12));           /* hand the device the ring */
 

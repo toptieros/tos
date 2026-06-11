@@ -5,6 +5,7 @@
 
 int  fs_mount(void);                        /* read+validate the table; 0 ok    */
 uint32_t fs_base_lba(void);                 /* disk LBA of our partition's start */
+int      fs_disk_bdev(void);                /* block-device index the root fs lives on */
 const struct tosfs_ent *fs_find(const char *name);   /* root-level program lookup */
 void fs_ls(void);                           /* print the cwd's directory to console */
 uint32_t fs_nfiles(void);                   /* number of files (for sysinfo)   */

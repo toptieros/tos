@@ -14,6 +14,7 @@
 #include "vmm.h"
 #include "fs.h"
 #include "ata.h"
+#include "blockdev.h"     /* the ELF loader reads programs through the fs's block device */
 #include "console.h"
 #include "syscall.h"
 #include "cpu.h"
@@ -397,7 +398,7 @@ static int load_bytes(uint64_t *upt, uint32_t base_lba, uint32_t foff,
         uint32_t soff = foff & 511;                 /* byte offset into the first sector */
         uint32_t want = soff + len;                 /* bytes needed from that sector's start */
         uint32_t secs = want > sizeof buf ? sizeof buf / 512 : (want + 511) / 512;
-        if (ata_read(base_lba + foff / 512, (uint8_t)secs, buf) < 0) return -1;
+        if (bdev_read(fs_disk_bdev(), base_lba + foff / 512, secs, buf) < 0) return -1;
         uint32_t chunk = secs * 512 - soff;         /* usable bytes this round */
         if (chunk > len) chunk = len;
         for (uint32_t i = 0; i < chunk; ) {         /* copy per page, not per byte */
@@ -429,7 +430,7 @@ uint64_t vmm_create_user(const char *prog, uint64_t *entry) {
      * the phdrs right after the ehdr, well inside this) */
     uint8_t hdr[4096];
     uint32_t hbytes = e->size < sizeof(hdr) ? e->size : sizeof(hdr);
-    if (ata_read(lba0, (uint8_t)((hbytes + 511) / 512), hdr) < 0) return 0;
+    if (bdev_read(fs_disk_bdev(), lba0, (hbytes + 511) / 512, hdr) < 0) return 0;
 
     const struct elf64_ehdr *eh = (const struct elf64_ehdr *)hdr;
     if (eh->e_ident[0] != 0x7f || eh->e_ident[1] != 'E' ||

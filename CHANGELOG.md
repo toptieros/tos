@@ -7,6 +7,25 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **fs-on-bdev + true boot-from-installed-disk (#11, 2026-06-12).** The root fs (`kernel/fs/fs.c`)
+  now reads/writes through the block layer and, at mount, **scans every registered block device's MBR
+  for the tosfs partition** and binds to the first match (`fs_disk_bdev()`). The ELF program loader
+  (`vmm.c`) routes through the same bdev. So tOS boots off **whichever disk carries the install** —
+  IDE *or* virtio-blk. Proven: the installed virtio image, booted as the only (virtio) disk, mounts
+  root from `virtio0` and reaches the desktop with no IDE disk present. Also fixed a virtio DMA bug
+  this exposed: the device needs **physical** buffer addresses, but kernel `.bss`/stack buffers live
+  in the higher half (virt != phys) — added a **bounce buffer** (DMA only touches identity-mapped
+  memory; copy to/from the caller). Verified by a 3-phase boot (clone → boot-as-IDE → boot-as-virtio).
+- **Live → disk installer (#11, 2026-06-12).** `kernel/install.c` + a shell `install` command
+  (`SYS_INSTALL`): clones the boot disk (`bdev0`/ata0) onto a target block device (`bdev1`/virtio0)
+  sector-for-sector through the block layer, then verify-reads the MBR. Phase 1 of the boot test
+  installs onto a blank virtio-blk disk (`[install] done, verify OK`, 6144 sectors). The first
+  concrete payoff of the storage stack.
+- **Block-device layer (2026-06-12).** `kernel/drivers/blockdev.c`: a small registry of named disks
+  (`bdev_register/read/write/find/dump`, 64-bit LBA) so the installer + future drivers target a disk
+  by index instead of a specific driver. ATA registers as `ata0` (capacity via a new `ata_sectors()`
+  IDENTIFY + `ata_bdev_*` chunking adapters), virtio-blk as `virtio0`. Additive — fs keeps its direct
+  ATA boot path (no regression). The virtio self-test now runs *through* the bdev API.
 - **virtio-blk DMA block driver — Phase 4 #1 (2026-06-11).** The first real (non-PIO) block device:
   `kernel/drivers/virtio_blk.c` over the legacy virtio-pci transport (QEMU's `if=virtio` transitional
   device). Probes PCI bus 0 for `1af4:1001/1042`, enables I/O+bus-master, negotiates

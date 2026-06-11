@@ -90,6 +90,8 @@ int  drag_payload(int *type_out, void *buf, int cap);  /* target: -> bytes copie
 int  drag_state(char *label_out, int cap);             /* -> active drag type (>0)+label, or 0 (compositor) */
 void drag_end(void);                                   /* compositor: end the session */
 
+long install_disk(int target);             /* clone the boot disk onto block device `target`; sectors/-1 */
+
 void printu(unsigned v);                    /* print an unsigned decimal to the console     */
 void proc_exit(void) __attribute__((noreturn));      /* SYS_EXIT                 */
 void shutdown(void) __attribute__((noreturn));       /* SYS_SHUTDOWN: stop CPU   */

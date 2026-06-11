@@ -21,6 +21,7 @@
 #include "vmm.h"
 #include "clipboard.h"
 #include "drag.h"
+#include "install.h"
 #include <stdint.h>
 
 static const char *const exc_names[32] = {

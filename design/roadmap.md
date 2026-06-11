@@ -88,10 +88,11 @@ does the I/O) and "write the install" (needs a real block driver).
 
 Prioritized, VM-first so the installer is testable in QEMU before metal:
 
-1. **virtio-blk** — ✅ **landed 2026-06-11** (`kernel/drivers/virtio_blk.c`): legacy virtio-pci,
-   polled split-virtqueue DMA, read/write + a non-destructive kernel boot self-test. The cheapest
-   real (non-PIO) block device — the install target under QEMU/KVM. *Next: wire it into a block-device
-   layer the installer/fs can target, then AHCI.*
+1. **virtio-blk** — ✅ **landed 2026-06-11/12** (`kernel/drivers/virtio_blk.c`): legacy virtio-pci,
+   polled split-virtqueue DMA (bounce-buffered), self-test. Now wired through a **block-device layer**
+   (`blockdev.c`: ata0 + virtio0), a **live→disk installer** (`install` clones the boot disk onto it),
+   and **fs-on-bdev** so tOS boots straight off the installed virtio disk (root mounted from virtio0).
+   *Next: AHCI/SATA + DMA.*
 2. **AHCI/SATA + DMA** — the realistic install-target disk on desktops; replaces PIO.
 3. **NVMe** — how modern laptops/desktops boot; effectively mandatory for real-hardware
    install. The spec is public and the driver is comparatively clean (queues + PRPs).

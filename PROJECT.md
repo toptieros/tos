@@ -27,7 +27,7 @@ kernel/
   arch/               x86 low-level: cpu.asm/.h, gdt, idt, traps (ISR+syscall
                       dispatch), apic, smp, spinlock
   mm/                 vmm.c/.h — paging, frame pool, ELF loader, fork/destroy
-  drivers/            console, keyboard, mouse, rtc, timer, ata
+  drivers/            console, keyboard, mouse, rtc, timer, ata, pci, virtio_blk, blockdev
   fs/                 fs.c (tosfs, hierarchical), tosfs.h on-disk format
 user/                 ring-3 programs, each its own app dir + a shared lib:
   lib/                ulib (syscall wrappers) + ugfx (graphics, surface-aware) + user.ld
@@ -210,8 +210,16 @@ hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
   timer can preempt it *if it spans a tick*, so long transfers no longer freeze the
   box — but a short one (a few ms, e.g. an autosave write) still busy-waits the whole
   desktop for its duration. Still synchronous + per-word PIO; async/DMA is the real fix.
-- **pci** — PCI config-space access (legacy 0xCF8/0xCFC) + a bus scan; `SYS_LSPCI`
-  / the `lspci` command list devices. A foundation for real device drivers later.
+- **pci** — PCI config-space access (legacy 0xCF8/0xCFC) + a bus scan + a config
+  write (`pci_write32`, to enable I/O space + bus-master DMA); `SYS_LSPCI` / `lspci`.
+- **virtio-blk** — a DMA block driver over the legacy virtio-pci transport (QEMU's
+  `if=virtio`); polled split-virtqueue, one request in flight, bounce-buffered (the
+  device DMAs to identity-mapped memory; kernel `.bss`/stack buffers are higher-half,
+  so virt != phys). The first real (non-PIO) disk + the install target.
+- **blockdev** — a small registry of named disks (`bdev_register/read/write/find`,
+  64-bit LBA): ATA registers as `ata0`, virtio-blk as `virtio0`. The root fs + ELF
+  loader + the installer target a disk by index, so tOS boots off whichever disk
+  carries the install (the `install` command clones the boot disk onto `virtio0`).
 - **speaker** — PC speaker via PIT channel 2; `SYS_BEEP` / the `beep` command.
 - system control: `SYS_REBOOT` resets via the 8042; `SYS_SHUTDOWN` ACPI-poweroff.
 
