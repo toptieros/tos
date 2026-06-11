@@ -220,10 +220,21 @@ window-under-cursor, **cross-app text drag is free**: any `TextField` is both a 
 source (press-and-drag from within a selection arms `DRAG_TEXT`) and a drop target, with
 no per-app code — Notepad's editor, unchanged, both gives and takes dragged text.
 
+- **`on_press(x, y, btn)`** (virtual) — a left-button press, *before* it routes to a
+  child widget. Apps use it to capture where a gesture began (Files notes the Favorites
+  row under the press, and resets its drag-arm flag so a cancelled / dropped-elsewhere
+  drag never wedges the next one). Default: ignored.
+- **`Window::drop_mods`** — the modifier mask that was held at the drop (the compositor
+  packs `kbd_mods` into the `WEV_DROP` byte). Files reads it for **copy-on-Ctrl**:
+  Ctrl+drop copies (`copy_tree`, source kept) instead of moving.
+
+A drag **cancels on Esc** — the compositor tears the session down (clears the
+drop-target highlight, erases the ghost) and delivers *no* drop.
+
 The compositor owns the visual session (the ghost + hit-test + `WEV_DRAG`/`WEV_DROP`
-routing), so an app only writes these hooks — the same brokered model as windows/input.
-Consumers: **Files** drag-to-move (`user/files/files.cpp`); **text drag** (toolkit-wide,
-`user/lib/ui_textfield.cpp`).
+routing + Esc-cancel), so an app only writes these hooks — the same brokered model as
+windows/input. Consumers: **Files** drag-to-move + copy-on-Ctrl + drag-reorder Places
+(`user/files/files.cpp`); **text drag** (toolkit-wide, `user/lib/ui_textfield.cpp`).
 
 ## Out of scope (for now)
 

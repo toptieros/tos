@@ -460,6 +460,7 @@ int Window::run() {
             }
             case WEV_DROP: {                             /* a drag was released on this window */
                 int mx = (int)WEV_MOUSE_X(ev.a), my = (int)WEV_MOUSE_Y(ev.a);
+                drop_mods = (int)WEV_MOUSE_BTN(ev.a);    /* the compositor packs kbd_mods here (copy-on-Ctrl) */
                 static char buf[4096]; int type = 0;
                 int n = drag_payload(&type, buf, sizeof buf);
                 on_drag_over(-1, -1);                                   /* clear any highlight */

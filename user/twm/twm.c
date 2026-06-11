@@ -844,6 +844,19 @@ void _ustart(void) {
         if (pending_until && frame >= pending_until) pending_until = 0;   /* in-flight launch gave up */
         int key, f = focus_slot();
         while ((key = twm_getkey()) >= 0) {
+            /* Esc cancels an in-flight drag (no drop is delivered). A drag holds the
+             * mouse button, so only a *bare* Esc cancels; a CSI nav sequence (ESC [ A..D
+             * = an arrow) is meaningless mid-drag, so swallow it whole. */
+            if (dnd_type && key == 27) {
+                int nx = twm_getkey();
+                if (nx == '[' || nx == 'O') { twm_getkey(); continue; }   /* arrow mid-drag: drop it */
+                if (nx >= 0) twm_ungetkey(nx);                            /* unrelated key: next loop */
+                if (dnd_target >= 0) wm_post(dnd_target, WEV_DRAG, WEV_MOUSE_PACK(0xfff, 0xfff, 0));  /* clear highlight */
+                drag_end(); dnd_type = 0; dnd_target = -1;
+                add_dirty(0, 0, W, H);                                    /* erase the trailing ghost chip */
+                print("[twm] drag cancel\r\n");
+                continue;
+            }
             /* While a WIN_MODAL dialog (picker) is up, swallow the keys that would steal
              * its focus or stack another overlay over it (the launchers + Alt-Tab), so it
              * stays truly modal. Keys that act on the focused window (Esc/menu accels) and

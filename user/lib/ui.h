@@ -427,6 +427,7 @@ protected:
     Vec<Widget *> kids;
     Widget *hot = nullptr;                      /* widget currently under the pointer */
     int cur_shape = CUR_ARROW;                  /* cursor hint last sent to the compositor */
+    int drop_mods = 0;                          /* modifier mask on the in-flight WEV_DROP (copy-on-Ctrl) */
     int esc = 0;                                /* ESC-sequence decoder state */
     int esc_pend = 0;                           /* event-loop drains a lone ESC has survived */
     char csi[8] = {0};                          /* CSI parameter bytes (e.g. "1;5" for Ctrl) */

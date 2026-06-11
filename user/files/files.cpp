@@ -2084,6 +2084,9 @@ struct FilesApp : ui::Window {
      * reorders Places rather than rubber-banding the list (§7). Reset every press. */
     void on_press(int x, int y, int btn) override {
         place_src = (btn & 1) ? side.fav_at(x, y) : -1;
+        dnd_armed = 0; dnd_place = 0;          /* fresh gesture: clear a stale arm (a drag that was
+                                                * Esc-cancelled or dropped on another window never
+                                                * sent us an on_drop to reset it). */
     }
     void on_drag(int x, int y, int btn) override {
         (void)x; (void)y; (void)btn;
@@ -2143,7 +2146,16 @@ struct FilesApp : ui::Window {
         char folder[256]; join(folder, sizeof folder, path, ents[idx].name);
         if (same_str(folder, src)) { invalidate(); return; }                 /* not onto itself */
         char dst[256]; join(dst, sizeof dst, folder, basename_of(src));
-        if (rename_(src, dst) == 0) {
+        bool copy = (drop_mods & KMOD_CTRL) != 0;      /* Ctrl held at drop = copy, else move */
+        if (copy) {
+            if (copy_tree(src, dst) == 0) {            /* recursive; leaves the source in place */
+                tags_carry(src, dst);
+                rec_op(OP_COPY, src, dst, 0);          /* undoable; OP_COPY undo rmrf's the copy */
+                print("[files] dropped-copy "); print(basename_of(src));
+                print(" into "); print(ents[idx].name); print("\r\n");
+                refresh_panes();
+            } else { print("[files] drop copy failed\r\n"); invalidate(); }
+        } else if (rename_(src, dst) == 0) {
             tags_carry(src, dst);
             rec_op(OP_MOVE, src, dst, 0);              /* undoable; OP_MOVE undo ignores isdir */
             print("[files] dropped "); print(basename_of(src));

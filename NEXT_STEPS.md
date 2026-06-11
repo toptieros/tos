@@ -79,9 +79,10 @@ protocol). **Left:**
   `on_press(x,y,btn)` hook so an app can note where a gesture began). **Consumers:** Files
   drag-to-move (file/folder onto a folder row → moved); cross-app **text drag** (toolkit-wide);
   Files **drag-reorder Places** (`DRAG_PLACE`, ghost chip + accent insertion line, persisted to the
-  registry — verified Downloads→above Desktop). **Left:** Esc-to-cancel a drag; copy-on-Ctrl (mods
-  ride in the drop event); icon/gallery-view drag sources (list view today). Unlocks the desktop +
-  Pocket Dimension.
+  registry — verified Downloads→above Desktop). **Esc-to-cancel** a drag (twm clears the session, no
+  drop) and **copy-on-Ctrl** for the Files file-drag (mods ride in the `WEV_DROP`'s packed byte →
+  `Window::drop_mods`; Ctrl+drop copies, leaving the source) both landed too. **Left:**
+  icon/gallery-view drag sources (list view today). Unlocks the desktop + Pocket Dimension.
 
 ### System & security
 - [~] **System ownership (#1).** **Done:** tosfs v3 carries a per-entry `owner`; tasks carry a

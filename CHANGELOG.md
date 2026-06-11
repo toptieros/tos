@@ -7,6 +7,22 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **DnD polish: Esc-cancel + copy-on-Ctrl (2026-06-11).** A drag in flight now cancels on **Esc**
+  (twm tears down the session, clears the drop-target highlight, erases the ghost — no drop is
+  delivered; `[twm] drag cancel`). **Ctrl+drop copies** instead of moving in Files: the compositor
+  already packs `kbd_mods` into the `WEV_DROP` byte, now surfaced to apps as `Window::drop_mods`, so
+  `FilesWin::on_drop` does `copy_tree` (leaving the source) when Ctrl is held. Also fixed a latent
+  bug the cancel exposed — a source's drag-arm flag is now reset on the next press (`on_press`), so a
+  cancelled or dropped-elsewhere drag no longer wedges the next one. Verified in one boot
+  (Esc-cancel leaves the file in place; Ctrl+drop duplicates it into the folder).
+- **Drag-reorder Places (2026-06-11).** The Files sidebar's Favorites are now reorderable by drag,
+  on the DnD keystone with a new `DRAG_PLACE` payload. A new window-level `Window::on_press(x,y,btn)`
+  hook lets Files note which Favorites row a press landed on (fresh each gesture, so it never tangles
+  with the file-list rubber-band/drag); a drag from it arms `DRAG_PLACE` (the row's path, ghost label
+  = its name); twm runs the ghost; `FilesWin::on_drop` maps the drop y to an insertion gap and calls
+  `places_move()`, then persists the order to the registry. The sidebar paints an accent insertion
+  line at the live gap. Verified by a boot dragging "Downloads" above "Desktop" (reorder 3 → 1, new
+  order + ghost + line screenshotted). Design: [`files-and-desktop.md`](design/files-and-desktop.md).
 - **Cross-app text drag (2026-06-11).** The DnD keystone's second consumer, in the toolkit so every
   text field inherits it. Press-and-drag from *within* a `TextField` selection arms a `DRAG_TEXT`
   payload (preview label = the selected text); the drop target's default `Window::on_drop` routes
