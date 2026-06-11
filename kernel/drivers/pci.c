@@ -14,6 +14,15 @@ uint32_t pci_read32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off) {
     return inl(PCI_DATA);
 }
 
+/* Write a 32-bit dword into a device's configuration space (e.g. the command
+ * register to enable I/O space + bus-master DMA for a driver). */
+void pci_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uint32_t val) {
+    uint32_t addr = (1u << 31) | ((uint32_t)bus << 16) | ((uint32_t)slot << 11) |
+                    ((uint32_t)func << 8) | (off & 0xFC);
+    outl(PCI_ADDR, addr);
+    outl(PCI_DATA, val);
+}
+
 static void hex4(uint16_t v) {           /* 4 hex digits, no 0x prefix */
     for (int s = 12; s >= 0; s -= 4)
         console_putc("0123456789abcdef"[(v >> s) & 0xF]);

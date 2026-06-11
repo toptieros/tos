@@ -7,6 +7,17 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **virtio-blk DMA block driver — Phase 4 #1 (2026-06-11).** The first real (non-PIO) block device:
+  `kernel/drivers/virtio_blk.c` over the legacy virtio-pci transport (QEMU's `if=virtio` transitional
+  device). Probes PCI bus 0 for `1af4:1001/1042`, enables I/O+bus-master, negotiates
+  ACK→DRIVER→DRIVER_OK, builds a split virtqueue (desc | avail | page-aligned used) in
+  identity-mapped frames (phys == virt, so a descriptor address *is* the CPU pointer), and does
+  polled read/write via a 3-descriptor request (header → data → status). Added `pci_write32` and
+  `inw`. Hooked into `kmain` after `vmm_init`; a **kernel boot self-test** (Linux-style) round-trips
+  the last sector non-destructively (save → write pattern → read back + compare → restore) and prints
+  `[virtio-blk] selftest OK`. Absent a virtio disk it prints `none` and boots normally (smoke tier
+  unchanged). Verified: a 16 MiB virtio disk reports 32768 sectors, self-test passes, IDE boot intact.
+  Unblocks the installer (live → disk). Next in the batch: AHCI/SATA + DMA.
 - **DnD polish: Esc-cancel + copy-on-Ctrl (2026-06-11).** A drag in flight now cancels on **Esc**
   (twm tears down the session, clears the drop-target highlight, erases the ghost — no drop is
   delivered; `[twm] drag cancel`). **Ctrl+drop copies** instead of moving in Files: the compositor

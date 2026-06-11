@@ -96,6 +96,8 @@
 #define SYS_DRAG_PAYLOAD 74 /* (int* type, buf, cap) -> copy the dropped payload out; len/-1 (target)  */
 #define SYS_DRAG_STATE   75 /* (char* label, cap)  -> active drag type (>0)+label, or 0 (compositor)    */
 #define SYS_DRAG_END     76 /* ()                  -> end the session (bytes kept for the drop read)     */
+#define SYS_INSTALL      77 /* (target_bdev)       -> clone the boot disk onto block device `target`;
+                            *                        sectors written, or -1 (the live->disk installer) */
 
 #include "cap.h"           /* CAP_* bits, shared with userspace's manifest->caps mapping */
 

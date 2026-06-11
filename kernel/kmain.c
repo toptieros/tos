@@ -12,6 +12,9 @@
 #include "fs.h"
 #include "smp.h"
 #include "mouse.h"
+#include "virtio_blk.h"
+#include "blockdev.h"
+#include "ata.h"
 #include <stdint.h>
 
 /* Copied out of the boot-provided struct (which lives in low memory that later
@@ -44,6 +47,12 @@ void kmain(struct boot_info *bi) {
         mouse_init((int)bootinfo.width, (int)bootinfo.height);
         console_puts("[kernel] PS/2 mouse enabled on IRQ12\r\n");
     }
+
+    /* Block-device layer: the boot disk (ATA) plus any virtio-blk install target,
+     * registered by name so the installer can target a disk by index. */
+    bdev_register("ata0", ata_sectors(), ata_bdev_read, ata_bdev_write);
+    virtio_blk_init();                    /* probes + registers "virtio0" if present (no-op if absent) */
+    bdev_dump();
 
     if (fs_mount() < 0) {
         console_puts("[kernel] PANIC: no tosfs disk found -- cannot load init\r\n");

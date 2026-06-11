@@ -38,10 +38,15 @@ def _free_port():
 
 
 class Tos:
-    def __init__(self, uefi=False, scratch=None, reuse=False, port=None, cpus=1, mem=None):
+    def __init__(self, uefi=False, scratch=None, reuse=False, port=None, cpus=1, mem=None,
+                 extra_args=None):
+        # extra_args: raw QEMU args appended to the command (e.g. an extra virtio-blk
+        # disk for a driver test). Kept out of the default boot so the smoke tier is
+        # untouched. The caller owns any image files it references.
         self.uefi = uefi
         self.cpus = cpus
         self.mem = mem
+        self.extra_args = extra_args or []
         self.port = port if port is not None else _free_port()
         self.serial_path = _qmp_path(f"tos_test_serial_{self.port}.log")
         if os.path.exists(self.serial_path):
@@ -68,6 +73,7 @@ class Tos:
         ]
         if self.mem is not None:
             common += ["-m", str(self.mem)]
+        common += self.extra_args
         if uefi:
             self.vars = _qmp_path(f"tos_test_OVMF_VARS_{self.port}.fd")
             shutil.copy(OVMF_VARS, self.vars)

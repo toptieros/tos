@@ -278,6 +278,9 @@ static struct regs *syscall_dispatch(struct regs *r) {
         drag_end();
         r->rax = 0;
         return r;
+    case SYS_INSTALL:                  /* clone the boot disk onto block device rdi (the installer) */
+        r->rax = (uint64_t)install_run((int)r->rdi);
+        return r;
     case SYS_GETPID:
         r->rax = (uint64_t)(int64_t)sched_getpid();
         return r;
