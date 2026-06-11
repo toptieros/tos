@@ -534,14 +534,19 @@ static int open_l(const char *name, int flags) {
             if (super.ents[ex].type != TOSFS_FILE) return -1;   /* it's a directory */
             if (!can_write(ex)) return -1;         /* may not overwrite a system file */
             if (!(flags & O_TRUNC)) return -1;     /* no overwrite without O_TRUNC */
-            if (unlink_slot(ex) < 0) return -1;    /* in-place rewrite = delete + recreate */
         }
-        if (alloc_slot() < 0) return -1;          /* directory full (checked again at close) */
-        if (writer_active()) return -1;           /* one writer only */
-        int base = first_free();
-        if (base < 0) return -1;                  /* disk full */
+        /* Validate EVERY resource BEFORE destroying the existing file, so a failed
+         * open(O_CREATE|O_TRUNC) can never lose the user's data (the old order
+         * unlinked first, so any later -1 here -- another writer, a full fd table,
+         * a full disk -- left the file already gone). A brand-new entry needs a free
+         * dir slot; an overwrite reuses ex's slot, freed by the unlink below. */
+        if (ex == R_NONE && alloc_slot() < 0) return -1;        /* directory full */
+        if (writer_active()) return -1;                         /* one writer only */
         int fd = alloc_fd(tbl);
         if (fd < 0) return -1;
+        if (ex != R_NONE && unlink_slot(ex) < 0) return -1;     /* in-place rewrite = delete + recreate */
+        int base = first_free();                                /* after reclaiming ex's sectors */
+        if (base < 0) return -1;                                /* disk full */
         bit_set((uint32_t)base);
         struct ofile *f = &tbl[fd];
         f->used = 1; f->writing = 1; f->slot = -1; f->parent = parent;

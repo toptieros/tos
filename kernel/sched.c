@@ -261,6 +261,7 @@ int sched_spawn(const char *prog) {
     tasks[idx].uid        = TOS_UID_SYSTEM;           /* the kernel-spawned boot task (init) is system */
     tasks[idx].tty        = -1;                       /* spawned tasks use the console/keyboard */
     tasks[idx].anon_brk   = 0;                        /* fresh address space: no mmap region yet */
+    tasks[idx].kill_req   = 0;                         /* a reused slot must not inherit a stale async-kill flag */
     frame_init(idx, entry, USER_STACK_TOP, UCODE_RPL3, UDATA_RPL3);
     tasks[idx].state      = TASK_RUNNABLE;            /* fields set -> now publish */
     rq_enqueue(pick_home(), idx);
@@ -562,6 +563,7 @@ struct regs *sched_fork(struct regs *r) {
     tasks[idx].uid        = tasks[cpus[this_cpu()].current].uid;   /* child inherits the caller's identity */
     tasks[idx].tty        = tasks[cpus[this_cpu()].current].tty;   /* inherit stdio binding */
     tasks[idx].anon_brk   = 0;       /* anon mmap region is NOT inherited (like the fb/surf slots) */
+    tasks[idx].kill_req   = 0;       /* a fresh child never inherits a pending async-kill from its parent */
     fs_fork(cpus[this_cpu()].current, idx);                        /* inherit the working dir */
     struct regs *cf = (struct regs *)(tasks[idx].kstack_top - sizeof(struct regs));
     *cf = *r;
