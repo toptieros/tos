@@ -321,7 +321,19 @@ public:
     char left[96] = {0};            /* "12 items" / "3 of 12 shown"          */
     char right[96] = {0};           /* "name selected -- 42 bytes" / empty   */
     int  permille = -1;             /* §12: a running job's progress (0..1000; <0 hides) */
+    int  zoom_level = -1;           /* §6: -1 hides the slider; else 0..2 (icon view) */
+    bool show_stop = false;         /* §6/§12: a Stop button while a job runs */
+    /* sub-control hit rects (absolute), recomputed each draw() for the app's mouse routing */
+    ui::Rect zoom_rect = {0, 0, 0, 0}, stop_rect = {0, 0, 0, 0};
+    static const int ZTRACK = 60, ZKNOB = 10, STOPW = 46, RPAD = 26;   /* RPAD keeps controls clear of twm's resize corner */
     StatusBar() { focusable = false; }
+    /* map an absolute x inside the zoom slider to a level 0..2 */
+    int zoom_from_x(int x) const {
+        int t = x - (zoom_rect.x + ZKNOB / 2);
+        int span = zoom_rect.w - ZKNOB; if (span < 1) span = 1;
+        int lvl = (t * 2 + span / 2) / span;            /* nearest of 0/1/2 */
+        return lvl < 0 ? 0 : lvl > 2 ? 2 : lvl;
+    }
     void draw() override {
         if (!visible) return;
         int fh = ugfx_font_h();
@@ -334,10 +346,29 @@ public:
         ugfx_set_clip(r.x, r.y, r.w, r.h);
         int ty = r.y + (r.h - fh) / 2;
         ugfx_text(r.x + 14, ty, left, TH_MUTED, UGFX_TRANSPARENT);
+        /* right edge controls, laid out right-to-left: Stop, then the zoom slider. */
+        int rx_edge = r.x + r.w - RPAD;
+        stop_rect = zoom_rect = ui::Rect{0, 0, 0, 0};
+        if (show_stop) {                                            /* §6: clickable Stop pill */
+            int bw = STOPW, bx = rx_edge - bw, by = r.y + (r.h - (fh + 6)) / 2;
+            ugfx_rrect_a(bx, by, bw, fh + 6, TH_R_SM, ARGB(210, 196, 78, 78));
+            int tw = ugfx_text_w("Stop");
+            ugfx_text(bx + (bw - tw) / 2, ty, "Stop", RGB(255, 255, 255), UGFX_TRANSPARENT);
+            stop_rect = ui::Rect{bx, by, bw, fh + 6};
+            rx_edge = bx - 10;
+        }
+        if (zoom_level >= 0) {                                      /* §6: 3-stop zoom slider */
+            int tw = ZTRACK, tx = rx_edge - tw, cy = r.y + r.h / 2;
+            ugfx_fill_a(tx, cy - 1, tw, 2, ARGB(150, 150, 170, 200));   /* track */
+            int span = tw - ZKNOB, kx = tx + (zoom_level * span) / 2;   /* knob at 0/1/2 */
+            ugfx_rrect_aa(kx, cy - ZKNOB / 2, ZKNOB, ZKNOB, ZKNOB / 2, TH_ACCENT);
+            zoom_rect = ui::Rect{tx, r.y, tw, r.h};
+            rx_edge = tx - 10;
+        }
         if (right[0]) {
             int rw = ugfx_text_w(right);
             int lx = r.x + 14 + ugfx_text_w(left) + 16;             /* don't overlap the left text */
-            int rx = r.x + r.w - rw - 14; if (rx < lx) rx = lx;
+            int rx = rx_edge - rw; if (rx < lx) rx = lx;
             ugfx_text(rx, ty, right, TH_TEXT, UGFX_TRANSPARENT);
         }
         ugfx_clip_none();

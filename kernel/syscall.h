@@ -88,6 +88,10 @@
                               * the compositor shows it while the pointer is over that window.
                               * Shape ids match user/lib/cursors.h (CUR_ARROW/IBEAM/RESIZE_*...);
                               * apps update it live from hover, e.g. an I-beam over a text field. */
+#define SYS_SETCAPS     71 /* (mask)             -> drop the caller's caps to (caps & mask); new mask */
+#define SYS_GETCAPS     72 /* ()                 -> the caller's capability bitmask (cap.h)            */
+
+#include "cap.h"           /* CAP_* bits, shared with userspace's manifest->caps mapping */
 
 /* Cursor shape ids for SYS_WIN_SETCURSOR. Must match the baked theme in
  * user/lib/cursors.h (tools/gencursors.py) -- duplicated (identically) here so

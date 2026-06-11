@@ -576,11 +576,20 @@ struct FilesApp : ui::Window {
                 snprintf(status.right, sizeof status.right, "%s selected  --  %s", details.name, hb);
             }
         } else status.right[0] = 0;
+        /* §6: the status-bar zoom slider shows in icon view; the Stop pill while a job runs */
+        status.zoom_level = (view_mode == 1 && !picker) ? zoom : -1;
+        status.show_stop  = (job != 0);
     }
     /* re-emit the list geometry canary after a layout change so e2e clicks stay aimed */
     void emit_listrect() {
         print("[files] listrect "); printu((unsigned)list.r.x); printc(' '); printu((unsigned)list.r.y);
         printc(' '); printu((unsigned)list.r.w); printc(' '); printu((unsigned)list.row_h); print("\r\n");
+        if (view_mode == 1 && !picker) {                 /* §6: zoom-slider geometry (icon view, no job) */
+            int tx = status.r.x + status.r.w - StatusBar::RPAD - StatusBar::ZTRACK;
+            print("[files] zoomrect "); printu((unsigned)tx); printc(' ');
+            printu((unsigned)StatusBar::ZTRACK); printc(' ');
+            printu((unsigned)(status.r.y + status.r.h / 2)); print("\r\n");
+        }
     }
     /* "/" opens the filter bar (or refocuses it if already open) */
     void open_filter() {
@@ -898,6 +907,7 @@ struct FilesApp : ui::Window {
         refresh_panes();
     }
     void job_step() {                                      /* one on_tick slice */
+        status.show_stop = (job != 0);                     /* §6: the Stop pill tracks the live job */
         if (job == JOB_COPY) {
             int budget = 4;                                /* items per tick: UI stays live */
             while (budget-- > 0 && jdone < jn) {
@@ -1692,6 +1702,8 @@ struct FilesApp : ui::Window {
         sync_menus();
         if (icons) { apply_zoom(); grid.ensure_visible(grid.sel >= 0 ? grid.sel : 0); }
         if (gallery) gal.ensure_visible(gal.sel >= 0 ? gal.sel : 0);
+        status.zoom_level = (view_mode == 1 && !picker) ? zoom : -1;   /* §6: slider shows in icon view */
+        status.show_stop  = (job != 0);
         layout_widgets();
     }
     /* Per-folder view memory (§2): one registry value per folder path. "view.default"
@@ -1717,12 +1729,14 @@ struct FilesApp : ui::Window {
         persist_view();
         print("[files] view ");
         print(view_mode == 1 ? "icons" : view_mode == 2 ? "gallery" : "list"); print("\r\n");
+        emit_listrect();                                 /* re-aim e2e clicks; emits the §6 zoomrect in icon view */
         invalidate();
     }
     void set_zoom(int z) {
         zoom = z; apply_zoom();
         persist_view();
         print("[files] zoom "); printu((unsigned)zoom); print("\r\n");
+        update_status();                                 /* §6: reflect the new level on the slider */
         layout_widgets(); invalidate();
     }
 
@@ -2114,9 +2128,21 @@ struct FilesApp : ui::Window {
      * outside the path bar reverts it (matching its Esc), and one outside an in-place
      * rename commits it (Finder behaviour). The click then routes on as usual, so e.g.
      * clicking a row both ends the edit and selects that row. */
+    /* §6: the status-bar Stop pill halts the running background job (the click twin of Esc). */
+    void stop_job() {
+        if (job == JOB_COPY) cancel_copy();
+        else if (job == JOB_SEARCH) { job = 0; sd_free(); print("[files] search stop\r\n"); }
+        status.show_stop = false; update_status(); invalidate();
+    }
     void dispatch_mouse(int x, int y, int btn) override {
         if (ql.open) {                                 /* any click dismisses Quick Look (§11) */
             ql.dismiss(); print("[files] quicklook close\r\n"); invalidate(); return;
+        }
+        if ((btn & 1) && status.visible) {             /* §6: status-bar zoom slider + Stop button */
+            if (status.show_stop && status.stop_rect.has(x, y)) { stop_job(); return; }
+            if (status.zoom_level >= 0 && status.zoom_rect.has(x, y)) {
+                set_zoom(status.zoom_from_x(x)); return;
+            }
         }
         if (editing_path && !pathfld.r.has(x, y))      leave_path_edit();
         else if (renaming && !renamefld.r.has(x, y))   commit_rename();
@@ -2144,7 +2170,7 @@ struct FilesApp : ui::Window {
         details_open = !details_open; details.visible = details_open;
         print("[files] info "); printu(details_open ? 1u : 0u); print("\r\n");
         sync_menus();                                /* View ▸ Info check mark */
-        layout_widgets(); invalidate();
+        layout_widgets(); emit_listrect(); invalidate();   /* the pane toggle shifts the list + §6 slider */
     }
     void on_key(int key) override {
         if (ql.open) {                                   /* Quick Look is dismiss-only (§11) */
@@ -2169,6 +2195,9 @@ struct FilesApp : ui::Window {
         else if (key == ' ') quicklook_toggle(); /* Space: Quick Look (§11) */
         else if (key == '/') open_filter();      /* "/": filter the current folder (§5) */
         else if (key == 0x06) open_search();     /* Ctrl+F: recursive search (§5) */
+        else if ((key == '+' || key == '=') && view_mode == 1) set_zoom(zoom + 1);  /* §6: zoom in  */
+        else if (key == '-' && view_mode == 1) set_zoom(zoom - 1);                   /* §6: zoom out */
+        else if (key == '0' && view_mode == 1) set_zoom(1);                          /* §6: actual size */
         else if (key == 'r') load_dir();
     }
     void on_tick(unsigned t) override { (void)t; job_step(); }   /* §12: chunked background jobs */

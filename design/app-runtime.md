@@ -1,11 +1,14 @@
 # Design guideline — tOS app runtime & sandbox model
 
-> Status: **design / roadmap.** How tOS apps execute and how far we isolate them.
-> Today an app is a trusted static ELF in ring 3; this is the plan to grow toward a
-> real per-app sandbox with **Android-style runtime permissions** — the manifest
-> *declares* what an app may request (camera, location, internet, notifications,
-> files…), the user *grants at runtime* via a system prompt, and the grant *persists
-> per-app and is revocable* — bounded by what a small OS can actually enforce.
+> Status: **partially built (Phases 1–2 landed 2026-06-11); design/roadmap for 3–5.**
+> How tOS apps execute and how far we isolate them. An app is a static ELF in ring 3
+> that now carries a **per-task capability bitmask** the kernel checks at the syscall
+> boundary: the trusted launcher confines each app to its manifest `caps` at exec, and
+> dangerous caps (today: `notify`) default-deny. Still ahead — the **Android-style
+> runtime permissions** where the manifest *declares* what an app may request (camera,
+> location, internet, notifications, files…), the user *grants at runtime* via a system
+> prompt, and the grant *persists per-app and is revocable* — bounded by what a small OS
+> can actually enforce. See **Phasing** below for what's done vs. left.
 >
 > Companion: [`system-ownership.md`](system-ownership.md) (the *coarse* layer — who
 > owns the bytes + UAC elevation; this doc's permission prompts **reuse its
@@ -120,11 +123,18 @@ twm, shell, term) runs **unsandboxed** (full caps) — they are the OS.
 
 1. **Declare** — `caps` (normal + the dangerous ones the app may request) in
    manifests, parsed by the launcher; **advisory only** (logged, not enforced). No
-   behaviour change. Establishes the vocabulary.
+   behaviour change. Establishes the vocabulary. **✅ Done 2026-06-11** — all four
+   bundle manifests carry `caps`; the `appcaps.h` mapping parses the CSV onto `CAP_*`.
 2. **Enforce coarse** — kernel `task.caps`; install the **normal** caps at exec; gate
    `spawn`, `window`, and read-only `/System`; **dangerous** caps default to denied.
    Boot chain keeps full caps. Apps that over-reach get `-EPERM`; verify the bundled
-   apps still work with least privilege.
+   apps still work with least privilege. **✅ Done 2026-06-11** — `struct task.caps`
+   (`kernel/cap.h`); init = `CAP_ALL`, `fork` inherits, `exec` keeps; drop-only
+   `SYS_SETCAPS`/`SYS_GETCAPS`; twm's `launch()` confines each child to its manifest
+   caps (default `CAP_NORMAL`); the kernel enforces `CAP_NOTIFY` at `SYS_NOTIFY` (the
+   one dangerous cap with a live syscall). `window`/`spawn`/`/System`-read gating and
+   the rest of the dangerous caps wait on their syscalls / the fs jail (Phase 3).
+   `selftest group_caps` proves a normal app is confined.
 3. **FS jails** — `fs:bundle` / `fs:home` path enforcement; an app sees only its
    bundle + the user's home (and a private `~/.config/<app>` it always owns).
 4. **Runtime prompts (the Android model proper)** — a **system-drawn** permission

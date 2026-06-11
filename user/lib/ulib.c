@@ -123,6 +123,8 @@ int readdir(const char *path, struct dirent *out, int max) { return (int)sc3(SYS
 int rename_(const char *oldp, const char *newp) { return (int)sc3(SYS_RENAME, (uint64_t)oldp, (uint64_t)newp, 0); }
 int stat_(const char *path, struct fstat *st)  { return (int)sc3(SYS_STAT, (uint64_t)path, (uint64_t)st, 0); }
 int statfs_(struct statfs *st) { return (int)sc(SYS_STATFS, (uint64_t)st); }
+unsigned setcaps(unsigned mask) { return (unsigned)sc(SYS_SETCAPS, (uint64_t)mask); }  /* drop-only */
+unsigned getcaps(void)          { return (unsigned)sc(SYS_GETCAPS, 0); }
 
 int streq(const char *a, const char *b) {
     while (*a && *b) { if (*a != *b) return 0; a++; b++; }

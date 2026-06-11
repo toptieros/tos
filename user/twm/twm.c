@@ -17,6 +17,7 @@
  * With no framebuffer it just exec()s the shell, so a text boot is an ordinary
  * TTY. */
 #include "twm.h"
+#include "appcaps.h"      /* appcaps_for_exec: drop a launched app to its manifest caps */
 
 /* ----------------------------------------------------------- core-only state
  * (state nothing outside twm.c touches stays private here; the shared compositor
@@ -515,8 +516,9 @@ static void flush_dirty(void) {
 }
 
 static void launch(const char *prog) {
+    unsigned caps = appcaps_for_exec(prog);             /* the bundle's declared caps (CAP_NORMAL default) */
     int pid = fork();
-    if (pid == 0) { exec(prog); proc_exit(); }
+    if (pid == 0) { setcaps(caps); exec(prog); proc_exit(); }   /* confine the child to its manifest caps */
     launch_busy = 1;                                    /* show the spinner cursor until the window appears */
 }
 

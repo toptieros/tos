@@ -24,6 +24,9 @@ int  sched_spawn(const char *role);         /* new child task -> its pid (or -1)
 int  sched_current(void);                   /* slot id of the task running here  */
 int  sched_uid(void);                       /* owner identity of the running task (perm.h) */
 int  sched_setuid(int uid);                 /* SYS_SETUID: set/drop the caller's uid; 0/-1 */
+unsigned sched_caps(void);                  /* the running task's capability bitmask (cap.h) */
+unsigned sched_setcaps(unsigned mask);      /* SYS_SETCAPS: drop-only; returns the new mask */
+int  sched_has_caps(unsigned need);         /* true if the task holds every bit in `need` */
 struct regs *sched_fork(struct regs *r);    /* clone caller -> child pid / 0   */
 struct regs *sched_exec(struct regs *r, const char *prog);  /* replace image   */
 void sched_start(void) __attribute__((noreturn));   /* BSP runs the first user task */

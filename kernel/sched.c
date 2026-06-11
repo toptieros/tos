@@ -25,6 +25,7 @@
  */
 #include "sched.h"
 #include "fs/perm.h"      /* TOS_UID_* identities for per-task ownership */
+#include "cap.h"          /* CAP_* per-task capability bits (app sandbox) */
 #include "vmm.h"
 #include "gdt.h"
 #include "console.h"
@@ -90,6 +91,7 @@ struct task {
     int      pid;           /* monotonic process id (init = 1)                  */
     int      parent;        /* slot of the creator; reaped by it via wait()     */
     int      uid;           /* owner identity for fs writes (TOS_UID_* in perm.h) */
+    uint32_t caps;          /* capability bitmask (cap.h); the syscall sandbox boundary */
     int      home;          /* CPU whose queue holds it / last ran it           */
     int      tty;           /* pty channel bound to stdio, or -1 = console/keyboard */
     uint64_t anon_brk;      /* top of this task's anonymous mmap region (0 = none yet) */
@@ -259,6 +261,7 @@ int sched_spawn(const char *prog) {
     tasks[idx].pid        = next_pid++;
     tasks[idx].parent     = cur_task();
     tasks[idx].uid        = TOS_UID_SYSTEM;           /* the kernel-spawned boot task (init) is system */
+    tasks[idx].caps       = CAP_ALL;                  /* init/the boot chain is the OS: every capability */
     tasks[idx].tty        = -1;                       /* spawned tasks use the console/keyboard */
     tasks[idx].anon_brk   = 0;                        /* fresh address space: no mmap region yet */
     tasks[idx].kill_req   = 0;                         /* a reused slot must not inherit a stale async-kill flag */
@@ -496,6 +499,22 @@ int sched_setuid(int uid) {
     return 0;
 }
 
+/* The running task's capability bitmask (cap.h). */
+unsigned sched_caps(void) { return tasks[cur_task()].caps; }
+
+/* SYS_SETCAPS: caps may only be DROPPED, never raised -- a task can shed authority
+ * but cannot grant itself more. The trusted launcher calls this in the forked child
+ * (before exec) to confine it to its manifest's declared set; exec then keeps it
+ * (a sandboxed task can't escape by exec'ing). Returns the resulting mask. */
+unsigned sched_setcaps(unsigned mask) {
+    int me = cur_task();
+    tasks[me].caps &= mask;              /* intersection: only bits already held survive */
+    return tasks[me].caps;
+}
+
+/* True if the running task holds every bit in `need` (used at the syscall boundary). */
+int sched_has_caps(unsigned need) { return (tasks[cur_task()].caps & need) == need; }
+
 struct regs *sched_wait(struct regs *r) {
     uint64_t f = spin_lock_irqsave(&sched_lock);
     int me = cpus[this_cpu()].current;
@@ -561,6 +580,7 @@ struct regs *sched_fork(struct regs *r) {
     tasks[idx].pid        = next_pid++;
     tasks[idx].parent     = cpus[this_cpu()].current;
     tasks[idx].uid        = tasks[cpus[this_cpu()].current].uid;   /* child inherits the caller's identity */
+    tasks[idx].caps       = tasks[cpus[this_cpu()].current].caps;  /* ...and the caller's capabilities */
     tasks[idx].tty        = tasks[cpus[this_cpu()].current].tty;   /* inherit stdio binding */
     tasks[idx].anon_brk   = 0;       /* anon mmap region is NOT inherited (like the fb/surf slots) */
     tasks[idx].kill_req   = 0;       /* a fresh child never inherits a pending async-kill from its parent */

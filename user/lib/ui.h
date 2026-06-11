@@ -413,4 +413,51 @@ protected:
     int  csi_n = 0;
 };
 
+/* ---------------------------------------------------------------- Layout -----
+ * The toolkit's layout system: a linear stack calculator. It positions a sequence
+ * of items along a main axis -- a column (LAY_COL) or a row (LAY_ROW) -- inside a
+ * bounds rect, with `gap` between items and `pad` inside all four edges. Each item
+ * has a main-axis `extent`; extent 0 means "stretch", and the leftover main-axis
+ * space is split evenly among the stretch items. On the cross axis items fill the
+ * padded bounds. arrange() writes each item's widget `r` in place, so apps keep
+ * adding the leaf widgets to the Window as usual (draw + hit-test routing is
+ * unchanged) and just call arrange() in layout_widgets() instead of hand-computing
+ * every rect. An item with a null widget reserves space only -- query rect_of(i)
+ * to use it as the bounds for a nested Layout (a Row of Columns, etc.). */
+enum { LAY_COL = 0, LAY_ROW = 1 };
+class Layout {
+public:
+    int dir = LAY_COL, gap = 6, pad = 8;
+    Layout() {}
+    Layout(int d, int g = 6, int p = 8) : dir(d), gap(g), pad(p) {}
+    void reset() { n = 0; }
+    Layout &add(Widget *w, int extent = 0) { if (n < MAXI) { it[n].w = w; it[n].ext = extent; n++; } return *this; }
+    Layout &space(int extent) { return add(nullptr, extent); }   /* reserve a region / fixed gap */
+    Rect rect_of(int i) const { return (i >= 0 && i < n) ? it[i].out : Rect{0, 0, 0, 0}; }
+    void arrange(Rect b) {
+        int ix = b.x + pad, iy = b.y + pad, iw = b.w - 2 * pad, ih = b.h - 2 * pad;
+        if (iw < 0) iw = 0; if (ih < 0) ih = 0;
+        int span  = (dir == LAY_ROW) ? iw : ih;
+        int avail = span - gap * (n > 0 ? n - 1 : 0);
+        int fixed = 0, stretch = 0;
+        for (int i = 0; i < n; i++) { if (it[i].ext > 0) fixed += it[i].ext; else stretch++; }
+        int slack = avail - fixed; if (slack < 0) slack = 0;
+        int each = stretch ? slack / stretch : 0, rem = stretch ? slack % stretch : 0;
+        int pos = (dir == LAY_ROW) ? ix : iy;
+        for (int i = 0; i < n; i++) {
+            int ext;
+            if (it[i].ext > 0) ext = it[i].ext;
+            else { ext = each; if (rem > 0) { ext++; rem--; } }   /* spread the remainder */
+            Rect rc = (dir == LAY_ROW) ? Rect{ pos, iy, ext, ih } : Rect{ ix, pos, iw, ext };
+            it[i].out = rc;
+            if (it[i].w) it[i].w->r = rc;
+            pos += ext + gap;
+        }
+    }
+private:
+    static const int MAXI = 24;
+    struct Item { Widget *w; int ext; Rect out; };
+    Item it[MAXI]; int n = 0;
+};
+
 } // namespace ui

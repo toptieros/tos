@@ -267,12 +267,15 @@ A bottom bar (Finder/Dolphin both have one) — currently absent. Shows, left-to
   volume's total/free bytes from the sector bitmap; surfaced as a **"<n> free"** footer in the
   Details pane — the status bar's own bottom-right sits under the dock — and as the shell's `df`.
   A thin usage bar is still TODO.)*
-- The **zoom slider** (§1), right-aligned.
+- The **zoom slider** (§1), right-aligned. *(done 2026-06-11: a 3-stop slider shows in icon
+  view; click a stop to resize the tiles, mirroring the per-folder `zoom`. Plus `+`/`=`/`-`/`0`
+  keyboard shortcuts. A right pad (`RPAD`) keeps it clear of twm's resize corner; geometry rides
+  on the `[files] zoomrect` canary.)*
 - A **progress area** for the active background job (copy/move/delete/search) with a
-  **Stop** button (§12). Hidden when idle; appears only if a job runs >~0.5s (Dolphin's
-  delayed-progress trick avoids flicker on fast ops). *(2026-06-11: a copy job shows
-  "Copying k of n..." on the left plus a 2px accent **permille band** along the bar's top
-  edge; Esc cancels. A clickable Stop button + the delayed-show trick are still TODO.)*
+  **Stop** button (§12). *(2026-06-11: a copy job shows "Copying k of n..." on the left plus a
+  2px accent **permille band** along the bar's top edge; a red **Stop pill** appears at the
+  right while a job runs and cancels it on click — the click twin of Esc. The delayed-show
+  (>~0.5s) trick to avoid flicker on fast ops is still TODO.)*
 
 ## 7. The sidebar / Places (editable, sectioned)
 

@@ -26,11 +26,13 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   Ctrl+N new folder, Enter/Ctrl+O open, Delete (or Backspace) remove, Ctrl+A select-all,
   Backspace/Alt+← up a directory, plus the existing Ctrl+C/X/V — surfaced in the context menu and a
   menu bar (#6) so the accelerators show. → [`files-and-desktop.md`](design/files-and-desktop.md)
-- [ ] **Files app follow-ons (files-app.md).** The planned catalog landed 2026-06-11 (see
-  CHANGELOG.md); these smaller items remain open in the doc, none scheduled: Miller columns §1 ·
+- [~] **Files app follow-ons (files-app.md).** The planned catalog landed 2026-06-11 (see
+  CHANGELOG.md). **Done 2026-06-11:** the interactive **§6 status bar** — a clickable **zoom
+  slider** (icon view) + `+`/`-`/`0` shortcuts, and a **Stop button** that halts a running job
+  (the click twin of Esc). **Still open in the doc, none scheduled:** Miller columns §1 ·
   multi-select · Show in Groups §2 · drag-reorder Places §7 (wants DnD) · templates / New Folder
-  with Selection §12 · Apply-to-All conflicts §12 · jobs for Paste/Duplicate/Delete §12 · a Stop
-  button + zoom slider §6 · search scopes + a Spotlight-shared indexer §5 · richer icon art §11.
+  with Selection §12 · Apply-to-All conflicts §12 · jobs for Paste/Duplicate/Delete §12 ·
+  search scopes + a Spotlight-shared indexer §5 · richer icon art §11.
   → [`files-app.md`](design/files-app.md)
 - [~] **App menus (#6).** **Done:** the app→WM protocol — `SYS_WIN_SETMENU`/`SYS_WM_GETMENU`
   (≤5 menus × 12 items), `WEV_MENU` picks, the `ui::Window` menu API + `on_menu()`; per-item
@@ -66,8 +68,17 @@ protocol). **Left:**
   menu, with a status-bar deny-flash on the keyboard/toolbar paths (2026-06-11).
   **Remaining (folded into the Desktop suite below):** the same lock badge on the future
   `WIN_DESKTOP` layer (waits on that layer existing). → [`system-ownership.md`](design/system-ownership.md)
-- [ ] **Capability sandbox.** Wire the manifest `caps` field to a per-task capability set checked
-  at the syscall boundary (fs jails, spawn/window/notify gating). → [`app-runtime.md`](design/app-runtime.md)
+- [~] **Capability sandbox.** **Done (Phase 1 Declare + Phase 2 coarse-enforce, 2026-06-11):**
+  a per-task `caps` bitmask (`kernel/cap.h`, shared with userspace via `syscall.h`); init/the
+  boot chain run at `CAP_ALL`, `fork` inherits, `exec` keeps; `SYS_SETCAPS` (drop-only) +
+  `SYS_GETCAPS`. The trusted launcher (twm's `launch()`) reads each bundle manifest's `caps`
+  (`appcaps.h`) and **confines the child to it at exec** — apps default to `CAP_NORMAL` (every
+  low-risk cap, none of the dangerous ones). The kernel **enforces `CAP_NOTIFY`** at the
+  `SYS_NOTIFY` boundary (the one dangerous cap with a real syscall today); the `selftest`
+  `group_caps` proves a normal app is confined and the notify gate refuses it. All four bundle
+  manifests declare `caps`. **Left:** Phase 3 fs path-jails (`fs:home`/`fs:bundle`), and Phase 4
+  the runtime permission prompts + Settings review/revoke (needs the device caps to exist).
+  → [`app-runtime.md`](design/app-runtime.md)
 - [~] **Ctrl+C/X/V everywhere.** Landed in `TextField`, the terminal (Ctrl+Shift+C/X/V), and Files
   (files). Remaining: **folders** — folded into the Files + Desktop suite above.
 - [⏸] **Pocket Dimension (Super+D).** A left-edge per-session shelf of stashed typed payloads.

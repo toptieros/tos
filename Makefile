@@ -67,8 +67,8 @@ ACCEL := -machine accel=kvm:tcg
 MEM  ?= 8G
 
 # --- user programs (each its own app dir + ELF executable, stored on the FS) -
-UPROGS   := init shell ticker twm term fastfetch memtest selftest
-CXXPROGS := files notepad clipboard spotlight launchpad settings
+UPROGS   := init shell ticker twm term memtest selftest
+CXXPROGS := files notepad clipboard spotlight launchpad settings fastfetch
 UELFS    := $(patsubst %,$(BUILD)/%.elf,$(UPROGS) $(CXXPROGS))
 ULIBOBJ  := $(BUILD)/$(UDIR)/lib/ulib.o $(BUILD)/$(UDIR)/lib/ugfx.o $(BUILD)/$(UDIR)/lib/libc.o $(BUILD)/$(UDIR)/lib/sys.o $(BUILD)/$(UDIR)/lib/registry.o
 CXXRT    := $(BUILD)/$(UDIR)/lib/crt.o

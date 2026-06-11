@@ -7,6 +7,28 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Capability sandbox — Phase 1 Declare + Phase 2 coarse enforcement (2026-06-11).** Apps are no
+  longer implicitly all-powerful: `struct task` gained a `caps` bitmask (`kernel/cap.h`, shared
+  with userspace through `syscall.h`). init/the boot chain (twm/term/shell) run at `CAP_ALL`;
+  `fork` inherits caps, `exec` keeps them, and the new **drop-only** `SYS_SETCAPS` (+ `SYS_GETCAPS`)
+  lets a task shed authority but never gain it. The trusted launcher — twm's `launch()` — reads
+  the target bundle's manifest `caps` via the new `appcaps.h` mapping and **confines the forked
+  child to exactly those bits before exec**; an app with no `caps` line gets `CAP_NORMAL` (window,
+  fs:bundle/home/system, time, spawn — every low-risk cap, none of the dangerous ones). The kernel
+  **enforces `CAP_NOTIFY`** at `SYS_NOTIFY` (the only dangerous cap with a live syscall today;
+  net/camera/mic/location are declared but await the hardware). All four bundle manifests now
+  declare `caps`. Verified by a new `selftest` `group_caps`: a normal app holds window/spawn/fs:home,
+  **lacks notify/net, and the kernel refuses its `SYS_NOTIFY`** — while twm (CAP_ALL) still posts
+  notifications. Design: [`app-runtime.md`](design/app-runtime.md).
+- **Files interactive status bar — zoom slider, zoom shortcuts, Stop button §6 (2026-06-11).**
+  The bottom bar gained controls: a right-aligned **3-stop zoom slider** in icon view (click a
+  stop to resize the tiles; mirrors the per-folder `zoom` state), the `+`/`=`/`-`/`0` **zoom
+  keyboard shortcuts** (zoom in / out / actual size), and a red **Stop pill** that appears while
+  a background copy/search job runs and cancels it on click (the click twin of Esc). The
+  `StatusBar` became interactive: a `disabled`-aware `Popup` was already there, so this added
+  per-control hit rects routed through `FilesApp::dispatch_mouse`; `RPAD` keeps the controls
+  clear of twm's bottom-right resize corner. New `[files] zoomrect` geometry canary. Verified on
+  a boot (slider click + shortcuts drive `set_zoom`; the Stop pill shows mid-copy).
 - **Terminal configurable scrollback ring size (2026-06-11).** The scrollback ring is now
   **heap-allocated at startup and sized from `term.scrollback`** in the registry (default 256,
   clamped up to at least one screenful), replacing the compiled-in 256-row static array — so the

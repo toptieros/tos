@@ -234,6 +234,7 @@ static struct regs *syscall_dispatch(struct regs *r) {
         r->rax = (uint64_t)(int64_t)wm_kill_window((int)r->rdi);
         return r;
     case SYS_NOTIFY:
+        if (!sched_has_caps(CAP_NOTIFY)) { r->rax = (uint64_t)-1; return r; }  /* dangerous cap: default-deny */
         BUF(arg, sizeof(struct notif));
         r->rax = (uint64_t)(int64_t)notify_post((const struct notif *)arg);
         return r;
@@ -249,6 +250,12 @@ static struct regs *syscall_dispatch(struct regs *r) {
         return r;
     case SYS_GETUID:
         r->rax = (uint64_t)(int64_t)sched_uid();
+        return r;
+    case SYS_SETCAPS:
+        r->rax = (uint64_t)sched_setcaps((unsigned)arg);   /* drop-only; returns the new mask */
+        return r;
+    case SYS_GETCAPS:
+        r->rax = (uint64_t)sched_caps();
         return r;
     case SYS_GETPID:
         r->rax = (uint64_t)(int64_t)sched_getpid();

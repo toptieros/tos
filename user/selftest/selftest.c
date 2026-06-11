@@ -136,6 +136,25 @@ static void group_clipboard(void) {
     CHECK(clip_count() == 0);
 }
 
+static void group_caps(void) {
+    /* Capability sandbox (design/app-runtime.md): this program runs as a normal
+     * sandboxed app -- the shell that exec'd it descends from a terminal that twm
+     * launched at CAP_NORMAL -- so it holds the low-risk caps but NOT the dangerous
+     * ones, and the kernel must refuse a dangerous syscall it lacks. */
+    unsigned caps = getcaps();
+    CHECK(caps & CAP_WINDOW);                 /* a normal cap it holds          */
+    CHECK(caps & CAP_SPAWN);                  /* CAP_NORMAL includes fork/exec  */
+    CHECK(caps & CAP_FS_HOME);
+    CHECK(!(caps & CAP_NOTIFY));              /* dangerous: not granted         */
+    CHECK(!(caps & CAP_NET));
+    /* SYS_NOTIFY is gated on CAP_NOTIFY -- the kernel refuses it (the cap check
+     * fires before the argument pointer is even read). */
+    char nbuf[256]; for (int i = 0; i < 256; i++) nbuf[i] = 0;
+    CHECK((long)sc(SYS_NOTIFY, (uint64_t)nbuf) == -1);
+    /* setcaps only drops: it can never re-grant a cap we don't hold */
+    CHECK(!(setcaps(CAP_ALL) & CAP_NOTIFY));
+}
+
 __attribute__((section(".text.start"), used, noreturn))
 void _ustart(void) {
     print("[selftest] running\r\n");
@@ -144,6 +163,7 @@ void _ustart(void) {
     group_registry();
     group_proc();
     group_clipboard();
+    group_caps();
     if (nfail == 0) {
         print("selftest: "); printu((unsigned)npass); print("/"); printu((unsigned)npass);
         print(" OK\r\n");

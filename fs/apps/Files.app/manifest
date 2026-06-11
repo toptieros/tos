@@ -3,6 +3,7 @@ exec      = bin/files
 icon      = icon.argb
 version   = 1.0
 category  = utility
+caps      = window, fs:bundle, fs:home, fs:system, time, spawn
 pinned    = true
 min_width = 380
 min_height= 240
