@@ -208,11 +208,22 @@ the toolkit as three `ui::Window` members:
   highlight a drop zone; `x < 0` means the drag left. Default: ignored.
 - **`on_drop(x, y, type, data, len)`** (virtual) — the drop landed here; read the typed
   payload and act (move the files, insert the text). The toolkit reads the bytes via
-  `drag_payload()` and hands them in.
+  `drag_payload()` and hands them in. **Default behaviour:** route a `DRAG_TEXT` drop to
+  the topmost child `Widget` under the drop point that accepts it (see below); apps only
+  override `on_drop` for *non-text* payloads (Files overrides it for `DRAG_FILES`).
+- **`Widget::accept_text_drop(x, y, s, n)`** (virtual) — a `DRAG_TEXT` drop reached this
+  widget; insert the `n` bytes and return `true`, or `false` to pass it on. `TextField`
+  overrides it to place the caret at the drop point and insert (**copy** semantics).
+
+Because the payload lives in the kernel and the compositor routes `WEV_DROP` by
+window-under-cursor, **cross-app text drag is free**: any `TextField` is both a drag
+source (press-and-drag from within a selection arms `DRAG_TEXT`) and a drop target, with
+no per-app code — Notepad's editor, unchanged, both gives and takes dragged text.
 
 The compositor owns the visual session (the ghost + hit-test + `WEV_DRAG`/`WEV_DROP`
 routing), so an app only writes these hooks — the same brokered model as windows/input.
-First consumer: **Files** drag-to-move (`user/files/files.cpp`).
+Consumers: **Files** drag-to-move (`user/files/files.cpp`); **text drag** (toolkit-wide,
+`user/lib/ui_textfield.cpp`).
 
 ## Out of scope (for now)
 

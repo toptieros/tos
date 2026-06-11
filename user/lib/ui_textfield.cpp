@@ -183,6 +183,7 @@ int TextField::index_at(int px, int py) {
 bool TextField::on_mouse(int x, int y, int btn) {
     if (multiline && sb.hit(x)) { sb.dragging = true; sb_set_top_from_y(y); return true; }  /* press on the scroll track */
     brk = true;                            /* repositioning the caret ends the typing-coalesce run */
+    press_in_sel = false; drag_armed = false;
     int idx = index_at(x, y);
     unsigned now = win ? win->ticks : 0;
     if (btn & WEV_MOUSE_SHIFT) {           /* Shift+click: extend the selection to the click */
@@ -193,7 +194,9 @@ bool TextField::on_mouse(int x, int y, int btn) {
         idx >= last_click_i - 1 && idx <= last_click_i + 1) {
         select_word(idx);                 /* a quick second press near the first: select the word */
     } else {
-        caret = idx; anchor = idx;        /* start a possible drag-selection */
+        int a = -1, b = -1; if (has_sel()) sel_bounds(a, b);
+        if (has_sel() && idx >= a && idx <= b) press_in_sel = true;   /* keep the selection; a drag moves it out */
+        else { caret = idx; anchor = idx; }                          /* start a possible drag-selection */
     }
     last_click_t = now; last_click_i = idx;
     if (win) win->invalidate();
@@ -217,8 +220,42 @@ void TextField::select_word(int idx) {
 int TextField::word_prev(int i) const { return buf ? tu_word_prev(buf, i) : 0; }
 int TextField::word_next(int i) const { return buf ? tu_word_next(buf, len, i) : 0; }
 void TextField::drag_to(int x, int y) {
+    if (press_in_sel) {                            /* dragging the selection OUT -> arm a DRAG_TEXT payload */
+        if (!drag_armed && win) {
+            int a, b; sel_bounds(a, b); int n = b - a;
+            if (n > 0) {
+                char tmp[1024]; if (n > (int)sizeof tmp) n = (int)sizeof tmp;
+                for (int i = 0; i < n; i++) tmp[i] = buf[a + i];
+                char lbl[32]; int ln = n < 31 ? n : 31;
+                for (int i = 0; i < ln; i++) lbl[i] = tmp[i]; lbl[ln] = 0;   /* ghost shows a preview */
+                win->begin_drag(DRAG_TEXT, lbl, tmp, n);
+                drag_armed = true;
+                printf("[ui] textdrag %d\r\n", n);
+            }
+        }
+        return;                                     /* don't extend the selection while dragging it out */
+    }
     int ni = index_at(x, y);
     if (ni != caret) { caret = ni; if (win) win->invalidate(); }
+}
+/* Button released: end any scrollbar drag. If we pressed inside a selection but
+ * never armed a drag-out, this was a plain click -> collapse the selection now. */
+void TextField::on_button_up() {
+    sb.dragging = false;
+    if (press_in_sel && !drag_armed) { caret = last_click_i; anchor = -1; if (win) win->invalidate(); }
+    press_in_sel = drag_armed = false;
+}
+/* A DRAG_TEXT drop landed here: place the caret at the drop point and insert the
+ * text (copy semantics -- cross-app text drag). Newlines flatten in a single-line field. */
+bool TextField::accept_text_drop(int x, int y, const char *s, int n) {
+    if (n <= 0) return false;
+    caret = index_at(x, y); anchor = -1;
+    char tmp[1024]; if (n > (int)sizeof tmp) n = (int)sizeof tmp;
+    for (int i = 0; i < n; i++) { char ch = s[i]; tmp[i] = (!multiline && (ch == '\n' || ch == '\r')) ? ' ' : ch; }
+    ins(tmp, n);
+    printf("[ui] textdrop %d\r\n", n);
+    if (win) win->invalidate();
+    return true;
 }
 /* Map a pointer y on the track to a scroll position (via the shared ScrollBar),
  * clamp, and emit telemetry the test reads. */

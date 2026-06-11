@@ -7,6 +7,15 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Cross-app text drag (2026-06-11).** The DnD keystone's second consumer, in the toolkit so every
+  text field inherits it. Press-and-drag from *within* a `TextField` selection arms a `DRAG_TEXT`
+  payload (preview label = the selected text); the drop target's default `Window::on_drop` routes
+  `DRAG_TEXT` to the `Widget` under the cursor via the new `accept_text_drop()` hook, which
+  `TextField` overrides to insert at the drop point (**copy** semantics). Payload-in-kernel +
+  twm-routes-by-window-under-cursor means any field is both source and target with no per-app code
+  (Notepad's editor, unchanged, drops text). Verified by a boot: select "world", drag it left →
+  "worldhello world", with the translucent text ghost screenshotted mid-flight. Design:
+  [`ui.md`](design/ui.md).
 - **Drag-and-drop protocol — the keystone (2026-06-11).** A general DnD pipe spanning kernel →
   compositor → toolkit → app. A source arms a **typed payload** (`DRAG_FILES`/`DRAG_TEXT`/
   `DRAG_IMAGE`) with `begin_drag()`; the kernel holds the bytes in a single session

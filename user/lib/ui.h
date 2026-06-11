@@ -80,6 +80,9 @@ public:
     virtual void on_leave() { hovered = false; }
     /* scroll wheel over the widget; delta>0 = wheel up. Return true if it scrolled. */
     virtual bool on_scroll(int delta) { (void)delta; return false; }
+    /* A DRAG_TEXT drop landed on this widget (Window::on_drop routes it here); insert
+     * the text and return true if accepted. Default: not a drop target. */
+    virtual bool accept_text_drop(int x, int y, const char *s, int n) { (void)x; (void)y; (void)s; (void)n; return false; }
     /* the pointer shape at (x,y) inside this widget; defaults to the static `cursor`
      * field. Override for sub-element shapes (a header's ⇔ only over its dividers). */
     virtual int cursor_at(int x, int y) { (void)x; (void)y; return cursor; }
@@ -233,7 +236,8 @@ public:
     bool        on_key(int key, bool shift = false) override;
     bool        on_mouse(int x, int y, int btn) override;
     void        on_drag(int x, int y) override { if (sb.dragging) sb_set_top_from_y(y); else drag_to(x, y); }
-    void        on_button_up() override { sb.dragging = false; }   /* end a scrollbar drag */
+    void        on_button_up() override;         /* end a scrollbar drag, or a drag-the-selection-out gesture */
+    bool        accept_text_drop(int x, int y, const char *s, int n) override;  /* DRAG_TEXT drop: insert at the point */
     bool        on_scroll(int delta) override;                     /* multiline: scroll the viewport */
     bool        shows_caret() const override { return visible; }    /* keeps the caret blinking when idle */
     bool        force_focus = false;        /* draw as focused (caret + accent edge) even when the
@@ -258,6 +262,8 @@ private:
     int   last_caret = -1;          /* snap the view to the caret only when it moves (free wheel-scroll) */
     unsigned last_click_t = 0;      /* tick of the last press, for double-click word-select */
     int   last_click_i = -1;        /* caret index of the last press                         */
+    bool  press_in_sel = false;     /* the press landed inside the current selection (maybe drag it out) */
+    bool  drag_armed = false;       /* a DRAG_TEXT drag-out has been armed for this gesture   */
     void  ensure(int need);
     void  ins(const char *s, int n);
     void  del_range(int a, int b);
@@ -390,8 +396,9 @@ public:
      * delivers the payload on release -- read `data`/`len` (typed by DRAG_*) and act. */
     void begin_drag(int type, const char *label, const void *data, int len) { drag_begin(type, label, data, len); }
     virtual void on_drag_over(int x, int y) { (void)x; (void)y; }
-    virtual void on_drop(int x, int y, int type, const void *data, int len) {
-        (void)x; (void)y; (void)type; (void)data; (void)len; }
+    /* Default: a DRAG_TEXT drop is routed to the topmost widget under (x,y) that
+     * accepts text (any TextField). Apps override to handle other payload types. */
+    virtual void on_drop(int x, int y, int type, const void *data, int len);
     /* App menu bar (design/ui.md #6): declare top-level menus the compositor shows
      * as bar tiles; on_menu() fires when the user picks an item. Build with
      * menu_begin / menu_add / menu_item, then menu_commit(). */

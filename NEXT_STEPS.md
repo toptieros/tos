@@ -60,9 +60,15 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select,
 (Ctrl+Z / Ctrl+Y), and the **I-beam cursor over every text field** (2026-06-10, via the
 `SYS_WIN_SETCURSOR` cursor-hint protocol + `Widget::cursor_at` — was blocked on exactly that
 protocol). **Left:**
-- [ ] **Primary selection + cross-app text drag.** ~~Blocked on the DnD protocol~~ — the protocol
-  landed (below); now buildable. A `TextField` selection arms `begin_drag(DRAG_TEXT, …)`; a drop
-  target inserts the dropped text in its `on_drop`.
+- [x] **Cross-app text drag (2026-06-11).** A `TextField` selection, pressed-and-dragged from
+  *within* the selection, arms `begin_drag(DRAG_TEXT, preview, bytes, n)`; twm runs the ghost +
+  routing; the drop target's default `Window::on_drop` routes `DRAG_TEXT` to the `Widget` under the
+  cursor via `accept_text_drop(x,y,s,n)`, which `TextField` overrides to insert at the drop point
+  (**copy** semantics for v1). Because the payload lives in the kernel and twm routes `WEV_DROP` by
+  window-under-cursor, any toolkit text field is a source *and* a target for free (Notepad's editor,
+  unmodified, gets text-drop). Verified: select "world", drag it left → "worldhello world" (ghost
+  chip screenshotted mid-flight). **Left:** *move* semantics (delete source on same-field drop) +
+  the X11-style **primary selection** (middle-click paste of the last selection).
 
 ### Input / event foundations
 - [x] **Drag-and-drop protocol (2026-06-11).** A source arms a **typed payload** (`DRAG_FILES` /

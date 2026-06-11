@@ -241,6 +241,15 @@ void Window::dispatch_scroll(int x, int y, int delta) {
     }
     on_scroll(delta);                                         /* nothing scrollable -> app-level */
 }
+void Window::on_drop(int x, int y, int type, const void *data, int len) {
+    if (type != DRAG_TEXT || !data || len <= 0) return;
+    for (int i = kids.size() - 1; i >= 0; i--) {              /* topmost widget under the drop */
+        Widget *c = kids[i];
+        if (c->visible && c->r.has(x, y) && c->accept_text_drop(x, y, (const char *)data, len)) {
+            dirty = true; return;
+        }
+    }
+}
 void Window::feed_key(int b) {
     int key = -1;
     bool shift = false;                                /* set from the CSI modifier param (Shift => bit 0) */
