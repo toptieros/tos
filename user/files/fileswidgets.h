@@ -145,6 +145,33 @@ public:
         if (v < 0 || !vrow(v, &s, &i) || i < 0 || s != SIDE_FAV) return -1;
         return i;
     }
+    int nfav() const { int c = 0; for (int i = 0; i < n; i++) if (items[i].sect == SIDE_FAV) c++; return c; }
+    /* §7 drag-reorder: the insertion gap (0..nfav) a y maps to among the Favorites
+     * rows -- gap g means "before favourite g" (nfav = after the last). */
+    int fav_gap_at(int y) const {
+        int nf = nfav(); if (nf == 0) return 0;
+        int seen = 0, nv = vrows();
+        for (int v = scroll; v < nv; v++) {
+            int s, i; if (!vrow(v, &s, &i)) break;
+            if (i < 0 || s != SIDE_FAV) continue;
+            if (y < row_y(v) + row_h / 2) return seen;     /* above this row's midline -> before it */
+            seen++;
+        }
+        return nf;
+    }
+    int drop_gap = -1;          /* §7: the Favorites insertion line to paint (-1 none) */
+    /* window y of insertion gap g (top of favourite g; bottom of the last for g==nfav) */
+    int fav_gap_y(int g) const {
+        int seen = 0, nv = vrows(), lasty = r.y + top_pad;
+        for (int v = scroll; v < nv; v++) {
+            int s, i; if (!vrow(v, &s, &i)) break;
+            if (i < 0 || s != SIDE_FAV) continue;
+            if (seen == g) return row_y(v);
+            lasty = row_y(v) + row_h;
+            seen++;
+        }
+        return lasty;
+    }
     bool on_hover(int, int y) override {
         int v = row_at(y);
         if (trash_path[0] && y >= trash_y() && y < trash_y() + row_h) v = 1000;  /* the pinned Trash row */
@@ -203,6 +230,10 @@ public:
             int y = trash_y();
             ugfx_fill_a(r.x + 12, y - 4, r.w - 24, 1, ARGB(40, 150, 170, 230));
             draw_item(y, "Trash", trash_path, hover_row == 1000, G_TRASH);
+        }
+        if (drop_gap >= 0 && !collapsed[SIDE_FAV]) {     /* §7: the drag-reorder insertion line */
+            int gy = fav_gap_y(drop_gap);
+            ugfx_fill_a(r.x + 8, gy - 1, r.w - 16, 2, ARGB(235, 96, 152, 252));
         }
     }
     bool on_mouse(int x, int y, int) override {

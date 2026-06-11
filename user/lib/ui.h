@@ -384,6 +384,10 @@ public:
     virtual void on_key(int key) { (void)key; } /* keys when nothing is focused */
     virtual void on_nav(int dir) { (void)dir; } /* WEV_NAV: 0 = back, 1 = forward (mouse side buttons) */
     virtual void on_context(int x, int y) { (void)x; (void)y; }  /* right-click (client-relative) */
+    /* A left-button press, before it is routed to a child widget. Default: ignored.
+     * Apps override to capture where a gesture began (e.g. Files notes which Favorites
+     * row a press landed on so a subsequent drag reorders it, not the file list). */
+    virtual void on_press(int x, int y, int btn) { (void)x; (void)y; (void)btn; }
     /* A button-held drag (WEV_MOUSE_DRAG) over the client area. Default: ignored,
      * so ordinary widgets don't fire on every drag step. Apps that want rubber-band
      * selection (Files) override this. */

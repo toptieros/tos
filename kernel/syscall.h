@@ -126,6 +126,7 @@ struct clipinfo { uint32_t type; uint32_t len; uint32_t active; char name[32]; }
 #define DRAG_FILES 1   /* data = a NUL-terminated absolute path (one item for now) */
 #define DRAG_TEXT  2   /* data = UTF-8 text                                        */
 #define DRAG_IMAGE 3   /* data = raw ARGB bytes (future)                           */
+#define DRAG_PLACE 4   /* data = a Favorites row's path; intra-Files drag-reorder  */
 
 /* A desktop notification: a short title + body an app posts with notify(); the
  * compositor shows the newest as a top-right toast and keeps a ring for the

@@ -2069,6 +2069,8 @@ struct FilesApp : ui::Window {
      * for now (icon/gallery hit-testing is a follow-on). */
     int dnd_armed = 0;             /* a drag-out is in flight (armed once per gesture) */
     int drop_row  = -1;            /* list row highlighted as the drop target (-1 none) */
+    int place_src = -1;            /* §7: the Favorites index a press landed on (reorder source) */
+    int dnd_place = 0;             /* §7: a Places drag-reorder is the in-flight drag */
     static bool same_str(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
     /* the list display-row under a client point, or -1 (matches render_row's `i`) */
     int list_row_at(int x, int y) const {
@@ -2078,9 +2080,23 @@ struct FilesApp : ui::Window {
         int row = list.top + (y - lr.y) / list.row_h;
         return (row >= 0 && row < list.count) ? row : -1;
     }
+    /* note which Favorites row (if any) a fresh press landed on, so a drag from it
+     * reorders Places rather than rubber-banding the list (§7). Reset every press. */
+    void on_press(int x, int y, int btn) override {
+        place_src = (btn & 1) ? side.fav_at(x, y) : -1;
+    }
     void on_drag(int x, int y, int btn) override {
         (void)x; (void)y; (void)btn;
-        if (dnd_armed || view_mode != 0) return;
+        if (dnd_armed) return;
+        if (place_src >= 0 && place_src < nplaces) {   /* §7: drag a Favorites row -> reorder it */
+            const char *p = places[place_src].path;
+            int n = 0; while (p[n]) n++;
+            begin_drag(DRAG_PLACE, places[place_src].label, p, n + 1);
+            dnd_armed = 1; dnd_place = 1;
+            print("[files] place drag "); print(places[place_src].label); print("\r\n");
+            return;
+        }
+        if (view_mode != 0) return;
         int idx = ent_at(list.sel);                    /* a real selected entry (not "..")? */
         if (idx < 0) return;
         struct dirent *e = &ents[idx];
@@ -2092,6 +2108,11 @@ struct FilesApp : ui::Window {
         print("[files] drag "); print(e->name); print("\r\n");
     }
     void on_drag_over(int x, int y) override {
+        if (dnd_place) {                               /* §7: a Places reorder -> show the gap line */
+            int ng = (x >= side.r.x && x < side.r.x + side.r.w) ? side.fav_gap_at(y) : -1;
+            if (ng != side.drop_gap) { side.drop_gap = ng; invalidate(); }
+            return;
+        }
         int nr = -1;
         if (x >= 0) {
             int row = list_row_at(x, y);
@@ -2100,7 +2121,21 @@ struct FilesApp : ui::Window {
         if (nr != drop_row) { drop_row = nr; invalidate(); }
     }
     void on_drop(int x, int y, int type, const void *data, int len) override {
-        dnd_armed = 0; drop_row = -1;
+        dnd_armed = 0; drop_row = -1; place_src = -1;
+        if (type == DRAG_PLACE) {                       /* §7: drop a dragged Favorites row -> reorder */
+            int placing = dnd_place; dnd_place = 0; side.drop_gap = -1; (void)placing;
+            if (!data || len <= 0 || x < side.r.x || x >= side.r.x + side.r.w) { invalidate(); return; }
+            int from = places_find(places, nplaces, (const char *)data);
+            int to   = side.fav_gap_at(y);
+            if (from < 0) { invalidate(); return; }
+            nplaces = places_move(places, nplaces, from, to);
+            save_places(); sync_side(); side_dump();
+            print("[files] places reorder "); printu((unsigned)from);
+            print(" -> "); printu((unsigned)to); print("\r\n");
+            invalidate();
+            return;
+        }
+        dnd_place = 0; side.drop_gap = -1;
         if (type != DRAG_FILES || !data || len <= 0) { invalidate(); return; }
         const char *src = (const char *)data;
         int row = list_row_at(x, y), idx = (row >= 0) ? ent_at(row) : -1;

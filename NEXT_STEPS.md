@@ -32,7 +32,7 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   CHANGELOG.md). **Done 2026-06-11:** the interactive **§6 status bar** — a clickable **zoom
   slider** (icon view) + `+`/`-`/`0` shortcuts, and a **Stop button** that halts a running job
   (the click twin of Esc). **Still open in the doc, none scheduled:** Miller columns §1 ·
-  multi-select · Show in Groups §2 · drag-reorder Places §7 (wants DnD) · templates / New Folder
+  multi-select · Show in Groups §2 · templates / New Folder
   with Selection §12 · Apply-to-All conflicts §12 · jobs for Paste/Duplicate/Delete §12 ·
   search scopes + a Spotlight-shared indexer §5 · richer icon art §11.
   → [`files-app.md`](design/files-app.md)
@@ -72,13 +72,16 @@ protocol). **Left:**
 
 ### Input / event foundations
 - [x] **Drag-and-drop protocol (2026-06-11).** A source arms a **typed payload** (`DRAG_FILES` /
-  `DRAG_TEXT` / `DRAG_IMAGE`) with `begin_drag()`; the kernel holds the bytes (`kernel/drag.c`,
-  mirrors the clipboard); the compositor (twm) draws a **ghost chip**, hit-tests windows, posts
-  `WEV_DRAG` (highlight) + `WEV_DROP` (release); the target reads the payload via `drag_payload()`
-  in its toolkit `on_drop(x,y,type,data,len)` hook. **First consumer:** Files drag-to-move (drag a
-  file/folder onto a folder row → moved; verified Downloads→Desktop with the ghost visible).
-  **Left:** Esc-to-cancel a drag; copy-on-Ctrl (mods ride in the drop event); icon/gallery-view
-  drag sources (list view today). Unlocks the desktop + cross-app text drag + Pocket Dimension.
+  `DRAG_TEXT` / `DRAG_IMAGE` / `DRAG_PLACE`) with `begin_drag()`; the kernel holds the bytes
+  (`kernel/drag.c`, mirrors the clipboard); the compositor (twm) draws a **ghost chip**, hit-tests
+  windows, posts `WEV_DRAG` (highlight) + `WEV_DROP` (release); the target reads the payload via
+  `drag_payload()` in its toolkit `on_drop(x,y,type,data,len)` hook (plus the new window-level
+  `on_press(x,y,btn)` hook so an app can note where a gesture began). **Consumers:** Files
+  drag-to-move (file/folder onto a folder row → moved); cross-app **text drag** (toolkit-wide);
+  Files **drag-reorder Places** (`DRAG_PLACE`, ghost chip + accent insertion line, persisted to the
+  registry — verified Downloads→above Desktop). **Left:** Esc-to-cancel a drag; copy-on-Ctrl (mods
+  ride in the drop event); icon/gallery-view drag sources (list view today). Unlocks the desktop +
+  Pocket Dimension.
 
 ### System & security
 - [~] **System ownership (#1).** **Done:** tosfs v3 carries a per-entry `owner`; tasks carry a

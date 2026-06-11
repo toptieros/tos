@@ -201,6 +201,7 @@ void Window::redraw() {
 }
 void Window::dispatch_mouse(int x, int y, int btn) {
     if (btn & 2) { on_context(x, y); dirty = true; return; }   /* right-click -> context menu */
+    on_press(x, y, btn);                                  /* app hook: note where a gesture began */
     for (int i = kids.size() - 1; i >= 0; i--) {          /* topmost (last-added) first */
         Widget *c = kids[i];
         if (c->visible && c->r.has(x, y)) {

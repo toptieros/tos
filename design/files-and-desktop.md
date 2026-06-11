@@ -139,11 +139,12 @@ small reference (cheap), with the heavy lifting done by the recursive walk at pa
 ## Drag-and-drop
 
 > **Status: the DnD protocol landed 2026-06-11** (kernel `drag.c` + twm ghost/routing +
-> toolkit `begin_drag`/`on_drop`/`on_drag_over` + `WEV_DRAG`/`WEV_DROP`; see
-> [`ui.md`](ui.md) and CHANGELOG). **Files drag-to-move is built for the list view**
-> (drag a file/folder onto a folder row → move). Still open: icon/gallery-view drag
-> sources, inter-window + onto-desktop drags (the desktop layer below), drag-reorder
-> Places §7, copy-on-Ctrl, Esc-to-cancel.
+> toolkit `begin_drag`/`on_drop`/`on_drag_over`/`on_press` + `WEV_DRAG`/`WEV_DROP`; see
+> [`ui.md`](ui.md) and CHANGELOG). **Built:** Files drag-to-move (list view — drag a
+> file/folder onto a folder row → move); cross-app **text drag** (toolkit-wide); **drag-reorder
+> Places** (§7 — a `DRAG_PLACE` drag of a Favorites row, ghost chip + an accent insertion line,
+> the new order persisted to the registry). Still open: icon/gallery-view drag sources,
+> inter-window + onto-desktop drags (the desktop layer below), copy-on-Ctrl, Esc-to-cancel.
 
 Two distinct things share the word "drag":
 

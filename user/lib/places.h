@@ -85,3 +85,16 @@ static inline int places_remove(struct place *a, int n, int idx) {
     for (int i = idx; i < n - 1; i++) a[i] = a[i + 1];
     return n - 1;
 }
+
+/* Move a[from] so it lands at insertion gap `to` (0..n, in the *pre-move* index
+ * space, as a drag-reorder reports it). Dropping a row back on itself (to == from
+ * or from+1) is a no-op. Returns n unchanged (a reorder, never a resize). */
+static inline int places_move(struct place *a, int n, int from, int to) {
+    if (from < 0 || from >= n || to < 0 || to > n) return n;
+    struct place tmp = a[from];
+    if (to > from) to--;                              /* removing `from` shifts later gaps down one */
+    for (int i = from; i < n - 1; i++) a[i] = a[i + 1];   /* close the gap */
+    for (int i = n - 1; i > to; i--) a[i] = a[i - 1];     /* open a slot at `to` */
+    a[to] = tmp;
+    return n;
+}
