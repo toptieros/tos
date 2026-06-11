@@ -17,6 +17,10 @@ int      vmm_map_user_fb(struct fbinfo *out);    /* map the framebuffer into the
 
 /* Window surfaces: shared pixel buffers mapped into both an app and the
  * compositor (see kernel/ipc.c). */
+/* Map device MMIO (a PCI BAR in the PCI hole, outside the RAM identity map) into
+ * the shared higher half; returns a kernel pointer, or 0 if the window is full. */
+void    *vmm_map_mmio(uint64_t phys, uint64_t bytes);
+
 uint64_t vmm_alloc_surface(int nframes);                 /* contiguous frames -> phys base, 0 = OOM */
 void     vmm_free_surface(uint64_t base, int nframes);
 uint64_t vmm_map_surface(uint64_t pml4_phys, int id, uint64_t phys_base, int nframes);

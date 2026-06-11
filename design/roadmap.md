@@ -92,10 +92,17 @@ Prioritized, VM-first so the installer is testable in QEMU before metal:
    polled split-virtqueue DMA (bounce-buffered), self-test. Now wired through a **block-device layer**
    (`blockdev.c`: ata0 + virtio0), a **live→disk installer** (`install` clones the boot disk onto it),
    and **fs-on-bdev** so tOS boots straight off the installed virtio disk (root mounted from virtio0).
-   *Next: AHCI/SATA + DMA.*
-2. **AHCI/SATA + DMA** — the realistic install-target disk on desktops; replaces PIO.
-3. **NVMe** — how modern laptops/desktops boot; effectively mandatory for real-hardware
-   install. The spec is public and the driver is comparatively clean (queues + PRPs).
+2. **AHCI/SATA + DMA** — ✅ **landed 2026-06-12** (`kernel/drivers/ahci.c`): AHCI 1.x over the MMIO
+   ABAR (BAR5), polled command list + PRDT DMA (bounce-buffered), READ/WRITE DMA EXT + IDENTIFY,
+   registered as "ahci0". Added `vmm_map_mmio()` (a higher-half MMIO window, since device BARs live in
+   the PCI hole outside the RAM identity map). Verified: kernel self-test, *and tOS installs onto and
+   boots straight off a SATA disk* through the same fs-on-bdev path. The realistic desktop install
+   target; replaces PIO.
+3. **NVMe** — ✅ **landed 2026-06-12** (`kernel/drivers/nvme.c`): MMIO controller registers
+   (BAR0/1, via `vmm_map_mmio`), an admin + one I/O queue pair, polled DMA with PRP lists,
+   `IDENTIFY` namespace for capacity, registered as "nvme0". Verified: kernel self-test, *and tOS
+   boots straight off an NVMe namespace* (`-device nvme`) through the same fs-on-bdev path. How modern
+   laptops/desktops boot. *Next: GPT + ESP(FAT) writer.*
 4. **GPT + ESP(FAT) writer** — the installer must lay down a bootable layout (see
    [installation.md](installation.md)).
 5. **USB: xHCI + USB core + HID + mass-storage** — the big bare-metal tax (modern

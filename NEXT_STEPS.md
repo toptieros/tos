@@ -125,9 +125,12 @@ protocol). **Left:**
   disk). **Left for a "real" installer:** mkfs/partition the target instead of cloning (copy
   `/System`+`/Apps`, seed `/Users` + registry), and GPT/ESP for UEFI targets. → [`installation.md`](design/installation.md)
 - [~] **Device drivers (Phase 4).** **Done:** **virtio-blk** (legacy virtio-pci, polled DMA) +
-  a **block-device layer** (`blockdev.c`; ata0 + virtio0) (2026-06-12). **Next:** AHCI/SATA+DMA →
-  NVMe → GPT/ESP(FAT) writer → USB (xHCI+HID+MSC) → ACPI (uACPI/LAI) → virtio-net/e1000 + TCP/IP.
-  GPU accel is VM-only. → [`roadmap.md`](design/roadmap.md)
+  a **block-device layer** (`blockdev.c`; ata0 + virtio0 + ahci0 + nvme0); **AHCI/SATA + DMA**
+  (`ahci.c`: MMIO ABAR, command-list/PRDT DMA, READ/WRITE DMA EXT + IDENTIFY; new `vmm_map_mmio()`
+  for BARs in the PCI hole; installs onto + boots straight off a SATA disk); **NVMe** (`nvme.c`:
+  MMIO regs, admin + I/O queue pair, PRP DMA, IDENTIFY ns; boots straight off an NVMe namespace)
+  (2026-06-12). **Next:** GPT/ESP(FAT) writer → USB (xHCI+HID+MSC) → ACPI (uACPI/LAI) →
+  virtio-net/e1000 + TCP/IP. GPU accel is VM-only. → [`roadmap.md`](design/roadmap.md)
 - [ ] **Growable filesystem.** Files are contiguous and a metadata change rewrites the whole slot
   table; the partition is fixed-size. Want extent/indirect blocks, a runtime-sized partition, and a
   journaled table.

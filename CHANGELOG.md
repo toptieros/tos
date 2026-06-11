@@ -7,6 +7,32 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **NVMe DMA block driver — Phase 4 #3 (2026-06-12).** `kernel/drivers/nvme.c`: a clean-room NVMe 1.x
+  driver over the memory-mapped controller registers (BAR0/1, mapped with `vmm_map_mmio`). Probes PCI
+  for an NVMe controller (class 01.08), enables memory-space + bus-master, disables then re-enables the
+  controller, programs the **admin queue pair**, creates **one I/O queue pair** (Create I/O CQ then SQ),
+  and `IDENTIFY`s namespace 1 for capacity + LBA size. Polled DMA via **PRPs** (PRP1 + a PRP-list page
+  for transfers over 2 pages), bounce-buffered; completions tracked by **phase tag**. Registers as
+  `nvme0` (512-byte-LBA namespaces; other LBA sizes are reported and skipped). A **kernel boot
+  self-test** round-trips the last sector through the bdev API (`[nvme] selftest OK`). Verified
+  end-to-end: tOS **boots straight off an NVMe namespace** (`-device nvme`) via the same fs-on-bdev +
+  ELF-loader path — root mounts from `nvme0`, desktop comes up. How modern machines boot. Absent a
+  controller it prints `[nvme] none` and boots normally (smoke tier unchanged). Next: GPT/ESP writer.
+- **AHCI/SATA DMA block driver — Phase 4 #2 (2026-06-12).** `kernel/drivers/ahci.c`: a clean-room
+  AHCI 1.x driver over the memory-mapped HBA register block (the ABAR, BAR5). Probes PCI for a SATA
+  HBA (class 01.06), enables memory-space + bus-master, brings up the first port with a SATA disk
+  (command list + received-FIS area + a slot-0 command table, all in identity-mapped frames so the
+  pointers *are* the device-visible physical addresses), and does polled DMA via a single-entry PRDT:
+  `READ DMA EXT`/`WRITE DMA EXT` for I/O and `IDENTIFY` for capacity, bounce-buffered like virtio.
+  Registers as `ahci0`. Needed a new VMM primitive: **`vmm_map_mmio()`** — device BARs live in the PCI
+  hole, *outside* the RAM identity map, so it carves cache-disabled 2 MiB huge pages from a dedicated
+  higher-half PDPT slot (508); it's also wired into the live bootstrap page tables so MMIO probed
+  during `kmain` (before the scheduler switches CR3) is reachable. A **kernel boot self-test** round-
+  trips the last sector through the bdev API (`[ahci] selftest OK`). Verified end-to-end: tOS
+  **installs onto and boots straight off a SATA disk** (`-device ich9-ahci`) via the same fs-on-bdev +
+  ELF-loader path — root mounts from `ahci0`, desktop comes up, no IDE disk present. The realistic
+  desktop install target; replaces PIO. Absent an HBA it prints `[ahci] none` and boots normally
+  (smoke tier unchanged). Next in the batch: NVMe.
 - **fs-on-bdev + true boot-from-installed-disk (#11, 2026-06-12).** The root fs (`kernel/fs/fs.c`)
   now reads/writes through the block layer and, at mount, **scans every registered block device's MBR
   for the tosfs partition** and binds to the first match (`fs_disk_bdev()`). The ELF program loader

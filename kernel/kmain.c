@@ -13,6 +13,8 @@
 #include "smp.h"
 #include "mouse.h"
 #include "virtio_blk.h"
+#include "ahci.h"
+#include "nvme.h"
 #include "blockdev.h"
 #include "ata.h"
 #include <stdint.h>
@@ -52,6 +54,8 @@ void kmain(struct boot_info *bi) {
      * registered by name so the installer can target a disk by index. */
     bdev_register("ata0", ata_sectors(), ata_bdev_read, ata_bdev_write);
     virtio_blk_init();                    /* probes + registers "virtio0" if present (no-op if absent) */
+    ahci_init();                          /* probes + registers "ahci0" (SATA/DMA) if present  */
+    nvme_init();                          /* probes + registers "nvme0" (NVMe/DMA) if present  */
     bdev_dump();
 
     if (fs_mount() < 0) {

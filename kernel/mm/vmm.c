@@ -82,6 +82,17 @@ static uint64_t surf_base = 2 * GiB;
 static int      anon_pdpt_slot = 3;
 static uint64_t anon_base = 3 * GiB;
 
+/* Device-MMIO window. Device BARs (the AHCI ABAR, an NVMe register block, ...)
+ * live in the PCI hole, so they are NOT covered by the RAM identity map and need
+ * an explicit mapping. We claim a FIXED higher-half PDPT slot (508, just below the
+ * LAPIC/kernel/framebuffer slots at 509/510/511) and bump-allocate 2 MiB
+ * cache-disabled huge pages out of it on demand (vmm_map_mmio). The PD hangs off
+ * the shared higher-half PDPT, so the mapping appears in every address space. */
+#define MMIO_PD_SLOT  508
+#define MMIO_VBASE    0xFFFFFFFF00000000ULL    /* KERNEL_VMA - 2 GiB (slot 508) */
+static uint64_t *mmio_pd = 0;                  /* PD for the MMIO window (NULL until vmm_init) */
+static int       mmio_next = 0;                /* next free 2 MiB slot in mmio_pd */
+
 extern char __bss_end[];             /* end of the kernel image (virtual; linker.ld) */
 
 /* upt[] indices for the user window (USER_VBASE = 0x400000 -> pt index 0). The
@@ -348,6 +359,22 @@ void vmm_init(struct boot_info *bi) {
     pd_apic[0] = 0xFEE00000ULL | P | W | HUGE | 0x10 /*PCD*/;
     pdpt_high[509] = (uint64_t)pd_apic | P | W;
 
+    /* MMIO window (PDPT_high[508]): empty PD now, filled on demand by vmm_map_mmio. */
+    mmio_pd = frame_alloc();
+    pdpt_high[MMIO_PD_SLOT] = (uint64_t)mmio_pd | P | W;
+
+    /* Also wire the MMIO PD into the CURRENTLY-LIVE bootstrap page tables. The
+     * scheduler only switches CR3 to a vmm-built address space (with the shared
+     * higher-half PDPT above) after fs_mount; until then kmain runs on the boot
+     * loader's tables (BIOS stage1 / UEFI both run the kernel from PML4[511]). A
+     * device probed during kmain -- AHCI here, and the MBR scan that reads every
+     * bdev -- maps and touches its ABAR before that switch, so the window must be
+     * reachable now too. The bootstrap tables live in identity-mapped RAM, so their
+     * physical addresses double as kernel pointers. */
+    uint64_t *cur_pml4   = (uint64_t *)vmm_current_pml4();
+    uint64_t *cur_pdpthi = (uint64_t *)(cur_pml4[511] & PHYS_MASK);
+    cur_pdpthi[MMIO_PD_SLOT] = (uint64_t)mmio_pd | P | W;
+
     shared_pdpt_high = (uint64_t)pdpt_high;
 
     uint64_t pool = ram_total - 0x100000
@@ -530,6 +557,25 @@ uint64_t vmm_current_pml4(void) {
 void vmm_flush_self(void) {
     uint64_t cr3; __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
     __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
+/* Map `bytes` of device MMIO at physical `phys` into the shared higher half and
+ * return a kernel pointer to it (or 0 if the window is exhausted). Carves
+ * consecutive 2 MiB cache-disabled huge pages out of the MMIO window; the mapping
+ * is shared across every address space and persists for the life of the system.
+ * The returned pointer preserves `phys`'s offset within its 2 MiB page. */
+void *vmm_map_mmio(uint64_t phys, uint64_t bytes) {
+    if (!mmio_pd || bytes == 0) return 0;
+    uint64_t aligned = phys & ~0x1fffffULL;
+    uint64_t span    = (phys + bytes) - aligned;
+    int pages = (int)((span + 0x1fffffULL) / 0x200000ULL);
+    if (pages <= 0 || mmio_next + pages > 512) return 0;
+    int start = mmio_next;
+    for (int i = 0; i < pages; i++)
+        mmio_pd[start + i] = (aligned + (uint64_t)i * 0x200000ULL) | P | W | HUGE | 0x10 /*PCD*/;
+    mmio_next += pages;
+    vmm_flush_self();                                  /* publish the new huge pages */
+    return (void *)(MMIO_VBASE + (uint64_t)start * 0x200000ULL + (phys & 0x1fffffULL));
 }
 
 uint64_t vmm_alloc_surface(int nframes) { return frame_alloc_contig(nframes); }
