@@ -20,6 +20,7 @@
 #include "smp.h"
 #include "vmm.h"
 #include "clipboard.h"
+#include "drag.h"
 #include <stdint.h>
 
 static const char *const exc_names[32] = {
@@ -256,6 +257,26 @@ static struct regs *syscall_dispatch(struct regs *r) {
         return r;
     case SYS_GETCAPS:
         r->rax = (uint64_t)sched_caps();
+        return r;
+    case SYS_DRAG_BEGIN: {              /* (label, data, (type<<24)|len) -- source arms a drag */
+        int len = (int)(r->rdx & 0xffffff), type = (int)(r->rdx >> 24);
+        if (r->rdi) STR(r->rdi);
+        BUF(r->rsi, (uint64_t)len);
+        r->rax = (uint64_t)(int64_t)drag_begin(type, (const char *)r->rdi, (const char *)r->rsi, len);
+        return r;
+    }
+    case SYS_DRAG_PAYLOAD:              /* (int* type, buf, cap) -- target reads the dropped bytes */
+        BUF(r->rdi, sizeof(int));
+        BUF(r->rsi, r->rdx);
+        r->rax = (uint64_t)(int64_t)drag_payload((int *)r->rdi, (char *)r->rsi, (int)r->rdx);
+        return r;
+    case SYS_DRAG_STATE:               /* (char* label, cap) -- compositor queries the session */
+        if (r->rdi) BUF(r->rdi, r->rsi);
+        r->rax = (uint64_t)(int64_t)drag_state((char *)r->rdi, (int)r->rsi);
+        return r;
+    case SYS_DRAG_END:
+        drag_end();
+        r->rax = 0;
         return r;
     case SYS_GETPID:
         r->rax = (uint64_t)(int64_t)sched_getpid();

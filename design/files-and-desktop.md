@@ -136,7 +136,14 @@ small reference (cheap), with the heavy lifting done by the recursive walk at pa
 - **New Folder / New File**: create + immediately enter rename on the new item.
 - **Get Info**: the Files details pane; on the desktop, a small popup.
 
-## Drag-and-drop (needs the DnD protocol)
+## Drag-and-drop
+
+> **Status: the DnD protocol landed 2026-06-11** (kernel `drag.c` + twm ghost/routing +
+> toolkit `begin_drag`/`on_drop`/`on_drag_over` + `WEV_DRAG`/`WEV_DROP`; see
+> [`ui.md`](ui.md) and CHANGELOG). **Files drag-to-move is built for the list view**
+> (drag a file/folder onto a folder row → move). Still open: icon/gallery-view drag
+> sources, inter-window + onto-desktop drags (the desktop layer below), drag-reorder
+> Places §7, copy-on-Ctrl, Esc-to-cancel.
 
 Two distinct things share the word "drag":
 

@@ -7,6 +7,18 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Drag-and-drop protocol — the keystone (2026-06-11).** A general DnD pipe spanning kernel →
+  compositor → toolkit → app. A source arms a **typed payload** (`DRAG_FILES`/`DRAG_TEXT`/
+  `DRAG_IMAGE`) with `begin_drag()`; the kernel holds the bytes in a single session
+  (`kernel/drag.c`, mirrors `clipboard.c`, payload kept past `drag_end` so the target's post-drop
+  read works); twm runs the **visual session** — a translucent **ghost chip** trailing the cursor,
+  hit-tests the window under it, posts `WEV_DRAG` (drop-zone highlight, `0xfff` on leave) and
+  `WEV_DROP` (release) — and the target reads the payload via `drag_payload()` in the toolkit's new
+  `on_drop(x,y,type,data,len)` / `on_drag_over(x,y)` hooks (`SYS_DRAG_BEGIN/PAYLOAD/STATE/END`,
+  73–76). **First consumer:** Files **drag-to-move** — drag a file/folder onto a folder row and it
+  moves in (undoable `OP_MOVE`, accent drop-target highlight, system-owned items refuse to drag).
+  Verified by a boot that dragged Downloads onto Desktop (the ghost visible mid-drag) + the full
+  smoke tier. Design: [`files-and-desktop.md`](design/files-and-desktop.md), [`ui.md`](design/ui.md).
 - **Toolkit `ui::Layout` + Settings ported to it (2026-06-11).** The `ui::` toolkit gained a
   header-only **linear layout placer** (`user/lib/ui.h`): a column (`LAY_COL`) or row (`LAY_ROW`)
   that splits a bounds rect among items with **fixed or stretch extents** (extent 0 stretches and

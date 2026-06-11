@@ -1568,6 +1568,8 @@ struct FilesApp : ui::Window {
     static void render_row(void *ctx, int i, ui::Rect cell, bool sel) {
         FilesApp *a = (FilesApp *)ctx;
         if (!sel && (i & 1)) ugfx_fill(cell.x, cell.y, cell.w, cell.h, C_ZEBRA);
+        if (a->drop_row == i)                            /* DnD: highlight the folder under the drag */
+            ugfx_rrect_border(cell.x + 2, cell.y + 1, cell.w - 4, cell.h - 2, TH_R_SM, 2, TH_ACCENT);
         int ty = cell.y + (cell.h - a->fh) / 2, iyy = cell.y + (cell.h - 20) / 2;
         const char *name; int type; unsigned size = 0, mt = 0; int idx = -1;
         if (a->has_up() && i == 0) { name = ".."; type = FT_DIR; }
@@ -2058,6 +2060,61 @@ struct FilesApp : ui::Window {
         case 18: open_tag_menu(); break;                           /* Tags... picker (§10) */
         }
         invalidate();
+    }
+
+    /* ---- drag-and-drop (the DnD-protocol consumer, design/files-and-desktop.md) --
+     * Source: a button-held drag over a selected, non-system file arms a DRAG_FILES
+     * payload (the item's absolute path). Target: dropping it on a FOLDER row moves
+     * the file into that folder -- "move a path from dir A to dir B." List view only
+     * for now (icon/gallery hit-testing is a follow-on). */
+    int dnd_armed = 0;             /* a drag-out is in flight (armed once per gesture) */
+    int drop_row  = -1;            /* list row highlighted as the drop target (-1 none) */
+    static bool same_str(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+    /* the list display-row under a client point, or -1 (matches render_row's `i`) */
+    int list_row_at(int x, int y) const {
+        if (view_mode != 0) return -1;
+        const ui::Rect &lr = list.r;
+        if (x < lr.x || x >= lr.x + lr.w || y < lr.y || y >= lr.y + lr.h) return -1;
+        int row = list.top + (y - lr.y) / list.row_h;
+        return (row >= 0 && row < list.count) ? row : -1;
+    }
+    void on_drag(int x, int y, int btn) override {
+        (void)x; (void)y; (void)btn;
+        if (dnd_armed || view_mode != 0) return;
+        int idx = ent_at(list.sel);                    /* a real selected entry (not "..")? */
+        if (idx < 0) return;
+        struct dirent *e = &ents[idx];
+        if (owner_locked(e->owner)) return;            /* never drag a system-owned item out */
+        char full[256]; join(full, sizeof full, path, e->name);
+        int n = 0; while (full[n]) n++;
+        begin_drag(DRAG_FILES, e->name, full, n + 1);  /* payload = the NUL-terminated abs path */
+        dnd_armed = 1;
+        print("[files] drag "); print(e->name); print("\r\n");
+    }
+    void on_drag_over(int x, int y) override {
+        int nr = -1;
+        if (x >= 0) {
+            int row = list_row_at(x, y);
+            if (row >= 0) { int idx = ent_at(row); if (idx >= 0 && ents[idx].type == FT_DIR) nr = row; }  /* folders accept */
+        }
+        if (nr != drop_row) { drop_row = nr; invalidate(); }
+    }
+    void on_drop(int x, int y, int type, const void *data, int len) override {
+        dnd_armed = 0; drop_row = -1;
+        if (type != DRAG_FILES || !data || len <= 0) { invalidate(); return; }
+        const char *src = (const char *)data;
+        int row = list_row_at(x, y), idx = (row >= 0) ? ent_at(row) : -1;
+        if (idx < 0 || ents[idx].type != FT_DIR) { invalidate(); return; }   /* must land on a folder */
+        char folder[256]; join(folder, sizeof folder, path, ents[idx].name);
+        if (same_str(folder, src)) { invalidate(); return; }                 /* not onto itself */
+        char dst[256]; join(dst, sizeof dst, folder, basename_of(src));
+        if (rename_(src, dst) == 0) {
+            tags_carry(src, dst);
+            rec_op(OP_MOVE, src, dst, 0);              /* undoable; OP_MOVE undo ignores isdir */
+            print("[files] dropped "); print(basename_of(src));
+            print(" into "); print(ents[idx].name); print("\r\n");
+            refresh_panes();
+        } else { print("[files] drop move failed\r\n"); invalidate(); }
     }
 
     /* right-click: select the row under the cursor (if any), then open a menu */

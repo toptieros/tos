@@ -83,6 +83,13 @@ int  clip_info(int idx, struct clipinfo *ci);        /* -> 0/-1 */
 int  clip_active(int idx);                           /* idx>=0 sets active; -> active index */
 void clip_clear(void);
 
+/* drag-and-drop: a source arms a typed payload; the compositor runs the ghost +
+ * routes the drop; the target reads the bytes when it gets a WEV_DROP. (drag.c) */
+int  drag_begin(int type, const char *label, const void *data, int len); /* DRAG_*; ->0/-1 (source) */
+int  drag_payload(int *type_out, void *buf, int cap);  /* target: -> bytes copied, or -1 */
+int  drag_state(char *label_out, int cap);             /* -> active drag type (>0)+label, or 0 (compositor) */
+void drag_end(void);                                   /* compositor: end the session */
+
 void printu(unsigned v);                    /* print an unsigned decimal to the console     */
 void proc_exit(void) __attribute__((noreturn));      /* SYS_EXIT                 */
 void shutdown(void) __attribute__((noreturn));       /* SYS_SHUTDOWN: stop CPU   */

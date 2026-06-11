@@ -22,7 +22,9 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   and a new bottom-pinned `WIN_DESKTOP` layer over `~/Desktop`: **multi-select** (Ctrl/Shift-click
   + rubber-band marquee — single-select today), **folder/multi-item copy-cut-paste** (today's
   `CLIP_FILE`-of-bytes can't hold a directory → path-reference clipboard + recursive `cp_r`),
-  **rename**, context menus, and **drag-to-move** (needs DnD). **Keyboard shortcuts:** F2 rename,
+  **rename**, context menus, and **drag-to-move** (the DnD protocol landed 2026-06-11; Files
+  list-view drag-a-file/folder-onto-a-folder works — left: icon/gallery sources, inter-window,
+  onto the desktop). **Keyboard shortcuts:** F2 rename,
   Ctrl+N new folder, Enter/Ctrl+O open, Delete (or Backspace) remove, Ctrl+A select-all,
   Backspace/Alt+← up a directory, plus the existing Ctrl+C/X/V — surfaced in the context menu and a
   menu bar (#6) so the accelerators show. → [`files-and-desktop.md`](design/files-and-desktop.md)
@@ -58,13 +60,19 @@ Ctrl+←/→ word-jump, Ctrl+Backspace/Delete word-delete, Delete, shift-select,
 (Ctrl+Z / Ctrl+Y), and the **I-beam cursor over every text field** (2026-06-10, via the
 `SYS_WIN_SETCURSOR` cursor-hint protocol + `Widget::cursor_at` — was blocked on exactly that
 protocol). **Left:**
-- [ ] **Primary selection + cross-app text drag.** Blocked on the DnD protocol.
+- [ ] **Primary selection + cross-app text drag.** ~~Blocked on the DnD protocol~~ — the protocol
+  landed (below); now buildable. A `TextField` selection arms `begin_drag(DRAG_TEXT, …)`; a drop
+  target inserts the dropped text in its `on_drop`.
 
 ### Input / event foundations
-- [ ] **Drag-and-drop protocol.** A source starts a drag with a **typed payload** (file path /
-  text / image bytes); the compositor drags a ghost + hit-tests drop targets; drop delivers the
-  payload (a `WEV_DROP`). Unlocks Files drag-to-move, the desktop, cross-app text drag, and Pocket
-  Dimension. (Richer key events — modifier flags, `WEV_KEYUP`, `WEV_MOUSE_SHIFT` — are done.)
+- [x] **Drag-and-drop protocol (2026-06-11).** A source arms a **typed payload** (`DRAG_FILES` /
+  `DRAG_TEXT` / `DRAG_IMAGE`) with `begin_drag()`; the kernel holds the bytes (`kernel/drag.c`,
+  mirrors the clipboard); the compositor (twm) draws a **ghost chip**, hit-tests windows, posts
+  `WEV_DRAG` (highlight) + `WEV_DROP` (release); the target reads the payload via `drag_payload()`
+  in its toolkit `on_drop(x,y,type,data,len)` hook. **First consumer:** Files drag-to-move (drag a
+  file/folder onto a folder row → moved; verified Downloads→Desktop with the ghost visible).
+  **Left:** Esc-to-cancel a drag; copy-on-Ctrl (mods ride in the drop event); icon/gallery-view
+  drag sources (list view today). Unlocks the desktop + cross-app text drag + Pocket Dimension.
 
 ### System & security
 - [~] **System ownership (#1).** **Done:** tosfs v3 carries a per-entry `owner`; tasks carry a

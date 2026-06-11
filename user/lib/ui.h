@@ -383,6 +383,15 @@ public:
      * selection (Files) override this. */
     virtual void on_drag(int x, int y, int btn) { (void)x; (void)y; (void)btn; }
     virtual void on_scroll(int delta) { (void)delta; }   /* wheel not over any scrollable widget */
+    /* Drag-and-drop (design/files-and-desktop.md). A source arms a typed payload with
+     * begin_drag() from its on_drag (once the gesture leaves a draggable item); the
+     * compositor draws the ghost + routes the drop. on_drag_over() fires while a drag
+     * hovers this window so it can highlight a drop zone (x<0 == the drag left); on_drop()
+     * delivers the payload on release -- read `data`/`len` (typed by DRAG_*) and act. */
+    void begin_drag(int type, const char *label, const void *data, int len) { drag_begin(type, label, data, len); }
+    virtual void on_drag_over(int x, int y) { (void)x; (void)y; }
+    virtual void on_drop(int x, int y, int type, const void *data, int len) {
+        (void)x; (void)y; (void)type; (void)data; (void)len; }
     /* App menu bar (design/ui.md #6): declare top-level menus the compositor shows
      * as bar tiles; on_menu() fires when the user picks an item. Build with
      * menu_begin / menu_add / menu_item, then menu_commit(). */

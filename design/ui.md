@@ -196,6 +196,24 @@ ui::Rect b = col.rect_of(1);      // query a slot (e.g. to nest another Layout)
 > Note `fastfetch` is **not** a toolkit app: it is a CLI *package* (the shell login
 > banner) per [`packaging.md`](packaging.md)'s app-vs-package split, not a `/Apps` bundle.
 
+## Drag-and-drop (toolkit hooks)
+
+The DnD protocol (kernel `drag.c` + the compositor; **landed 2026-06-11**) surfaces in
+the toolkit as three `ui::Window` members:
+
+- **`begin_drag(type, label, data, len)`** — a source arms a typed payload
+  (`DRAG_FILES`/`DRAG_TEXT`/`DRAG_IMAGE`) from its `on_drag()` once the gesture leaves a
+  draggable item. `label` is the text the compositor paints in the **ghost chip**.
+- **`on_drag_over(x, y)`** (virtual) — fires while a drag hovers this window so it can
+  highlight a drop zone; `x < 0` means the drag left. Default: ignored.
+- **`on_drop(x, y, type, data, len)`** (virtual) — the drop landed here; read the typed
+  payload and act (move the files, insert the text). The toolkit reads the bytes via
+  `drag_payload()` and hands them in.
+
+The compositor owns the visual session (the ghost + hit-test + `WEV_DRAG`/`WEV_DROP`
+routing), so an app only writes these hooks — the same brokered model as windows/input.
+First consumer: **Files** drag-to-move (`user/files/files.cpp`).
+
 ## Out of scope (for now)
 
 Multiple monitors, a real compositor effects pipeline (blur behind translucency is

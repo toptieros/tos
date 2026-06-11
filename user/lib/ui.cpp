@@ -441,6 +441,22 @@ int Window::run() {
             }
             case WEV_NAV:   on_nav((int)ev.a); dirty = true; break;
             case WEV_MENU:  on_menu((int)WEV_MENU_M(ev.a), (int)WEV_MENU_I(ev.a)); dirty = true; break;
+            case WEV_DRAG: {                              /* a drag is hovering this window */
+                int mx = (int)WEV_MOUSE_X(ev.a), my = (int)WEV_MOUSE_Y(ev.a);
+                if (mx == 0xfff && my == 0xfff) on_drag_over(-1, -1);   /* the drag left */
+                else                            on_drag_over(mx, my);
+                dirty = true;
+                break;
+            }
+            case WEV_DROP: {                             /* a drag was released on this window */
+                int mx = (int)WEV_MOUSE_X(ev.a), my = (int)WEV_MOUSE_Y(ev.a);
+                static char buf[4096]; int type = 0;
+                int n = drag_payload(&type, buf, sizeof buf);
+                on_drag_over(-1, -1);                                   /* clear any highlight */
+                if (n >= 0) on_drop(mx, my, type, buf, n);
+                dirty = true;
+                break;
+            }
             case WEV_CLOSE: if (on_close()) running = false; break;
             }
         }

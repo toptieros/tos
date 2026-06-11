@@ -90,6 +90,12 @@
                               * apps update it live from hover, e.g. an I-beam over a text field. */
 #define SYS_SETCAPS     71 /* (mask)             -> drop the caller's caps to (caps & mask); new mask */
 #define SYS_GETCAPS     72 /* ()                 -> the caller's capability bitmask (cap.h)            */
+/* Drag-and-drop (kernel/drag.c). A source arms a typed payload; the compositor
+ * runs the ghost + routes the drop; the target reads the bytes on its WEV_DROP. */
+#define SYS_DRAG_BEGIN   73 /* (label, data, (type<<24)|len) -> arm a typed drag; 0/-1 (source)        */
+#define SYS_DRAG_PAYLOAD 74 /* (int* type, buf, cap) -> copy the dropped payload out; len/-1 (target)  */
+#define SYS_DRAG_STATE   75 /* (char* label, cap)  -> active drag type (>0)+label, or 0 (compositor)    */
+#define SYS_DRAG_END     76 /* ()                  -> end the session (bytes kept for the drop read)     */
 
 #include "cap.h"           /* CAP_* bits, shared with userspace's manifest->caps mapping */
 
@@ -113,6 +119,13 @@
 #define CLIP_TEXT 0
 #define CLIP_FILE 1
 struct clipinfo { uint32_t type; uint32_t len; uint32_t active; char name[32]; };
+
+/* Drag-and-drop payload types: the typed bytes a drag carries (kernel/drag.c +
+ * design/files-and-desktop.md). Mirrors the clipboard's CLIP_* split -- one
+ * protocol for files / text / image so it's designed once, generally. */
+#define DRAG_FILES 1   /* data = a NUL-terminated absolute path (one item for now) */
+#define DRAG_TEXT  2   /* data = UTF-8 text                                        */
+#define DRAG_IMAGE 3   /* data = raw ARGB bytes (future)                           */
 
 /* A desktop notification: a short title + body an app posts with notify(); the
  * compositor shows the newest as a top-right toast and keeps a ring for the
@@ -251,6 +264,11 @@ struct wininfo {              /* SYS_WIN_CREATE: in = w,h,title,flags; out = id,
 #define WEV_SCROLL 6          /* scroll wheel over the client: a = WEV_MOUSE_PACK(x,y,delta&0xff), delta signed (+ up) */
 #define WEV_KEYUP  7          /* a modifier key was released; a = the new KMOD_* mask still held */
 #define WEV_MENU   8          /* an app menu item was chosen; a = WEV_MENU_PACK(menu, item)     */
+#define WEV_DRAG   9          /* a drag is hovering over this window mid-session; a = WEV_MOUSE_PACK(x,y,0),
+                               * (0xfff,0xfff) on leave -- the target highlights its drop zone.  */
+#define WEV_DROP   10         /* a drag was released on this window; a = WEV_MOUSE_PACK(x,y,mods): the
+                               * local drop point + KMOD_* in the button field. The app reads the
+                               * payload with drag_payload() and acts (move files / insert text).  */
 #define WEV_MENU_PACK(m, i) ((((unsigned)(m) & 0xff) << 8) | ((unsigned)(i) & 0xff))
 #define WEV_MENU_M(a) (((a) >> 8) & 0xff)
 #define WEV_MENU_I(a) ((a) & 0xff)

@@ -93,6 +93,14 @@ int  clip_get(int idx, void *buf, int cap)   { return (int)sc3(SYS_CLIP_GET, (ui
 int  clip_info(int idx, struct clipinfo *ci) { return (int)sc3(SYS_CLIP_INFO, (uint64_t)idx, (uint64_t)ci, 0); }
 int  clip_active(int idx)                    { return (int)sc3(SYS_CLIP_ACTIVE, (uint64_t)idx, 0, 0); }
 void clip_clear(void)                        { sc3(SYS_CLIP_CLEAR, 0, 0, 0); }
+
+int  drag_begin(int type, const char *label, const void *data, int len) {
+    return (int)sc3(SYS_DRAG_BEGIN, (uint64_t)label, (uint64_t)data,
+                    ((uint64_t)(type & 0xff) << 24) | (uint64_t)(len & 0xffffff));
+}
+int  drag_payload(int *type_out, void *buf, int cap) { return (int)sc3(SYS_DRAG_PAYLOAD, (uint64_t)type_out, (uint64_t)buf, (uint64_t)cap); }
+int  drag_state(char *label_out, int cap)            { return (int)sc3(SYS_DRAG_STATE, (uint64_t)label_out, (uint64_t)cap, 0); }
+void drag_end(void)                                  { sc3(SYS_DRAG_END, 0, 0, 0); }
 int  isatty(void)              { return (int)sc(SYS_ISATTY, 0); }
 void *mmap_(unsigned long nbytes) { return (void *)sc(SYS_MMAP, (uint64_t)nbytes); }
 

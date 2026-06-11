@@ -35,6 +35,12 @@ static struct rect dirty[MAXDIRTY];
 static int ndirty;
 static int cur_id = CUR_ARROW;   /* context-aware cursor shape (CUR_*) */
 static int busy_until, busy_frame, launch_busy;  /* spinner cursor while an app launches */
+/* drag-and-drop session (kernel/drag.c): a source arms a typed payload, we draw a
+ * ghost chip under the cursor, post WEV_DRAG to the hovered window, and on release
+ * post WEV_DROP to the target. dnd_type>0 == in flight. */
+static int  dnd_type = 0;        /* >0 (DRAG_*) while a drag is in flight              */
+static char dnd_label[32];       /* the ghost chip's text (source-supplied)           */
+static int  dnd_target = -1;     /* window id under the ghost (-1 = chrome / none)     */
 static unsigned dock_sig;        /* signature of the running set; the dock rebuilds when it changes */
 static int bar_linger, dock_linger;   /* reveal-linger counters for auto-hide */
 
@@ -468,6 +474,20 @@ static int modal_slot(void) {
     for (int i = 0; i < MAXW; i++) if (cw[i].used && cw[i].modal && !cw[i].min) return i;
     return -1;
 }
+/* The drag-and-drop ghost: a small translucent chip with the payload's label,
+ * trailing the cursor while a drag is in flight. Drawn just under the cursor (over
+ * everything else) and clipped to the current compose rect like the cursor. */
+static void draw_dnd_ghost(void) {
+    if (!dnd_type) return;
+    int fh = ugfx_font_h(), pad = 9;
+    int w = ugfx_text_w(dnd_label) + pad * 2; if (w < 40) w = 40;
+    int h = fh + 8;
+    int gx = cur_x + 16, gy = cur_y + 8;                       /* offset off the cursor hotspot */
+    ugfx_shadow(gx, gy + 2, w, h, 6, TH_SHADOW_SP, TH_SHADOW, 120);
+    ugfx_rrect_aa(gx, gy, w, h, 6, ARGB(236, 42, 54, 78));     /* translucent slate chip */
+    ugfx_rrect_border(gx, gy, w, h, 6, 1, g_accent);           /* accent ring */
+    ugfx_text(gx + pad, gy + 4, dnd_label, TH_TEXT, UGFX_TRANSPARENT);
+}
 static void compose(struct rect r) {
     cur_clip = r;
     ugfx_set_clip(r.x, r.y, r.w, r.h);
@@ -503,6 +523,7 @@ static void compose(struct rect r) {
     draw_switcher();                                    /* Alt-Tab switcher card, above windows + dock */
     draw_toast();                                       /* notification toast, above windows/dock */
     draw_ghost();                                       /* minimize/restore genie, over everything */
+    draw_dnd_ghost();                                    /* drag-and-drop payload chip, under the cursor */
     ugfx_blit_argb(cur_x - cursor_hotspot[cur_id][0], cur_y - cursor_hotspot[cur_id][1],
                    CURSOR_W, CURSOR_H, cursors_argb[cur_id]);   /* always on top, clipped */
     ugfx_clip_none();
@@ -909,9 +930,10 @@ void _ustart(void) {
         mouse(&ms);
         int moved = (ms.x != cur_x || ms.y != cur_y);
         if (moved) {                                     /* cursor moved: damage old + new */
-            add_dirty(cur_x - 12, cur_y - 12, CURSOR_W + 24, CURSOR_H + 24);
+            int gp = dnd_type ? 224 : 0;                 /* extra reach to cover the trailing drag ghost */
+            add_dirty(cur_x - 12, cur_y - 12, CURSOR_W + 24 + gp, CURSOR_H + 24 + gp);
             cur_x = ms.x; cur_y = ms.y;
-            add_dirty(cur_x - 12, cur_y - 12, CURSOR_W + 24, CURSOR_H + 24);
+            add_dirty(cur_x - 12, cur_y - 12, CURSOR_W + 24 + gp, CURSOR_H + 24 + gp);
         }
         update_chrome(ms.x, ms.y);                       /* fullscreen / edge-reveal auto-hide */
         refresh_app_menu();                              /* pick up the focused app's declared menu (#6) */
@@ -941,6 +963,18 @@ void _ustart(void) {
             }
         }
         int down = ms.buttons & 1;
+        /* Drag-and-drop: a source app (e.g. Files) arms a typed payload mid-drag via
+         * drag_begin(); notice it here and enter ghost mode. The payload + label live
+         * in the kernel (drag.c); we just drive the visual session + routing. */
+        if (down && !dnd_type) {
+            char lbl[32]; int t = drag_state(lbl, sizeof lbl);
+            if (t > 0) {
+                dnd_type = t; dnd_target = -1;
+                for (int i = 0; i < 32; i++) dnd_label[i] = lbl[i];
+                add_dirty(cur_x - 12, cur_y - 12, 256, 96);     /* show the ghost now */
+                print("[twm] drag begin "); print(dnd_label); print("\r\n");
+            }
+        }
         if (down && !last_b) {                          /* press edge */
             int handled = 0;
             if (sw_overlay) { switch_click(ms.x, ms.y); handled = 1; }   /* Alt-Tab card grabs the click */
@@ -1147,6 +1181,24 @@ void _ustart(void) {
                 handled = 1;
             }
         } else if (!down) {
+            if (dnd_type) {                             /* release ends a drag-and-drop session */
+                if (dnd_target >= 0) {                  /* dropped on a window: deliver WEV_DROP */
+                    int k = find(dnd_target);
+                    if (k >= 0) {
+                        struct cwin *c = &cw[k];
+                        int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                        int rx = ms.x - cx, ry = ms.y - cy;
+                        if (rx < 0) rx = 0; if (rx >= cwd) rx = cwd - 1;
+                        if (ry < 0) ry = 0; if (ry >= chd) ry = chd - 1;
+                        wm_post(dnd_target, WEV_DROP, WEV_MOUSE_PACK(rx, ry, kbd_mods() & 0xff));
+                        print("[twm] drop on "); printu((unsigned)dnd_target);
+                        print(" "); printu((unsigned)rx); print(" "); printu((unsigned)ry); print("\r\n");
+                    }
+                } else print("[twm] drop cancelled\r\n");
+                drag_end();
+                dnd_type = 0; dnd_target = -1;
+                add_dirty(cur_x - 12, cur_y - 12, 256, 96);   /* erase the ghost */
+            }
             if (rsz >= 0) {                             /* finish a resize: snap to the exact size */
                 int k = find(rsz);
                 if (k >= 0) {
@@ -1173,11 +1225,35 @@ void _ustart(void) {
             }
             drag = -1; rsz = -1; cdrag = -1;
         }
+        /* Drag-and-drop ghost tracking: while a session is in flight, hit-test the
+         * topmost window under the cursor and tell it (WEV_DRAG, client-relative) so it
+         * can highlight a drop zone; send a leave packet to the one we moved off. This
+         * supersedes drag-select forwarding (below, gated on !dnd_type). */
+        if (dnd_type && down) {
+            int tgt = -1, tcx = 0, tcy = 0;
+            for (int zi = nz - 1; zi >= 0; zi--) {
+                struct cwin *c = &cw[zo[zi]];
+                if (c->min) continue;
+                int ox, oy, ow, oh; outer_rect(c, &ox, &oy, &ow, &oh);
+                if (ms.x < ox || ms.x >= ox + ow || ms.y < oy || ms.y >= oy + oh) continue;
+                if (in_client(c, ms.x, ms.y)) {
+                    int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                    tgt = c->id; tcx = ms.x - cx; tcy = ms.y - cy;
+                }
+                break;                                   /* topmost wins, drop targets don't see-through */
+            }
+            if (tgt != dnd_target) {
+                if (dnd_target >= 0) wm_post(dnd_target, WEV_DRAG, WEV_MOUSE_PACK(0xfff, 0xfff, 0));
+                dnd_target = tgt;
+            }
+            if (tgt >= 0 && moved) wm_post(tgt, WEV_DRAG, WEV_MOUSE_PACK(tcx, tcy, 0));
+        }
         /* Client drag-select: while a button-held drag that started in a client area
          * continues, forward the (clamped, client-relative) position to that window
          * with the WEV_MOUSE_DRAG marker so it can extend a selection (terminal grid
-         * select, Files rubber-band). Suppressed while moving/resizing the window. */
-        if (cdrag >= 0 && down && moved && drag < 0 && rsz < 0) {
+         * select, Files rubber-band). Suppressed while moving/resizing the window or
+         * once a DnD session has taken over the drag. */
+        if (cdrag >= 0 && down && moved && drag < 0 && rsz < 0 && !dnd_type) {
             int k = find(cdrag);
             if (k >= 0) {
                 struct cwin *c = &cw[k];
