@@ -7,6 +7,17 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Toolkit `ui::Layout` + Settings ported to it (2026-06-11).** The `ui::` toolkit gained a
+  header-only **linear layout placer** (`user/lib/ui.h`): a column (`LAY_COL`) or row (`LAY_ROW`)
+  that splits a bounds rect among items with **fixed or stretch extents** (extent 0 stretches and
+  shares the leftover, remainder spread 1px at a time to sum exactly), `space()` for empty gaps,
+  and **nesting via `rect_of(i)`** — so apps stop hand-computing every widget rect (a running
+  `y`-cursor + `w-2*pad` widths) in `layout()`. **Settings** now lays its full-bleed top bar +
+  the 8 setting rows out with an outer column + a padded inner column (was a hand-rolled loop);
+  verified by a boot screenshot. **Course-correction:** `fastfetch` is a CLI **package** (a
+  headless system-info tool living in `/System/bin`, the shell login banner), **not** a desktop
+  app — per [`packaging.md`](design/packaging.md)'s app-vs-package split — so a brief `Fastfetch.app`
+  GUI/dock bundle was **reverted** and fastfetch stays a `/System/bin` CLI. Design: [`ui.md`](design/ui.md).
 - **Capability sandbox — Phase 1 Declare + Phase 2 coarse enforcement (2026-06-11).** Apps are no
   longer implicitly all-powerful: `struct task` gained a `caps` bitmask (`kernel/cap.h`, shared
   with userspace through `syscall.h`). init/the boot chain (twm/term/shell) run at `CAP_ALL`;

@@ -87,11 +87,21 @@ struct SettingsApp : Window {
     }
     static void on_row(void *c) { Bind *b = (Bind *)c; b->app->activate(b->row); }
 
+    /* Placed by the toolkit's ui::Layout: an outer column splits the full-bleed
+     * top bar from the body; a padded inner column lays the rows out with even
+     * gaps -- no hand-rolled y-cursor or per-row width arithmetic. */
     void layout() {
-        topbar.r = { 0, 0, w, 36 };
-        title.r  = { 16, 9, w - 32, 20 };
-        int y = 46, pad = 14, rh = 38;
-        for (int i = 0; i < NROWS; i++) { btn[i].r = { pad, y, w - 2 * pad, rh - 8 }; y += rh; }
+        ui::Layout col(ui::LAY_COL, 0, 0);
+        col.add(&topbar, 36);                 /* fixed-height title bar */
+        col.space(0);                         /* the body stretches to fill */
+        col.arrange(ui::Rect{ 0, 0, w, h });
+
+        ui::Rect bar = col.rect_of(0);        /* title sits in the bar, left-aligned */
+        title.r = { bar.x + 16, bar.y + 9, bar.w - 32, 20 };
+
+        ui::Layout rows(ui::LAY_COL, 8, 14);  /* one padded column, even 8px gaps */
+        for (int i = 0; i < NROWS; i++) rows.add(&btn[i], 30);
+        rows.arrange(col.rect_of(1));
     }
     bool build() {
         reg_load();

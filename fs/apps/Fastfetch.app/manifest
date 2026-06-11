@@ -1,7 +1,0 @@
-name      = Fastfetch
-exec      = bin/fastfetch
-icon      = icon.argb
-version   = 1.0
-category  = utility
-caps      = window, fs:bundle, fs:home, fs:system, time
-pinned    = false

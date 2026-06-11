@@ -42,8 +42,15 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   isn't toolkit-only — and declares no Ctrl accelerators so ^C still reaches the shell).
   **Left:** submenus (a `struct winmenu` ABI bump — deferred until something needs nesting).
   → [`ui.md`](design/ui.md)
-- [ ] **Grow the toolkit + port apps.** A layout system; `fastfetch` and new apps onto the toolkit.
-  (term + Files now carry real menu bars; the toolkit layout system is the remaining piece.)
+- [~] **Grow the toolkit + port apps.** **Done 2026-06-11:** a reusable header-only
+  **`ui::Layout`** (column/row, fixed + stretch extents, even gaps, nest via `rect_of`) so
+  toolkit apps stop hand-computing rects in `layout()`/`layout_widgets()`; **Settings** now
+  lays its top bar + rows out with it (was a hand-rolled y-cursor) — see [`ui.md`](design/ui.md).
+  **Correction:** `fastfetch` is a CLI **_package_** (a headless system-info tool → `/System/bin`,
+  the shell's login banner), **not** a dock app — per [`packaging.md`](design/packaging.md)'s
+  app-vs-package split it stays on the shell, so it was **not** ported to the toolkit (a brief
+  `Fastfetch.app` GUI bundle was reverted). **Left:** convert the other toolkit apps' panes to
+  `ui::Layout` as they're touched; row/grid sugar only if an app needs it.
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
 toolkit app for free. **Done:** blink caret, drag-select, Ctrl+A, double-click word-select,

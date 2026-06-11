@@ -163,6 +163,39 @@ these headers — add the slug to the generator's list and regenerate (needs net
 hand-draw glyphs or mix in another icon family. Tint to `TH_TEXT` (ink), `TH_MUTED`
 (secondary), or `TH_ACCENT` (interactive) so icons track the theme.
 
+## Toolkit layout — `ui::Layout` (header-only, in `ui.h`)
+
+The toolkit is **retained-mode with a flat `kids` list of absolute rects**: each app's
+`layout()`/`layout_widgets()` computes every widget's `r` and the window blits them.
+Hand-computing those rects (a running `y` cursor + `w - 2*pad` widths) is the repetitive,
+error-prone part. **`ui::Layout`** owns it: a one-axis linear placer — a **column**
+(`LAY_COL`) or **row** (`LAY_ROW`) — that splits a bounds rect among its items.
+
+```cpp
+ui::Layout col(ui::LAY_COL, /*gap*/8, /*pad*/14);
+col.add(&topbar, 36);     // fixed extent (px along the main axis)
+col.add(&body,    0);     // extent 0 = STRETCH: shares the leftover evenly
+col.space(12);            // reserve a gap with no widget
+col.arrange(ui::Rect{0,0,w,h});   // writes each widget->r in place
+ui::Rect b = col.rect_of(1);      // query a slot (e.g. to nest another Layout)
+```
+
+- **Fixed vs stretch.** `extent > 0` pins a size; `extent == 0` stretches, and the
+  leftover (after fixed items + gaps) is split among stretch items, the remainder spread
+  one px at a time so it sums exactly. `space(n)` reserves a region with no widget
+  (`add(nullptr, n)`), queryable via `rect_of(i)`.
+- **Nesting is just `rect_of`.** Compose a UI by arranging an outer Layout, then feeding
+  a child's slot rect to an inner one (column → row → column…). No tree, no retained
+  layout objects — call `arrange()` from `layout()`/`on_resize()` each time.
+- **In use:** **Settings** lays its full-bleed top bar + the rows column out with it
+  (replacing a hand-rolled y-cursor); new toolkit apps should reach for it instead of
+  open-coding rects. Cap: `MAXI = 24` items per Layout.
+
+> A linear placer (not flex/grid/constraints) is deliberate — it covers the bars, lists,
+> and sidebars tOS apps actually have, stays a few dozen lines, and needs no allocation.
+> Note `fastfetch` is **not** a toolkit app: it is a CLI *package* (the shell login
+> banner) per [`packaging.md`](packaging.md)'s app-vs-package split, not a `/Apps` bundle.
+
 ## Out of scope (for now)
 
 Multiple monitors, a real compositor effects pipeline (blur behind translucency is
