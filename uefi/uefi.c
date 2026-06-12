@@ -43,7 +43,16 @@ typedef struct {
     EFI_HANDLE StandardErrorHandle; void *StdErr;
     void *RuntimeServices;
     EFI_BOOT_SERVICES *BootServices;                                 /* 96 */
+    uint64_t NumberOfTableEntries;                                  /* 104 */
+    void *ConfigurationTable;                                       /* 112 -> EFI_CONFIGURATION_TABLE[] */
 } EFI_SYSTEM_TABLE;
+
+/* Each firmware configuration table is a {GUID, pointer} pair; the ACPI ones
+ * point straight at the RSDP. */
+typedef struct {
+    EFI_GUID VendorGuid;
+    void    *VendorTable;
+} EFI_CONFIGURATION_TABLE;
 
 /* Graphics Output Protocol (only the fields we read). */
 typedef struct {
@@ -63,6 +72,33 @@ typedef struct {
 
 static EFI_GUID GOP_GUID =
     { 0x9042a9de, 0x23dc, 0x4a38, { 0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a } };
+
+/* ACPI RSDP configuration-table GUIDs (2.0+ preferred, 1.0 fallback). */
+static EFI_GUID ACPI20_GUID =
+    { 0x8868e871, 0xe4f1, 0x11d3, { 0xbc,0x22,0x00,0x80,0xc7,0x3c,0x88,0x81 } };
+static EFI_GUID ACPI10_GUID =
+    { 0xeb9d2d30, 0x2d88, 0x11d3, { 0x9a,0x16,0x00,0x23,0xa7,0x68,0x72,0xe2 } };
+
+static int guid_eq(const EFI_GUID *x, const EFI_GUID *y){
+    if (x->a != y->a || x->b != y->b || x->c != y->c) return 0;
+    for (int i = 0; i < 8; i++) if (x->d[i] != y->d[i]) return 0;
+    return 1;
+}
+
+/* Walk the firmware configuration tables for the ACPI RSDP and hand its physical
+ * address to the kernel via boot_info, so MADT/FADT work under UEFI (where the
+ * legacy 0..1MiB RSDP scan finds nothing). Prefer the ACPI 2.0 table; fall back
+ * to 1.0. Done before ExitBootServices, while the system table is still valid. */
+static uint64_t find_acpi_rsdp(EFI_SYSTEM_TABLE *st){
+    EFI_CONFIGURATION_TABLE *ct = (EFI_CONFIGURATION_TABLE *)st->ConfigurationTable;
+    if (!ct) return 0;
+    uint64_t rsdp = 0;
+    for (uint64_t i = 0; i < st->NumberOfTableEntries; i++){
+        if (guid_eq(&ct[i].VendorGuid, &ACPI20_GUID)) return (uint64_t)ct[i].VendorTable;
+        if (guid_eq(&ct[i].VendorGuid, &ACPI10_GUID)) rsdp = (uint64_t)ct[i].VendorTable;
+    }
+    return rsdp;
+}
 
 #define AllocateAnyPages 0
 #define AllocateAddress  2
@@ -194,6 +230,10 @@ EFI_STATUS efi_main(EFI_HANDLE img, EFI_SYSTEM_TABLE *st){
         boot_info.fb_phys = gop->Mode->FrameBufferBase;
         sputs("[uefi] GOP framebuffer found\r\n");
     }
+
+    boot_info.acpi_rsdp = find_acpi_rsdp(st);
+    if (boot_info.acpi_rsdp){ sputs("[uefi] ACPI RSDP @ "); putu(boot_info.acpi_rsdp); sputs("\r\n"); }
+    else                     sputs("[uefi] no ACPI RSDP in config tables\r\n");
 
     uint64_t top = ram_top(bs);
     sputs("[uefi] identity-mapping "); putu(top / GIB); sputs(" GiB of RAM\r\n");

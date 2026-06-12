@@ -98,6 +98,8 @@ int  net_connect(unsigned ip, int port);    /* SYS_NET_CONNECT: TCP active open;
 int  net_send(const void *buf, int len);    /* SYS_NET_SEND: 0 / -1                                 */
 int  net_recv(void *buf, int max);          /* SYS_NET_RECV: bytes, 0 none-yet, -1 closed/reset     */
 void net_close(void);                       /* SYS_NET_CLOSE: FIN                                   */
+int  net_listen(int port);                  /* SYS_NET_LISTEN: arm a TCP listen port; 0 / -1        */
+int  net_accept(void);                      /* SYS_NET_ACCEPT: block for a client; 0 / -1 (timeout) */
 
 void printu(unsigned v);                    /* print an unsigned decimal to the console     */
 void proc_exit(void) __attribute__((noreturn));      /* SYS_EXIT                 */

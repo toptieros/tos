@@ -113,19 +113,28 @@ Prioritized, VM-first so the installer is testable in QEMU before metal:
    magic ports kept as a fallback. No AML interpreter — just table walking + the standard tiny `_S5`
    scan. Verified: MADT reports the right CPU count (`-smp 4` → 4, SMP 4/4 from the MADT) and ACPI S5
    poweroff works *on its own* (QEMU exits with the fallbacks removed). Tables reached via
-   `vmm_map_mmio` (any e820 type). *Follow-on:* UEFI has no legacy RSDP in the BIOS area — pass it from
-   the loader's EFI config table via `boot_info` (today UEFI falls back to `fw_cfg` + magic ports, no
-   regression). Full uACPI/LAI is still the long-term path for AML/runtime ACPI.
-7. **Networking** — *NIC + a full native stack through TCP landed* ✅ **2026-06-12**. NIC:
-   `kernel/drivers/virtio_net.c` — legacy virtio-pci, RX + TX virtqueues, MAC, raw Ethernet frames.
-   Stack (`kernel/net/`): **ARP (resolver+cache) → IPv4 → ICMP → UDP → DHCP → TCP**. The guest
-   **leases its address** via DHCP, **pings** the gateway, and completes a real **TCP** conversation
-   (3-way handshake + push/echo with the pseudo-header checksum + FIN close), all verified by boot
-   self-tests (ICMP/DHCP against SLIRP; TCP against a host echo server through 10.0.2.2). **Still to
-   do:** a **sockets syscall layer** (`SYS_SOCKET`/`connect`/`send`/`recv`, gated by the net
-   capability) so userspace apps get the stack; TCP retransmit/windowing for lossy links; then
-   **e1000** as the second NIC. Unlocks downloads, an app store, remote anything. Design:
-   [virtio-net.md](virtio-net.md).
+   `vmm_map_mmio` (any e820 type). **UEFI too ✅ (2026-06-13):** the loader walks the EFI config tables
+   for the RSDP (ACPI 2.0 GUID, 1.0 fallback) and passes its physical address via `boot_info.acpi_rsdp`,
+   which `acpi_init()` validates+uses before the legacy scan — so UEFI now does `[acpi] (UEFI handoff)
+   rev 2 (XSDT), 4 CPU(s) via MADT` + SMP 4/4 (was `[acpi] no RSDP` → `fw_cfg`); BIOS unchanged. Full
+   uACPI/LAI is still the long-term path for AML/runtime ACPI.
+7. **Networking** — *NIC + a full native stack through TCP, now exposed to userspace* ✅
+   **2026-06-12**. NIC: `kernel/drivers/virtio_net.c` — legacy virtio-pci, RX + TX virtqueues,
+   MAC, raw Ethernet frames. Stack (`kernel/net/`): **ARP (resolver+cache) → IPv4 → ICMP → UDP →
+   DHCP → TCP**. The guest **leases its address** via DHCP, **pings** the gateway, and completes a
+   real **TCP** conversation (3-way handshake + push/echo with the pseudo-header checksum + FIN
+   close), all verified by boot self-tests (ICMP/DHCP against SLIRP; TCP against a host echo server
+   through 10.0.2.2). **Userspace networking landed too** ✅: `SYS_NET_*` (78-82) wrap the TCP
+   client (`net_ping`/`net_connect`/`net_send`/`net_recv`/`net_close` in `ulib`), **each gated on
+   `CAP_NET`** so only an app whose manifest declares `net` can touch the wire (the Terminal does).
+   The shell drives it with `ping <ip>` and `get <ip> <port> <path>` (an HTTP/1.0 `GET`), so
+   **tOS fetches a file over the network** — the Phase 4 exit criterion, met. **Second NIC landed**
+   ✅ **2026-06-13**: `kernel/drivers/e1000.c` (Intel 8254x / QEMU `-device e1000`) behind a new
+   NIC-agnostic **`netif`** layer (`net/netif.{c,h}`) the stack drives instead of naming a driver —
+   first NIC up wins, so an e1000-only box leases/pings/fetches through the identical path (verified
+   `[net] NIC e1000` + DHCP + ICMP; virtio unchanged). **Still to do:** a fuller **sockets layer**
+   (multi-connection, `bind`/`listen`/`accept`); TCP retransmit/windowing for lossy links. Unlocks
+   downloads, an app store, remote anything. Design: [virtio-net.md](virtio-net.md).
 
 Also fold in a **real serial console** for input and **LAPIC timer calibration**.
 
@@ -136,8 +145,8 @@ Also fold in a **real serial console** for input and **LAPIC timer calibration**
 > AHCI, NVMe, xHCI are all freely downloadable), the **OSDev wiki**, and **BSD-licensed**
 > drivers you can actually borrow.
 
-Exit criteria: tOS can fetch a file over the network and boot on hardware that lacks
-PS/2 / legacy IDE.
+Exit criteria: tOS can fetch a file over the network *(✅ met — shell `get` does an HTTP/1.0
+GET over TCP from userspace)* and boot on hardware that lacks PS/2 / legacy IDE.
 
 ## Phase 5 — Desktop maturity & an app ecosystem
 

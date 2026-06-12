@@ -85,7 +85,18 @@ static struct rsdp *scan_rsdp(uint8_t *base, uint32_t len) {
     return 0;
 }
 
-static struct rsdp *find_rsdp(void) {
+/* Locate the RSDP. Under UEFI the legacy 0..1MiB scan finds nothing, so the loader
+ * passes the firmware's RSDP physical address (from the EFI ACPI config table)
+ * through boot_info -- we validate and use that first. BIOS passes 0 (and SeaBIOS
+ * keeps the table in the legacy area), so we fall back to the EBDA + BIOS-ROM scan.
+ * *via_uefi is set when the handoff pointer was used (for the boot log). */
+static struct rsdp *find_rsdp(uint64_t hint, int *via_uefi) {
+    *via_uefi = 0;
+    if (hint) {
+        struct rsdp *r = (struct rsdp *)map_phys(hint, sizeof(struct rsdp));
+        if (r && sig_is(r->sig, "RSD PTR ", 8) && sum_bytes(r, 20) == 0) { *via_uefi = 1; return r; }
+        /* a bogus hint just falls through to the scan -- never worse than before */
+    }
     uint8_t *low = (uint8_t *)map_phys(0, 0x200000);   /* whole first 2 MiB (covers EBDA + BIOS area) */
     if (!low) return 0;
     uint32_t ebda = (uint32_t)(*(uint16_t *)(low + 0x40E)) << 4;   /* EBDA segment -> linear */
@@ -155,8 +166,9 @@ static void parse_madt(struct sdt_header *madt) {
     }
 }
 
-void acpi_init(void) {
-    struct rsdp *r = find_rsdp();
+void acpi_init(uint64_t rsdp_phys) {
+    int via_uefi = 0;
+    struct rsdp *r = find_rsdp(rsdp_phys, &via_uefi);
     if (!r) { console_puts("[acpi] no RSDP\r\n"); return; }
 
     /* choose RSDT (rev 0) or XSDT (rev >= 2); entries are 4- or 8-byte phys ptrs */
@@ -178,7 +190,7 @@ void acpi_init(void) {
         else if (sig_is(h->sig, "APIC", 4)) { parse_madt(h); found_madt = 1; }
     }
 
-    console_puts("[acpi] rev ");
+    console_puts(via_uefi ? "[acpi] (UEFI handoff) rev " : "[acpi] (scan) rev ");
     console_putdec(r->revision);
     console_puts(use_xsdt ? " (XSDT), " : " (RSDT), ");
     if (found_madt) { console_putdec((uint64_t)cpu_n); console_puts(" CPU(s) via MADT"); }

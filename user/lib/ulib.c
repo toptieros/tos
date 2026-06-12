@@ -38,6 +38,8 @@ int  net_connect(unsigned ip, int port)  { return (int)sc3(SYS_NET_CONNECT, (uin
 int  net_send(const void *buf, int len)  { return (int)sc3(SYS_NET_SEND, (uint64_t)buf, (uint64_t)(unsigned)len, 0); }
 int  net_recv(void *buf, int max)        { return (int)sc3(SYS_NET_RECV, (uint64_t)buf, (uint64_t)(unsigned)max, 0); }
 void net_close(void)                     { sc(SYS_NET_CLOSE, 0); }
+int  net_listen(int port)                { return (int)sc(SYS_NET_LISTEN, (uint64_t)(unsigned)port); }
+int  net_accept(void)                    { return (int)sc(SYS_NET_ACCEPT, 0); }
 void paint_cursor(char c, int inverse) { sc(SYS_CPAINT, ((uint64_t)(inverse & 1) << 8) | (uint8_t)c); }
 int  fbinfo(struct fbinfo *fb)         { return (int)sc(SYS_FBINFO, (uint64_t)fb); }
 void con_window(int x, int y, int w, int h) {

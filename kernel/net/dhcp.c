@@ -3,7 +3,7 @@
  * 10.0.2.2 that hands out 10.0.2.15+), so the guest stops hardcoding its IP. Polled,
  * one exchange at boot. BOOTP fixed fields per RFC 951/2131; options per RFC 2132. */
 #include "net.h"
-#include "virtio_net.h"
+#include "netif.h"
 #include "console.h"
 
 #define BOOTP_LEN  236              /* fixed BOOTP header bytes before the options   */
@@ -27,7 +27,7 @@ static int dhcp_base(uint8_t *m) {
     m[4] = (uint8_t)(xid >> 24); m[5] = (uint8_t)(xid >> 16);
     m[6] = (uint8_t)(xid >> 8);  m[7] = (uint8_t)xid;
     put16(m + 10, 0x8000);              /* flags: broadcast (we have no IP to unicast to yet) */
-    const uint8_t *mac = virtio_net_mac();
+    const uint8_t *mac = netif_mac();
     for (int i = 0; i < 6; i++) m[28 + i] = mac[i];     /* chaddr */
     m[236] = 0x63; m[237] = 0x82; m[238] = 0x53; m[239] = 0x63;   /* magic cookie */
     return 240;
@@ -52,7 +52,7 @@ static const uint8_t *dhcp_opt(const uint8_t *m, int len, uint8_t tag, int *olen
 static int dhcp_recv(uint8_t yiaddr[4], uint8_t server_id[4]) {
     uint8_t r[2048];
     for (long tries = 0; tries < 6000000; tries++) {
-        int n = virtio_net_rx(r, sizeof r);
+        int n = netif_rx(r, sizeof r);
         if (n >= 14 + 20 + 8 + BOOTP_LEN && get16(r + 12) == 0x0800 && r[14 + 9] == 17) {  /* IPv4/UDP */
             int ihl = (r[14] & 0xF) * 4;
             const uint8_t *udp = r + 14 + ihl;
@@ -75,7 +75,7 @@ static int dhcp_recv(uint8_t yiaddr[4], uint8_t server_id[4]) {
 }
 
 int net_dhcp(uint8_t ip_out[4]) {
-    if (!virtio_net_present()) return -1;
+    if (!netif_present()) return -1;
 
     /* DISCOVER */
     uint8_t m[300];

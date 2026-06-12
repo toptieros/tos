@@ -18,4 +18,5 @@ struct boot_info {
     uint32_t pitch;       /* pixels per scanline */
     uint32_t _pad;
     uint64_t fb_phys;     /* framebuffer physical base */
+    uint64_t acpi_rsdp;   /* RSDP physical addr from the UEFI ACPI config table; 0 if unknown (BIOS) */
 };

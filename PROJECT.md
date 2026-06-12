@@ -29,9 +29,10 @@ kernel/
                       dispatch), apic, smp, spinlock
   mm/                 vmm.c/.h — paging, frame pool, ELF loader, fork/destroy
   drivers/            console, keyboard, mouse, rtc, timer, ata, pci, virtio_blk, ahci, nvme,
-                      virtio_net, blockdev
+                      virtio_net, e1000, blockdev
   fs/                 fs.c (tosfs, hierarchical), tosfs.h on-disk format
-  net/                net.c (ARP+IPv4+ICMP+UDP) + dhcp.c + tcp.c — a native TCP/IP stack
+  net/                netif.c (NIC-agnostic vtable) + net.c (ARP+IPv4+ICMP+UDP) + dhcp.c +
+                      tcp.c — a native TCP/IP stack over virtio-net or e1000
 user/                 ring-3 programs, each its own app dir + a shared lib:
   lib/                ulib (syscall wrappers) + ugfx (graphics, surface-aware) + user.ld
   init/ shell/        init (PID 1) and the interactive shell (a pty client)
@@ -180,11 +181,17 @@ wraps them in `user/ulib.c`.
 27-43  compositor / windowing / pty (GETKEY, WIN_*, WM_*, PTY_*, SYSINFO, ISATTY)
 44 MKDIR   46 CHDIR    48 READDIR (path, dirent*, max)   50 STAT (path, fstat*)
 45 RMDIR   47 GETCWD   49 RENAME  (oldpath, newpath)
+51-77  mmap, clipboard, notify, caps (SETCAPS/GETCAPS), drag-and-drop, INSTALL
+78 NET_PING  79 NET_CONNECT  80 NET_SEND  81 NET_RECV  82 NET_CLOSE  (CAP_NET)
 ```
 (18 CPAINT = block cursor; 19 FBINFO = map framebuffer → struct fbinfo;
 20 CON_WINDOW = confine the text console to a pixel rect; 44-50 = the
 hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
-0x604/0xB004) before halting.
+0x604/0xB004) before halting. The **net syscalls (78-82)** expose the TCP
+client to userspace and are each gated on `CAP_NET`: the kernel refuses them
+unless the caller holds the net capability (`sched_has_caps`), so only an app
+whose manifest declares `net` — the Terminal does, for the shell's `ping`/`get`
+— can touch the wire.
 
 ---
 
@@ -247,12 +254,24 @@ hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
   `virtio_net_hdr`), reads the MAC, pre-posts RX buffers; `virtio_net_tx`/`_rx` move raw
   frames. Polled. The driver contract only — the protocol stack sits above it in
   `kernel/net/`; a boot self-test ARPs the SLIRP gateway to prove frames in *and* out.
-- **net** (`kernel/net/net.c` + `dhcp.c` + `tcp.c`) — a native TCP/IP stack on
-  virtio-net: an **ARP** resolver + cache, **IPv4** framing (internet checksum), **ICMP**
+- **e1000** — a second NIC, the ubiquitous Intel 8254x (QEMU's `-device e1000` = 82540EM).
+  Memory-mapped register block (BAR0, via `vmm_map_mmio`), two legacy 16-byte descriptor
+  rings + packet buffers in identity-mapped DMA memory, MAC from the receive-address regs
+  (EEPROM fallback), polled. Same frames-in/out contract + ARP self-test as virtio-net.
+  Both NICs register with the **`netif`** layer (`kernel/net/netif.{c,h}`) — a tiny
+  `{present,mac,tx,rx}` vtable the stack drives instead of naming a driver, so the *first*
+  NIC brought up (virtio-net is probed first) becomes the one the stack uses, and a machine
+  with only an e1000 runs the identical ARP/IP/DHCP/TCP path.
+- **net** (`kernel/net/netif.c` + `net.c` + `dhcp.c` + `tcp.c`) — a native TCP/IP stack on
+  the active **netif** (virtio-net or e1000): an **ARP** resolver + cache, **IPv4** framing (internet checksum), **ICMP**
   echo, **UDP**, a **DHCP** client, and a minimal single-connection **TCP** client
   (handshake + push/recv with the pseudo-header checksum + FIN close). At boot the guest
   DHCP-leases its address, pings the gateway, and (when a server is reachable) does a TCP
-  echo round-trip. A sockets syscall layer to expose this to userspace is the next layer up.
+  echo round-trip. **Userspace reaches it through `SYS_NET_*` (78-82)** — `net_ping`,
+  `net_connect`/`send`/`recv`/`close` in `ulib`, each gated on `CAP_NET` — which the shell
+  drives with `ping <ip>` (one ICMP round-trip) and `get <ip> <port> <path>` (an HTTP/1.0
+  `GET` over TCP). **tOS can fetch a file over the network** — the Phase 4 exit criterion.
+  A fuller sockets layer (multi-connection, bind/listen/accept) is the next layer up.
 - **speaker** — PC speaker via PIT channel 2; `SYS_BEEP` / the `beep` command.
 - **acpi** (`kernel/acpi.c`) — minimal ACPI table parsing (no AML): RSDP scan →
   RSDT/XSDT walk → **MADT** (enabled CPUs' Local-APIC ids; SMP discovers CPUs from

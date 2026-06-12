@@ -315,6 +315,14 @@ static struct regs *syscall_dispatch(struct regs *r) {
         net_tcp_close();
         r->rax = 0;
         return r;
+    case SYS_NET_LISTEN:
+        if (!sched_has_caps(CAP_NET)) UFAIL;
+        r->rax = (uint64_t)(int64_t)net_tcp_listen((uint16_t)r->rdi);
+        return r;
+    case SYS_NET_ACCEPT:
+        if (!sched_has_caps(CAP_NET)) UFAIL;
+        r->rax = (uint64_t)(int64_t)net_tcp_accept();
+        return r;
     case SYS_GETPID:
         r->rax = (uint64_t)(int64_t)sched_getpid();
         return r;

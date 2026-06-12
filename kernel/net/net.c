@@ -3,7 +3,7 @@
  * Everything is big-endian on the wire; we build/parse byte-by-byte to stay
  * endian-explicit. */
 #include "net.h"
-#include "virtio_net.h"
+#include "netif.h"
 #include "console.h"
 
 #define ETH_ARP  0x0806
@@ -37,7 +37,7 @@ static uint16_t csum16(const uint8_t *p, int n) {
 
 /* Build an Ethernet header into f[0..13]; returns the payload offset (14). */
 static int eth_hdr(uint8_t *f, const uint8_t dst[6], uint16_t ethertype) {
-    const uint8_t *src = virtio_net_mac();
+    const uint8_t *src = netif_mac();
     for (int i = 0; i < 6; i++) { f[i] = dst[i]; f[6 + i] = src[i]; }
     put16(f + 12, ethertype);
     return 14;
@@ -45,12 +45,12 @@ static int eth_hdr(uint8_t *f, const uint8_t dst[6], uint16_t ethertype) {
 
 /* Resolve `ip` to a MAC: send an ARP request, poll for the reply, cache it. */
 int net_arp_resolve(const uint8_t ip[4], uint8_t mac_out[6]) {
-    if (!virtio_net_present()) return -1;
+    if (!netif_present()) return -1;
     if (arp_valid && ip_eq(arp_ip, ip)) {
         for (int i = 0; i < 6; i++) mac_out[i] = arp_mac[i];
         return 0;
     }
-    const uint8_t *src = virtio_net_mac();
+    const uint8_t *src = netif_mac();
     uint8_t f[42];
     int o = eth_hdr(f, bcast, ETH_ARP);
     put16(f + o + 0, 1);            /* htype Ethernet */
@@ -61,11 +61,11 @@ int net_arp_resolve(const uint8_t ip[4], uint8_t mac_out[6]) {
     for (int i = 0; i < 4; i++) f[o + 14 + i] = my_ip[i];
     for (int i = 0; i < 6; i++) f[o + 18 + i] = 0;
     for (int i = 0; i < 4; i++) f[o + 24 + i] = ip[i];
-    if (virtio_net_tx(f, 42) < 0) return -1;
+    if (netif_tx(f, 42) < 0) return -1;
 
     uint8_t r[2048];
     for (long tries = 0; tries < 4000000; tries++) {
-        int n = virtio_net_rx(r, sizeof r);
+        int n = netif_rx(r, sizeof r);
         if (n >= 42 && get16(r + 12) == ETH_ARP && get16(r + 14 + 6) == 2 /* reply */
             && ip_eq(r + 14 + 14, ip)) {                                  /* sender IP == target */
             for (int i = 0; i < 6; i++) { arp_mac[i] = r[14 + 8 + i]; mac_out[i] = arp_mac[i]; }
@@ -80,7 +80,7 @@ int net_arp_resolve(const uint8_t ip[4], uint8_t mac_out[6]) {
 
 /* Send one ICMP echo request to `ip` (via the gateway MAC) and wait for the reply. */
 int net_ping(const uint8_t ip[4]) {
-    if (!virtio_net_present()) return -1;
+    if (!netif_present()) return -1;
     uint8_t gwmac[6];
     if (net_arp_resolve(gw_ip, gwmac) < 0) return -1;     /* next-hop is the gateway */
 
@@ -109,11 +109,11 @@ int net_ping(const uint8_t ip[4]) {
     put16(ip4 + 10, csum16(ip4, 20));
 
     int total = o + 20 + icmp_len;
-    if (virtio_net_tx(f, (uint32_t)total) < 0) return -1;
+    if (netif_tx(f, (uint32_t)total) < 0) return -1;
 
     uint8_t r[2048];
     for (long tries = 0; tries < 4000000; tries++) {
-        int n = virtio_net_rx(r, sizeof r);
+        int n = netif_rx(r, sizeof r);
         if (n >= 14 + 20 + 8 && get16(r + 12) == ETH_IPV4) {
             uint8_t *rip = r + 14;
             int ihl = (rip[0] & 0xF) * 4;
@@ -133,7 +133,7 @@ int net_ping(const uint8_t ip[4]) {
  * broadcast for DHCP) and the src/dst IPs (src may be 0.0.0.0 before we have a lease). */
 int net_udp_tx(const uint8_t dmac[6], const uint8_t sip[4], const uint8_t dip[4],
                uint16_t sport, uint16_t dport, const uint8_t *data, uint32_t len) {
-    if (!virtio_net_present() || len > 1400) return -1;
+    if (!netif_present() || len > 1400) return -1;
     uint8_t f[14 + 20 + 8 + 1400];
     int o = eth_hdr(f, dmac, ETH_IPV4);
     uint8_t *ip4 = f + o, *udp = ip4 + 20, *payload = udp + 8;
@@ -152,14 +152,14 @@ int net_udp_tx(const uint8_t dmac[6], const uint8_t sip[4], const uint8_t dip[4]
     for (int i = 0; i < 4; i++) { ip4[12 + i] = sip[i]; ip4[16 + i] = dip[i]; }
     put16(ip4 + 10, csum16(ip4, 20));
 
-    return virtio_net_tx(f, (uint32_t)(o + 20 + ulen));
+    return netif_tx(f, (uint32_t)(o + 20 + ulen));
 }
 
 /* Send one IPv4 packet of protocol `proto` to `dip`, via the gateway as next hop
  * (SLIRP is a flat /24 reachable through 10.0.2.2). The caller supplies the L4
  * payload already built (and, for TCP/UDP, already checksummed). */
 int net_ip_tx(uint8_t proto, const uint8_t dip[4], const uint8_t *payload, uint32_t len) {
-    if (!virtio_net_present() || len > 1400) return -1;
+    if (!netif_present() || len > 1400) return -1;
     uint8_t gwmac[6];
     if (net_arp_resolve(gw_ip, gwmac) < 0) return -1;
     uint8_t f[14 + 20 + 1400];
@@ -174,7 +174,7 @@ int net_ip_tx(uint8_t proto, const uint8_t dip[4], const uint8_t *payload, uint3
     for (int i = 0; i < 4; i++) { ip4[12 + i] = my_ip[i]; ip4[16 + i] = dip[i]; }
     put16(ip4 + 10, csum16(ip4, 20));
     for (uint32_t i = 0; i < len; i++) ip4[20 + i] = payload[i];
-    return virtio_net_tx(f, (uint32_t)(o + 20 + len));
+    return netif_tx(f, (uint32_t)(o + 20 + len));
 }
 
 const uint8_t *net_my_ip(void) { return my_ip; }
@@ -185,7 +185,8 @@ static void print_ip(const uint8_t ip[4]) {
 }
 
 void net_init(void) {
-    if (!virtio_net_present()) return;
+    if (!netif_present()) return;
+    console_puts("[net] NIC "); console_puts(netif_name()); console_puts("\r\n");
 
     uint8_t leased[4];
     if (net_dhcp(leased) == 0) {

@@ -8,6 +8,7 @@
  * phys == virt), so a buffer pointer IS its DMA address -- no bounce buffer needed
  * (the driver owns these buffers; nothing here lives in the higher half). */
 #include "virtio_net.h"
+#include "netif.h"
 #include "pci.h"
 #include "cpu.h"
 #include "spinlock.h"
@@ -181,6 +182,11 @@ int virtio_net_rx(void *buf, uint32_t max) {
 int virtio_net_present(void)        { return present; }
 const uint8_t *virtio_net_mac(void) { return mac; }
 
+/* netif vtable: lets the NIC-agnostic stack drive this device (see net/netif.h). */
+static const struct netif virtio_nif = {
+    "virtio-net", virtio_net_present, virtio_net_mac, virtio_net_tx, virtio_net_rx,
+};
+
 /* Boot self-test: TX an ARP "who-has 10.0.2.2" (the QEMU SLIRP gateway) and poll RX
  * for the reply -- proves the full driver contract (a frame out AND a frame in) plus
  * the device's MAC config. Non-intrusive: one broadcast ARP, no state changed. */
@@ -254,5 +260,6 @@ void virtio_net_init(void) {
     for (int i = 0; i < 6; i++) { if (i) console_putc(':'); put_hex2(mac[i]); }
     console_puts("\r\n");
 
+    netif_register(&virtio_nif);                          /* offer this NIC to the stack */
     arp_selftest();
 }

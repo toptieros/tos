@@ -134,14 +134,20 @@ protocol). **Left:**
   first NIC — legacy virtio-pci, RX+TX queues, MAC, raw Ethernet frames; ARP round-trip self-test);
   **net stack** (`net/net.c` + `dhcp.c` + `tcp.c`: native ARP+IPv4+ICMP+UDP+DHCP+**TCP**) + **userspace
   networking** (CAP_NET-gated `SYS_NET_*` syscalls + shell `ping`/`get`; **tOS fetches a file over the
-  network** via HTTP/1.0 — the Phase 4 exit criterion) (2026-06-12). **Next:** a fuller **sockets
-  syscall layer** (multi-connection, `bind`/`listen`/`accept`); TCP retransmit/windowing for lossy
-  links; then **e1000** (2nd NIC); GPT/ESP(FAT) writer; USB (xHCI+HID+MSC). GPU accel is VM-only.
+  network** via HTTP/1.0 — the Phase 4 exit criterion) (2026-06-12); **e1000** — a second NIC
+  (`drivers/e1000.c`, Intel 8254x: MMIO BAR0, legacy RX/TX rings, MAC from RAL/RAH) behind a new
+  NIC-agnostic **`netif` layer** (`net/netif.{c,h}`) the stack drives instead of naming a driver, first
+  NIC up wins; an e1000-only box leases/pings/fetches through the same path, virtio unchanged (2026-06-13).
+  **Next:** a fuller **sockets syscall layer** (multi-connection, `bind`/`listen`/`accept`); TCP
+  retransmit/windowing for lossy links; GPT/ESP(FAT) writer; USB (xHCI+HID+MSC). GPU accel is VM-only.
   → [`roadmap.md`](design/roadmap.md)
-  - **ACPI follow-on:** under UEFI the legacy RSDP scan finds nothing (`[acpi] no RSDP`) and CPU
-    discovery falls back to `fw_cfg` (no regression). Pass the RSDP from the UEFI loader's EFI ACPI
-    config table through `boot_info` so MADT/FADT work under UEFI too. Full uACPI/LAI (AML, runtime
-    ACPI, `_PRT`/IRQ routing) remains the long-term path.
+  - **ACPI under UEFI — ✅ done 2026-06-13.** The UEFI loader now pulls the RSDP from the EFI ACPI
+    config table (ACPI 2.0 GUID, 1.0 fallback) and hands its physical address to the kernel through
+    `boot_info.acpi_rsdp`; `acpi_init()` validates+uses that before the legacy scan (BIOS passes 0
+    → unchanged legacy EBDA/BIOS-ROM scan). Verified: UEFI now logs `[acpi] (UEFI handoff) rev 2
+    (XSDT), 4 CPU(s) via MADT` and SMP comes up `4 of 4` from the MADT (was `[acpi] no RSDP` →
+    `fw_cfg` fallback); BIOS still `[acpi] (scan) rev 0 (RSDT)`, PM1a=0x604, no regression. Full
+    uACPI/LAI (AML, runtime ACPI, `_PRT`/IRQ routing) remains the long-term path.
 - [ ] **Growable filesystem.** Files are contiguous and a metadata change rewrites the whole slot
   table; the partition is fixed-size. Want extent/indirect blocks, a runtime-sized partition, and a
   journaled table.

@@ -7,6 +7,26 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **e1000 NIC + a NIC-agnostic `netif` layer (2026-06-13).** Added a second network driver:
+  `kernel/drivers/e1000.c`, the ubiquitous Intel 8254x (QEMU's `-device e1000` = 82540EM) — MMIO
+  register block (BAR0, via `vmm_map_mmio`), legacy RX/TX descriptor rings + buffers in
+  identity-mapped DMA memory, MAC from the receive-address regs (EEPROM fallback), polled. To avoid
+  welding the stack to one NIC, introduced `kernel/net/netif.{c,h}`: a tiny `{name,present,mac,tx,rx}`
+  vtable that each driver registers at bring-up (**first NIC up wins** — kmain probes virtio-net before
+  e1000). net.c/dhcp.c/tcp.c now move frames through `netif_tx/rx` instead of naming `virtio_net_*`, so
+  a box with **only** an e1000 leases/pings/fetches through the exact same code path. Verified: e1000-only
+  boot → `[net] NIC e1000` + DHCP lease + ICMP reply + ARP round-trip self-test (`repro_e1000.py`);
+  virtio-only and both-NICs boots unchanged (virtio wins when both present); `repro_virtionet`/`repro_netcmd`
+  still green (no regression to the userspace HTTP fetch).
+- **ACPI under UEFI: RSDP via the firmware config table (2026-06-13).** The UEFI loader now walks the
+  EFI system table's configuration tables for the ACPI RSDP (ACPI 2.0 GUID preferred, 1.0 fallback) and
+  hands its physical address to the kernel through a new `boot_info.acpi_rsdp`; `acpi_init()` validates
+  (sig + checksum) and uses that pointer before falling back to the legacy EBDA/BIOS-ROM scan. Fixes the
+  prior `[acpi] no RSDP` under UEFI (the firmware keeps the tables high in RAM, where the 0–1MiB scan
+  can't see them) — so **MADT CPU topology + FADT poweroff/reset now work under UEFI too**, not just the
+  `fw_cfg` fallback. Verified: UEFI logs `[acpi] (UEFI handoff) rev 2 (XSDT), 4 CPU(s) via MADT` and SMP
+  comes up `4 of 4`; BIOS unchanged (`[acpi] (scan) rev 0 (RSDT)`, PM1a=0x604), no regression. Full
+  uACPI/LAI (AML, runtime ACPI, IRQ routing) remains the long-term path.
 - **Userspace networking: net syscalls + `ping`/`get` — Phase 4 exit criterion (2026-06-12).** Exposed
   the kernel TCP/IP stack to userspace via five **CAP_NET-gated** syscalls
   (`SYS_NET_PING`/`CONNECT`/`SEND`/`RECV`/`CLOSE`, 78–82) with `ulib` wrappers, and two shell commands:

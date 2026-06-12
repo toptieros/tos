@@ -6,7 +6,9 @@
 #pragma once
 #include <stdint.h>
 
-void acpi_init(void);                       /* scan tables; call after vmm_init, in kmain */
+void acpi_init(uint64_t rsdp_phys);         /* scan tables; call after vmm_init, in kmain.
+                                             * rsdp_phys: RSDP from the UEFI handoff, or 0 to
+                                             * fall back to the legacy BIOS-area scan */
 int  acpi_cpu_apic_ids(uint8_t *ids, int max);  /* fill APIC ids from the MADT; count, 0 if none */
 int  acpi_poweroff(void);                   /* issue an ACPI S5 poweroff; -1 if unavailable */
 int  acpi_reset(void);                      /* issue an ACPI reset; -1 if unavailable */

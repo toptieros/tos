@@ -17,6 +17,7 @@
 #include "ahci.h"
 #include "nvme.h"
 #include "virtio_net.h"
+#include "e1000.h"
 #include "net.h"
 #include "blockdev.h"
 #include "ata.h"
@@ -47,7 +48,8 @@ void kmain(struct boot_info *bi) {
     console_puts("[kernel] PIC remapped; timer on IRQ0, keyboard on IRQ1\r\n");
 
     vmm_init(&bootinfo);
-    acpi_init();                          /* RSDP/RSDT/XSDT -> MADT (CPU topology) + FADT (poweroff/reset) */
+    acpi_init(bootinfo.acpi_rsdp);        /* RSDP/RSDT/XSDT -> MADT (CPU topology) + FADT (poweroff/reset);
+                                           * UEFI hands the RSDP through boot_info, BIOS passes 0 (legacy scan) */
 
     if (bootinfo.console == BOOT_CONSOLE_FB) {
         mouse_init((int)bootinfo.width, (int)bootinfo.height);
@@ -62,8 +64,9 @@ void kmain(struct boot_info *bi) {
     nvme_init();                          /* probes + registers "nvme0" (NVMe/DMA) if present  */
     bdev_dump();
 
-    virtio_net_init();                    /* probes + brings up the NIC (frames in/out) if present */
-    net_init();                           /* minimal IPv4/ARP/ICMP; pings the gateway if a NIC came up */
+    virtio_net_init();                    /* probes + brings up "virtio-net" (frames in/out) if present */
+    e1000_init();                         /* probes + brings up an Intel "e1000" if present (2nd NIC) */
+    net_init();                           /* minimal IPv4/ARP/ICMP; pings the gateway via whichever NIC came up */
 
     if (fs_mount() < 0) {
         console_puts("[kernel] PANIC: no tosfs disk found -- cannot load init\r\n");

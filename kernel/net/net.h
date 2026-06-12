@@ -1,14 +1,15 @@
-/* The bottom of the TCP/IP stack, built on the virtio-net driver: an ARP resolver
- * + cache, IPv4 framing, and ICMP echo (ping). This is the native minimal stack
- * sketched in design/virtio-net.md (ARP -> IPv4 -> ICMP -> ... ); UDP/DHCP/TCP and a
- * sockets syscall layer build on these primitives later. Polled, single-homed.
+/* The bottom of the TCP/IP stack, built on whatever NIC registered as the active
+ * netif (virtio-net or e1000): an ARP resolver + cache, IPv4 framing, and ICMP echo
+ * (ping). This is the native minimal stack sketched in design/virtio-net.md (ARP ->
+ * IPv4 -> ICMP -> ... ); UDP/DHCP/TCP and a sockets syscall layer build on these
+ * primitives later. Polled, single-homed.
  *
  * Static config for now (QEMU SLIRP defaults): guest 10.0.2.15, gateway 10.0.2.2.
  * DHCP will replace the static address. */
 #pragma once
 #include <stdint.h>
 
-void net_init(void);                                /* bring up the stack; call after virtio_net_init */
+void net_init(void);                                /* bring up the stack; call after the NIC drivers init */
 int  net_arp_resolve(const uint8_t ip[4], uint8_t mac_out[6]);   /* 0 + MAC, or -1 */
 int  net_ping(const uint8_t ip[4]);                 /* one ICMP echo round-trip; 0 if a reply came back */
 
@@ -26,8 +27,14 @@ void           net_set_ip(const uint8_t ip[4]);     /* set it (e.g. from a DHCP 
 /* DHCP client (DISCOVER/OFFER/REQUEST/ACK) — leases an address; 0 + IP, or -1. */
 int  net_dhcp(uint8_t ip_out[4]);
 
-/* Minimal single-connection TCP client (active open, no retransmit/options). */
+/* Minimal single-connection TCP (active open, no retransmit/options). */
 int  net_tcp_connect(const uint8_t dip[4], uint16_t dport);   /* 0 once established */
 int  net_tcp_send(const uint8_t *data, uint32_t len);         /* 0 on send */
 int  net_tcp_recv(uint8_t *buf, uint32_t max);                /* bytes copied, 0 none, -1 reset */
 void net_tcp_close(void);
+
+/* Passive open (a one-connection server): listen on a port, then block in accept
+ * until a client connects (SYN -> SYN-ACK); the established connection is then used
+ * via net_tcp_recv/send/close. One connection at a time. */
+int  net_tcp_listen(uint16_t port);                           /* arm the listen port; 0/-1 */
+int  net_tcp_accept(void);                                    /* block for a client; 0 established / -1 */

@@ -4,7 +4,7 @@
  * window, one connection at a time -- enough to fetch over the network and to prove
  * TCP works end-to-end. A sockets syscall layer + multi-connection state is next. */
 #include "net.h"
-#include "virtio_net.h"
+#include "netif.h"
 #include "console.h"
 
 #define F_FIN 0x01
@@ -59,7 +59,7 @@ static int tcp_send_seg(uint8_t flags, const uint8_t *data, int dlen) {
 static int tcp_recv_seg(uint8_t *flags, uint32_t *seq, uint32_t *ack,
                         const uint8_t **data, int *dlen, uint8_t *r, int rmax) {
     for (long tries = 0; tries < 600000; tries++) {
-        int n = virtio_net_rx(r, (uint32_t)rmax);
+        int n = netif_rx(r, (uint32_t)rmax);
         if (n >= 14 + 20 + 20 && get16(r + 12) == 0x0800 && r[14 + 9] == 6) {
             const uint8_t *ip = r + 14;
             int ihl = (ip[0] & 0xF) * 4;
@@ -78,7 +78,7 @@ static int tcp_recv_seg(uint8_t *flags, uint32_t *seq, uint32_t *ack,
 }
 
 int net_tcp_connect(const uint8_t dip[4], uint16_t dport) {
-    if (!virtio_net_present()) return -1;
+    if (!netif_present()) return -1;
     for (int i = 0; i < 4; i++) t_dip[i] = dip[i];
     t_dport = dport; t_sport = 0xC000;
     t_snd = 0x12340000u; t_rcv = 0; t_open = 0; t_peer_fin = 0;
@@ -98,6 +98,49 @@ int net_tcp_connect(const uint8_t dip[4], uint16_t dport) {
     if (tcp_send_seg(F_ACK, 0, 0) < 0) return -1;
     t_open = 1;
     return 0;
+}
+
+/* --- passive open (a one-connection server) -------------------------------
+ * Reuses the same single-connection TCB as the active path: listen records the
+ * local port, accept blocks polling for a SYN to it, replies SYN-ACK, and marks
+ * the connection established (the client's bare ACK + the request data are then
+ * read by net_tcp_recv, which ACKs them). One connection at a time -- enough to
+ * answer an HTTP request and prove tOS can *serve*, not just fetch. */
+static uint16_t t_listen_port = 0;
+static int      t_listening = 0;
+
+int net_tcp_listen(uint16_t port) {
+    if (!netif_present()) return -1;
+    t_listen_port = port; t_listening = 1;
+    t_open = 0; t_peer_fin = 0;
+    return 0;
+}
+
+int net_tcp_accept(void) {
+    if (!t_listening) return -1;
+    uint8_t r[2048];
+    for (long tries = 0; tries < 30000000; tries++) {     /* wait (bounded) for a client */
+        int n = netif_rx(r, sizeof r);
+        if (n >= 14 + 20 + 20 && get16(r + 12) == 0x0800 && r[14 + 9] == 6) {
+            const uint8_t *ip = r + 14;
+            int ihl = (ip[0] & 0xF) * 4;
+            const uint8_t *tcp = ip + ihl;
+            if (get16(tcp + 2) == t_listen_port && (tcp[13] & F_SYN) && !(tcp[13] & F_ACK)) {
+                for (int i = 0; i < 4; i++) t_dip[i] = ip[12 + i];   /* peer = the SYN's source */
+                t_dport = get16(tcp + 0);
+                t_sport = t_listen_port;
+                t_rcv = get32(tcp + 4) + 1;                          /* peer ISN + 1 */
+                t_snd = 0x12340000u;
+                if (tcp_send_seg(F_SYN | F_ACK, 0, 0) < 0) return -1;
+                t_snd++;                                            /* SYN-ACK consumes a seq */
+                t_open = 1; t_listening = 0;
+                return 0;
+            }
+        }
+        if (n <= 0) for (volatile int d = 0; d < 2000; d++) { }
+    }
+    t_listening = 0;
+    return -1;                                            /* no client connected in time */
 }
 
 int net_tcp_send(const uint8_t *data, uint32_t len) {

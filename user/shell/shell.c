@@ -452,6 +452,37 @@ static void cmd_get(char *args) {
     print("\r\n[get] received "); printu((unsigned)total); print(" bytes\r\n");
 }
 
+/* serve <port> -- a one-shot HTTP server: listen, block until a client connects,
+ * read its request, send back a small page, close. Proves tOS can *serve* over the
+ * network (the other half of the TCP story), not just fetch. */
+static void cmd_serve(const char *arg) {
+    int port = 0;
+    for (const char *q = arg; *q >= '0' && *q <= '9'; q++) port = port * 10 + (*q - '0');
+    if (port <= 0) { print("usage: serve <port>\r\n"); return; }
+    if (net_listen(port) < 0) { print("serve: listen failed (no NIC / no CAP_NET)\r\n"); return; }
+    print("[serve] listening on port "); printu((unsigned)port); print(" ...\r\n");
+    if (net_accept() < 0) { print("[serve] no client connected (timed out)\r\n"); return; }
+
+    char req[512];
+    int r = net_recv(req, sizeof req - 1);            /* read the client's request line(s) */
+    if (r > 0) { req[r] = 0; }
+
+    const char *body =
+        "<html><body><h1>Hello from tOS</h1>"
+        "<p>This page was served by a native x86-64 OS.</p></body></html>\r\n";
+    const char *resp =
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        "Connection: close\r\n\r\n";
+    char out[512]; int n = 0;
+    for (int i = 0; resp[i] && n < 480; i++) out[n++] = resp[i];
+    for (int i = 0; body[i] && n < 510; i++) out[n++] = body[i];
+    net_send(out, n);
+    net_close();
+    print("[serve] served 1 request ("); printu((unsigned)(r > 0 ? r : 0));
+    print(" bytes in)\r\n");
+}
+
 /* Display form of the cwd for the prompt: the home directory shows as "~" (and
  * "$HOME/x" as "~/x"), like a normal shell. */
 static const char *home_disp(const char *cwd, char *out) {
@@ -487,7 +518,7 @@ void _ustart(void) {
             print("  clear date uptime mem df sysinfo uname colors mouse lspci beep\r\n");
             print("  fastfetch spawn fork smp sleep <n> reboot halt poweroff crash\r\n");
             print("  reg get/set/list <key> [value]   (system + user settings)\r\n");
-            print("  ping <ip>   get <ip> <port> <path>   (networking; needs the net cap)\r\n");
+            print("  ping <ip>   get <ip> <port> <path>   serve <port>   (networking; needs the net cap)\r\n");
             print("  (arrows/Home/End/Del edit; up/down = history)\r\n");
         } else if (streq(line, "ls")) {
             cmd_ls("");
@@ -528,6 +559,8 @@ void _ustart(void) {
             cmd_ping(line + 5);
         } else if (starts(line, "get ")) {
             cmd_get(line + 4);
+        } else if (starts(line, "serve ")) {
+            cmd_serve(line + 6);
         } else if (streq(line, "id")) {
             print("uid="); printu((unsigned)getuid()); print("\r\n");
         } else if (starts(line, "id ")) {
