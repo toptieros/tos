@@ -17,6 +17,7 @@
 #include "ahci.h"
 #include "nvme.h"
 #include "virtio_net.h"
+#include "net.h"
 #include "blockdev.h"
 #include "ata.h"
 #include <stdint.h>
@@ -60,6 +61,9 @@ void kmain(struct boot_info *bi) {
     ahci_init();                          /* probes + registers "ahci0" (SATA/DMA) if present  */
     nvme_init();                          /* probes + registers "nvme0" (NVMe/DMA) if present  */
     bdev_dump();
+
+    virtio_net_init();                    /* probes + brings up the NIC (frames in/out) if present */
+    net_init();                           /* minimal IPv4/ARP/ICMP; pings the gateway if a NIC came up */
 
     if (fs_mount() < 0) {
         console_puts("[kernel] PANIC: no tosfs disk found -- cannot load init\r\n");

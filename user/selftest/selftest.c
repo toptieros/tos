@@ -137,16 +137,18 @@ static void group_clipboard(void) {
 }
 
 static void group_caps(void) {
-    /* Capability sandbox (design/app-runtime.md): this program runs as a normal
-     * sandboxed app -- the shell that exec'd it descends from a terminal that twm
-     * launched at CAP_NORMAL -- so it holds the low-risk caps but NOT the dangerous
-     * ones, and the kernel must refuse a dangerous syscall it lacks. */
+    /* Capability sandbox (design/app-runtime.md): a normal sandboxed app holds the
+     * low-risk caps but NOT the dangerous ones, and the kernel refuses a dangerous
+     * syscall it lacks. The terminal now also declares CAP_NET (so the shell can run
+     * `ping`/`get`), so we first drop to CAP_NORMAL -- setcaps only drops, never
+     * grants -- to re-establish the normal-app baseline this group asserts. */
+    setcaps(CAP_NORMAL);                      /* shed any inherited dangerous caps (e.g. net) */
     unsigned caps = getcaps();
     CHECK(caps & CAP_WINDOW);                 /* a normal cap it holds          */
     CHECK(caps & CAP_SPAWN);                  /* CAP_NORMAL includes fork/exec  */
     CHECK(caps & CAP_FS_HOME);
     CHECK(!(caps & CAP_NOTIFY));              /* dangerous: not granted         */
-    CHECK(!(caps & CAP_NET));
+    CHECK(!(caps & CAP_NET));                 /* dangerous: dropped above; kernel enforces it */
     /* SYS_NOTIFY is gated on CAP_NOTIFY -- the kernel refuses it (the cap check
      * fires before the argument pointer is even read). */
     char nbuf[256]; for (int i = 0; i < 256; i++) nbuf[i] = 0;

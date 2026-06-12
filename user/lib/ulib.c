@@ -28,6 +28,16 @@ void sleep_ticks(unsigned n)  { sc(SYS_SLEEP, (uint64_t)n); }
 void sleep_ms(unsigned ms)    { unsigned t = (ms * TIMER_HZ) / 1000; sc(SYS_SLEEP, t ? t : 1); }
 int  getcpu(void)             { return (int)sc(SYS_GETCPU, 0); }
 long install_disk(int target) { return (long)sc(SYS_INSTALL, (uint64_t)(unsigned)target); }
+/* Networking (needs CAP_NET). IPs are packed big-endian: net_ip(a,b,c,d). */
+unsigned net_ip(int a, int b, int c, int d) {
+    return ((unsigned)(a & 0xff) << 24) | ((unsigned)(b & 0xff) << 16)
+         | ((unsigned)(c & 0xff) << 8)  |  (unsigned)(d & 0xff);
+}
+int  net_ping(unsigned ip)               { return (int)sc(SYS_NET_PING, (uint64_t)ip); }
+int  net_connect(unsigned ip, int port)  { return (int)sc3(SYS_NET_CONNECT, (uint64_t)ip, (uint64_t)(unsigned)port, 0); }
+int  net_send(const void *buf, int len)  { return (int)sc3(SYS_NET_SEND, (uint64_t)buf, (uint64_t)(unsigned)len, 0); }
+int  net_recv(void *buf, int max)        { return (int)sc3(SYS_NET_RECV, (uint64_t)buf, (uint64_t)(unsigned)max, 0); }
+void net_close(void)                     { sc(SYS_NET_CLOSE, 0); }
 void paint_cursor(char c, int inverse) { sc(SYS_CPAINT, ((uint64_t)(inverse & 1) << 8) | (uint8_t)c); }
 int  fbinfo(struct fbinfo *fb)         { return (int)sc(SYS_FBINFO, (uint64_t)fb); }
 void con_window(int x, int y, int w, int h) {

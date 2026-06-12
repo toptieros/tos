@@ -396,6 +396,62 @@ static void cmd_reg_list(const char *prefix) {
     for (int i = 0; i < n; i++) { print(keys[i]); print(" = "); print(reg_get(keys[i], "")); print("\r\n"); }
 }
 
+/* --- networking commands (need CAP_NET; the shell holds all caps) ---------- */
+static int parse_ip(const char *s, unsigned *out) {
+    int oct[4], k = 0, v = 0, any = 0;
+    for (;; s++) {
+        char c = *s;
+        if (c >= '0' && c <= '9') { v = v * 10 + (c - '0'); any = 1; }
+        else if (c == '.') { if (!any || v > 255 || k >= 3) return -1; oct[k++] = v; v = 0; any = 0; }
+        else if (c == 0)   { if (!any || v > 255 || k != 3) return -1; oct[k++] = v; break; }
+        else return -1;
+    }
+    *out = net_ip(oct[0], oct[1], oct[2], oct[3]);
+    return 0;
+}
+
+static void cmd_ping(const char *arg) {
+    unsigned ip;
+    if (parse_ip(arg, &ip) < 0) { print("usage: ping <a.b.c.d>\r\n"); return; }
+    print("PING "); print(arg); print(" ...\r\n");
+    print(net_ping(ip) == 0 ? "reply received\r\n" : "request timed out\r\n");
+}
+
+/* get <ip> <port> <path> -- an HTTP/1.0 GET over the TCP client; prints the reply. */
+static void cmd_get(char *args) {
+    char *p = args, *ip_s = p;
+    while (*p && *p != ' ') p++;
+    if (*p != ' ') { print("usage: get <ip> <port> <path>\r\n"); return; }
+    *p++ = 0;
+    char *port_s = p;
+    while (*p && *p != ' ') p++;
+    if (*p != ' ') { print("usage: get <ip> <port> <path>\r\n"); return; }
+    *p++ = 0;
+    char *path = p;
+    unsigned ip;
+    if (parse_ip(ip_s, &ip) < 0) { print("get: bad ip\r\n"); return; }
+    int port = 0; for (char *q = port_s; *q >= '0' && *q <= '9'; q++) port = port * 10 + (*q - '0');
+    if (net_connect(ip, port) < 0) { print("get: connect failed\r\n"); return; }
+
+    char req[256]; int n = 0;
+    const char *a = "GET ";                  for (int i = 0; a[i]; i++) req[n++] = a[i];
+    for (int i = 0; path[i] && n < 200; i++) req[n++] = path[i];
+    const char *b = " HTTP/1.0\r\nHost: ";   for (int i = 0; b[i]; i++) req[n++] = b[i];
+    for (int i = 0; ip_s[i] && n < 240; i++) req[n++] = ip_s[i];
+    const char *c = "\r\nConnection: close\r\n\r\n"; for (int i = 0; c[i]; i++) req[n++] = c[i];
+    net_send(req, n);
+
+    char buf[513]; int total = 0, idle = 0;
+    for (;;) {
+        int r = net_recv(buf, sizeof buf - 1);
+        if (r > 0) { buf[r] = 0; print(buf); total += r; idle = 0; }
+        else if (r < 0) break;                  /* peer closed / reset */
+        else { if (++idle > 400) break; sleep_ms(2); }
+    }
+    net_close();
+    print("\r\n[get] received "); printu((unsigned)total); print(" bytes\r\n");
+}
+
 /* Display form of the cwd for the prompt: the home directory shows as "~" (and
  * "$HOME/x" as "~/x"), like a normal shell. */
 static const char *home_disp(const char *cwd, char *out) {
@@ -431,6 +487,7 @@ void _ustart(void) {
             print("  clear date uptime mem df sysinfo uname colors mouse lspci beep\r\n");
             print("  fastfetch spawn fork smp sleep <n> reboot halt poweroff crash\r\n");
             print("  reg get/set/list <key> [value]   (system + user settings)\r\n");
+            print("  ping <ip>   get <ip> <port> <path>   (networking; needs the net cap)\r\n");
             print("  (arrows/Home/End/Del edit; up/down = history)\r\n");
         } else if (streq(line, "ls")) {
             cmd_ls("");
@@ -467,6 +524,10 @@ void _ustart(void) {
             long n = install_disk(1);
             if (n < 0) print("install failed (no target disk or write/verify error)\r\n");
             else { print("installed "); printu((unsigned)n); print(" sectors\r\n"); }
+        } else if (starts(line, "ping ")) {
+            cmd_ping(line + 5);
+        } else if (starts(line, "get ")) {
+            cmd_get(line + 4);
         } else if (streq(line, "id")) {
             print("uid="); printu((unsigned)getuid()); print("\r\n");
         } else if (starts(line, "id ")) {

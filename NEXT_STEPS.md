@@ -130,8 +130,13 @@ protocol). **Left:**
   for BARs in the PCI hole; installs onto + boots straight off a SATA disk); **NVMe** (`nvme.c`:
   MMIO regs, admin + I/O queue pair, PRP DMA, IDENTIFY ns; boots straight off an NVMe namespace);
   **ACPI** (`acpi.c`: RSDP→RSDT/XSDT→MADT CPU topology + FADT poweroff/reset, no AML; SMP discovers
-  CPUs from the MADT; real S5 poweroff verified working alone) (2026-06-12). **Next:** GPT/ESP(FAT)
-  writer → USB (xHCI+HID+MSC) → virtio-net/e1000 + TCP/IP. GPU accel is VM-only.
+  CPUs from the MADT; real S5 poweroff verified working alone); **virtio-net** (`virtio_net.c`: the
+  first NIC — legacy virtio-pci, RX+TX queues, MAC, raw Ethernet frames; ARP round-trip self-test);
+  **net stack** (`net/net.c` + `dhcp.c` + `tcp.c`: native ARP+IPv4+ICMP+UDP+DHCP+**TCP**) + **userspace
+  networking** (CAP_NET-gated `SYS_NET_*` syscalls + shell `ping`/`get`; **tOS fetches a file over the
+  network** via HTTP/1.0 — the Phase 4 exit criterion) (2026-06-12). **Next:** a fuller **sockets
+  syscall layer** (multi-connection, `bind`/`listen`/`accept`); TCP retransmit/windowing for lossy
+  links; then **e1000** (2nd NIC); GPT/ESP(FAT) writer; USB (xHCI+HID+MSC). GPU accel is VM-only.
   → [`roadmap.md`](design/roadmap.md)
   - **ACPI follow-on:** under UEFI the legacy RSDP scan finds nothing (`[acpi] no RSDP`) and CPU
     discovery falls back to `fw_cfg` (no regression). Pass the RSDP from the UEFI loader's EFI ACPI

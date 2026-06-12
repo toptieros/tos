@@ -18,7 +18,7 @@ OVMF_VARS_SRC := /usr/share/edk2/x64/OVMF_VARS.4m.fd
 CC     := gcc
 # Kernel sources live in subsystem subfolders (arch/ mm/ drivers/ fs/) plus the
 # core/shared files at the kernel root; -I each so the flat #include "x.h" works.
-KINCS  := -I$(KDIR) -I$(KDIR)/arch -I$(KDIR)/mm -I$(KDIR)/drivers -I$(KDIR)/fs
+KINCS  := -I$(KDIR) -I$(KDIR)/arch -I$(KDIR)/mm -I$(KDIR)/drivers -I$(KDIR)/fs -I$(KDIR)/net
 # -MMD -MP emits a .d file of header dependencies next to each .o (and phony
 # targets for the headers), so editing a header recompiles every object that
 # includes it. Without this, a struct that changed in a header could leave stale

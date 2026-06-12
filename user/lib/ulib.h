@@ -91,6 +91,13 @@ int  drag_state(char *label_out, int cap);             /* -> active drag type (>
 void drag_end(void);                                   /* compositor: end the session */
 
 long install_disk(int target);             /* clone the boot disk onto block device `target`; sectors/-1 */
+/* Networking (needs CAP_NET). IPs packed big-endian via net_ip(a,b,c,d). */
+unsigned net_ip(int a, int b, int c, int d);
+int  net_ping(unsigned ip);                 /* SYS_NET_PING: one ICMP echo; 0 reply / -1            */
+int  net_connect(unsigned ip, int port);    /* SYS_NET_CONNECT: TCP active open; 0 / -1             */
+int  net_send(const void *buf, int len);    /* SYS_NET_SEND: 0 / -1                                 */
+int  net_recv(void *buf, int max);          /* SYS_NET_RECV: bytes, 0 none-yet, -1 closed/reset     */
+void net_close(void);                       /* SYS_NET_CLOSE: FIN                                   */
 
 void printu(unsigned v);                    /* print an unsigned decimal to the console     */
 void proc_exit(void) __attribute__((noreturn));      /* SYS_EXIT                 */

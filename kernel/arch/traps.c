@@ -20,6 +20,7 @@
 #include "smp.h"
 #include "vmm.h"
 #include "acpi.h"
+#include "net.h"
 #include "clipboard.h"
 #include "drag.h"
 #include "install.h"
@@ -284,6 +285,35 @@ static struct regs *syscall_dispatch(struct regs *r) {
         return r;
     case SYS_INSTALL:                  /* clone the boot disk onto block device rdi (the installer) */
         r->rax = (uint64_t)install_run((int)r->rdi);
+        return r;
+    /* Networking -- the native TCP/IP stack, gated by CAP_NET (dangerous: default-deny). */
+    case SYS_NET_PING: {
+        if (!sched_has_caps(CAP_NET)) UFAIL;
+        uint8_t ip[4] = { (uint8_t)(arg >> 24), (uint8_t)(arg >> 16), (uint8_t)(arg >> 8), (uint8_t)arg };
+        r->rax = (uint64_t)(int64_t)net_ping(ip);
+        return r;
+    }
+    case SYS_NET_CONNECT: {
+        if (!sched_has_caps(CAP_NET)) UFAIL;
+        uint64_t v = r->rdi;
+        uint8_t ip[4] = { (uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v };
+        r->rax = (uint64_t)(int64_t)net_tcp_connect(ip, (uint16_t)r->rsi);
+        return r;
+    }
+    case SYS_NET_SEND:
+        if (!sched_has_caps(CAP_NET)) UFAIL;
+        BUF(r->rdi, r->rsi);
+        r->rax = (uint64_t)(int64_t)net_tcp_send((const uint8_t *)r->rdi, (uint32_t)r->rsi);
+        return r;
+    case SYS_NET_RECV:
+        if (!sched_has_caps(CAP_NET)) UFAIL;
+        BUF(r->rdi, r->rsi);
+        r->rax = (uint64_t)(int64_t)net_tcp_recv((uint8_t *)r->rdi, (uint32_t)r->rsi);
+        return r;
+    case SYS_NET_CLOSE:
+        if (!sched_has_caps(CAP_NET)) UFAIL;
+        net_tcp_close();
+        r->rax = 0;
         return r;
     case SYS_GETPID:
         r->rax = (uint64_t)(int64_t)sched_getpid();

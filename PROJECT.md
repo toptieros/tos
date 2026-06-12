@@ -28,8 +28,10 @@ kernel/
   arch/               x86 low-level: cpu.asm/.h, gdt, idt, traps (ISR+syscall
                       dispatch), apic, smp, spinlock
   mm/                 vmm.c/.h — paging, frame pool, ELF loader, fork/destroy
-  drivers/            console, keyboard, mouse, rtc, timer, ata, pci, virtio_blk, ahci, nvme, blockdev
+  drivers/            console, keyboard, mouse, rtc, timer, ata, pci, virtio_blk, ahci, nvme,
+                      virtio_net, blockdev
   fs/                 fs.c (tosfs, hierarchical), tosfs.h on-disk format
+  net/                net.c (ARP+IPv4+ICMP+UDP) + dhcp.c + tcp.c — a native TCP/IP stack
 user/                 ring-3 programs, each its own app dir + a shared lib:
   lib/                ulib (syscall wrappers) + ugfx (graphics, surface-aware) + user.ld
   init/ shell/        init (PID 1) and the interactive shell (a pty client)
@@ -239,6 +241,18 @@ hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
   root fs + ELF loader + the installer target a disk by index, so tOS boots off
   whichever disk carries the install (the `install` command clones the boot disk onto
   the target; fs/mount scans every bdev's MBR for the tosfs partition).
+- **virtio-net** — the first NIC (legacy virtio-pci, transitional device), reusing the
+  split-virtqueue transport from virtio-blk. RX (queue 0) + TX (queue 1), negotiates
+  only `VIRTIO_NET_F_MAC` (offloads off → plain Ethernet frames behind a zeroed 10-byte
+  `virtio_net_hdr`), reads the MAC, pre-posts RX buffers; `virtio_net_tx`/`_rx` move raw
+  frames. Polled. The driver contract only — the protocol stack sits above it in
+  `kernel/net/`; a boot self-test ARPs the SLIRP gateway to prove frames in *and* out.
+- **net** (`kernel/net/net.c` + `dhcp.c` + `tcp.c`) — a native TCP/IP stack on
+  virtio-net: an **ARP** resolver + cache, **IPv4** framing (internet checksum), **ICMP**
+  echo, **UDP**, a **DHCP** client, and a minimal single-connection **TCP** client
+  (handshake + push/recv with the pseudo-header checksum + FIN close). At boot the guest
+  DHCP-leases its address, pings the gateway, and (when a server is reachable) does a TCP
+  echo round-trip. A sockets syscall layer to expose this to userspace is the next layer up.
 - **speaker** — PC speaker via PIT channel 2; `SYS_BEEP` / the `beep` command.
 - **acpi** (`kernel/acpi.c`) — minimal ACPI table parsing (no AML): RSDP scan →
   RSDT/XSDT walk → **MADT** (enabled CPUs' Local-APIC ids; SMP discovers CPUs from

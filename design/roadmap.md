@@ -116,8 +116,15 @@ Prioritized, VM-first so the installer is testable in QEMU before metal:
    `vmm_map_mmio` (any e820 type). *Follow-on:* UEFI has no legacy RSDP in the BIOS area — pass it from
    the loader's EFI config table via `boot_info` (today UEFI falls back to `fw_cfg` + magic ports, no
    regression). Full uACPI/LAI is still the long-term path for AML/runtime ACPI.
-7. **Networking** — virtio-net / e1000 + a TCP/IP stack + sockets. Unlocks downloads, an
-   app store, remote anything. Needed once the installer / app-store fetches. Design:
+7. **Networking** — *NIC + a full native stack through TCP landed* ✅ **2026-06-12**. NIC:
+   `kernel/drivers/virtio_net.c` — legacy virtio-pci, RX + TX virtqueues, MAC, raw Ethernet frames.
+   Stack (`kernel/net/`): **ARP (resolver+cache) → IPv4 → ICMP → UDP → DHCP → TCP**. The guest
+   **leases its address** via DHCP, **pings** the gateway, and completes a real **TCP** conversation
+   (3-way handshake + push/echo with the pseudo-header checksum + FIN close), all verified by boot
+   self-tests (ICMP/DHCP against SLIRP; TCP against a host echo server through 10.0.2.2). **Still to
+   do:** a **sockets syscall layer** (`SYS_SOCKET`/`connect`/`send`/`recv`, gated by the net
+   capability) so userspace apps get the stack; TCP retransmit/windowing for lossy links; then
+   **e1000** as the second NIC. Unlocks downloads, an app store, remote anything. Design:
    [virtio-net.md](virtio-net.md).
 
 Also fold in a **real serial console** for input and **LAPIC timer calibration**.

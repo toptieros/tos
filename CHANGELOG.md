@@ -7,6 +7,47 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Userspace networking: net syscalls + `ping`/`get` — Phase 4 exit criterion (2026-06-12).** Exposed
+  the kernel TCP/IP stack to userspace via five **CAP_NET-gated** syscalls
+  (`SYS_NET_PING`/`CONNECT`/`SEND`/`RECV`/`CLOSE`, 78–82) with `ulib` wrappers, and two shell commands:
+  `ping <ip>` (ICMP) and `get <ip> <port> <path>` (an HTTP/1.0 GET over the TCP client). The Terminal
+  manifest now declares the `net` cap, so the shell can use them (the cap stays **enforced** for every
+  other app — the in-OS `selftest` drops to `CAP_NORMAL` and confirms net is then refused).
+  **tOS now fetches a file over the network** from a userspace program — the Phase 4 networking exit
+  criterion — verified end-to-end against a host HTTP server through SLIRP (`get` prints the response
+  body). Also shortened the TCP poll budget so a recv loop spins fast instead of blocking per call.
+- **Net L4: TCP client — Phase 4 #7 (2026-06-12).** `kernel/net/tcp.c`: a minimal single-connection
+  TCP client (active open) on net.c's IPv4 layer — 3-way handshake (SYN/SYN-ACK/ACK), push/recv with
+  the **mandatory pseudo-header checksum** and seq/ack tracking, and a FIN close. No retransmit/options
+  yet (the local link is reliable), fixed window, one connection at a time. Added a generic
+  `net_ip_tx` (IPv4 send via the gateway) shared by TCP. Boot self-test connects to a host echo server
+  at 10.0.2.2:7777 (SLIRP aliases the host), sends `tOS-tcp`, reads the echo, and closes — verified
+  `[net] TCP echo OK` against a real Python server in the probe. With no server it gets a fast RST and
+  skips (not a failure), so the plain NIC probe is unaffected. Next: a sockets syscall layer for apps.
+- **Net L4: UDP + DHCP — Phase 4 #7 (2026-06-12).** `kernel/net/net.c` gains **UDP** transmit
+  (`net_udp_tx`, IPv4 checksum-0 datagrams), and `kernel/net/dhcp.c` is a tiny **DHCP client** that
+  runs the full DORA exchange (DISCOVER → OFFER → REQUEST → ACK; BOOTP fixed fields + the options
+  cookie/53/50/54/55). At boot the guest now **leases its address** instead of hardcoding it
+  (`[net] DHCP lease 10.0.2.15` against QEMU's SLIRP DHCP server), then pings the gateway. Verified
+  against `-netdev user`. Next up the stack: TCP + a sockets syscall layer.
+- **Net L3: ARP + IPv4 + ICMP (ping) — Phase 4 #7 (2026-06-12).** `kernel/net/net.c` (new `kernel/net/`
+  module): the first layer of a native TCP/IP stack on top of virtio-net. An **ARP** resolver + cache,
+  **IPv4** framing with the internet checksum, and **ICMP** echo. `net_ping()` ARP-resolves the
+  next hop (gateway), builds Ethernet→IPv4→ICMP, TXes it, and polls RX, demuxing replies. Boot
+  self-test pings the SLIRP gateway 10.0.2.2 and gets the echo reply (`[net] ping 10.0.2.2: reply` /
+  `[net] selftest OK`) — verified against `-netdev user`. Static config for now (guest 10.0.2.15, gw
+  10.0.2.2); DHCP will replace it. Next: UDP → DHCP → TCP + a sockets syscall layer.
+- **virtio-net — the first network driver, Phase 4 #7 (2026-06-12).** `kernel/drivers/virtio_net.c`:
+  legacy virtio-pci NIC (transitional `virtio-net-pci`), reusing the split-virtqueue transport from
+  virtio-blk. Two queues (RX queue 0 + TX queue 1), negotiates only `VIRTIO_NET_F_MAC` (offloads off,
+  so a zeroed 10-byte `virtio_net_hdr` and plain Ethernet frames), reads the MAC from device config,
+  pre-posts RX buffers, and exposes `virtio_net_tx`/`virtio_net_rx` (frames in, frames out -- the whole
+  driver contract; the protocol stack lives above it). Buffers come from `vmm_alloc_surface`
+  (identity-mapped, so the pointer is the DMA address -- no bounce). A **kernel boot self-test** TXes an
+  ARP "who-has 10.0.2.2" (the SLIRP gateway) and polls RX for the reply: verified end-to-end against
+  `-netdev user` -- `[virtio-net] up: MAC ...` then `[virtio-net] ARP reply: 10.0.2.2 is at
+  52:55:0a:00:02:02` (QEMU's gateway MAC) + `selftest OK`. Absent a NIC it prints `none` and boots
+  normally (smoke unchanged). Next: the TCP/IP stack (ARP→IPv4→ICMP→UDP→DHCP→TCP) + a sockets syscall.
 - **ACPI: MADT topology + FADT poweroff/reset — Phase 4 #6 (2026-06-12).** `kernel/acpi.c`: real ACPI
   table parsing (no AML interpreter). Finds the RSDP (legacy EBDA/BIOS scan), walks the RSDT/XSDT, and
   pulls out the **MADT** (enabled CPUs' Local-APIC ids) and the **FADT** (PM1a control port + the `_S5`

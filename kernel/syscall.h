@@ -98,6 +98,14 @@
 #define SYS_DRAG_END     76 /* ()                  -> end the session (bytes kept for the drop read)     */
 #define SYS_INSTALL      77 /* (target_bdev)       -> clone the boot disk onto block device `target`;
                             *                        sectors written, or -1 (the live->disk installer) */
+/* Networking (the native TCP/IP stack in kernel/net) -- all gated by CAP_NET. IPs
+ * are packed big-endian into a u32 (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d). The TCP
+ * calls drive the single kernel connection (one at a time, polled). */
+#define SYS_NET_PING     78 /* (ip)                -> one ICMP echo round-trip; 0 reply / -1            */
+#define SYS_NET_CONNECT  79 /* (ip, port)          -> TCP active open; 0 established / -1               */
+#define SYS_NET_SEND     80 /* (buf, len)          -> TCP send; 0 / -1                                  */
+#define SYS_NET_RECV     81 /* (buf, max)          -> TCP recv; bytes, 0 (none yet), -1 (closed/reset)  */
+#define SYS_NET_CLOSE    82 /* ()                  -> TCP close (FIN); 0                                 */
 
 #include "cap.h"           /* CAP_* bits, shared with userspace's manifest->caps mapping */
 
