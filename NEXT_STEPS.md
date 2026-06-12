@@ -137,9 +137,16 @@ protocol). **Left:**
   network** via HTTP/1.0 — the Phase 4 exit criterion) (2026-06-12); **e1000** — a second NIC
   (`drivers/e1000.c`, Intel 8254x: MMIO BAR0, legacy RX/TX rings, MAC from RAL/RAH) behind a new
   NIC-agnostic **`netif` layer** (`net/netif.{c,h}`) the stack drives instead of naming a driver, first
-  NIC up wins; an e1000-only box leases/pings/fetches through the same path, virtio unchanged (2026-06-13).
-  **Next:** a fuller **sockets syscall layer** (multi-connection, `bind`/`listen`/`accept`); TCP
-  retransmit/windowing for lossy links; GPT/ESP(FAT) writer; USB (xHCI+HID+MSC). GPU accel is VM-only.
+  NIC up wins; an e1000-only box leases/pings/fetches through the same path, virtio unchanged (2026-06-13);
+  **TCP server** — passive open (`net_tcp_listen`/`accept`) + CAP_NET-gated `SYS_NET_LISTEN`/`ACCEPT`
+  (83/84) + a shell `serve <port>` one-shot HTTP server; **tOS serves a page over the network** (the
+  host fetches it through a SLIRP host-forward), one connection at a time (2026-06-13);
+  **serial console input** — COM1 RX on IRQ4 feeds the keyboard ring (CR/CRLF→Enter, DEL→backspace),
+  so the shell runs **headless** over the serial line (`repro_serial_input.py`; harness gained an
+  opt-in `serial_socket` mode), output already mirrors to COM1 (2026-06-13).
+  **Next:** a fuller **sockets layer** — *multi-connection* state (a TCB table) + `bind`, so several
+  clients/servers coexist; TCP retransmit/windowing for lossy links; GPT/ESP(FAT) writer; USB
+  (xHCI+HID+MSC). GPU accel is VM-only.
   → [`roadmap.md`](design/roadmap.md)
   - **ACPI under UEFI — ✅ done 2026-06-13.** The UEFI loader now pulls the RSDP from the EFI ACPI
     config table (ACPI 2.0 GUID, 1.0 fallback) and hands its physical address to the kernel through

@@ -180,6 +180,12 @@ isr_irq1:
     push    qword 0x21
     jmp     isr_common
 
+global isr_irq4
+isr_irq4:
+    push    qword 0
+    push    qword 0x24
+    jmp     isr_common
+
 global isr_irq12
 isr_irq12:
     push    qword 0

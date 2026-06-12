@@ -132,11 +132,15 @@ Prioritized, VM-first so the installer is testable in QEMU before metal:
    ✅ **2026-06-13**: `kernel/drivers/e1000.c` (Intel 8254x / QEMU `-device e1000`) behind a new
    NIC-agnostic **`netif`** layer (`net/netif.{c,h}`) the stack drives instead of naming a driver —
    first NIC up wins, so an e1000-only box leases/pings/fetches through the identical path (verified
-   `[net] NIC e1000` + DHCP + ICMP; virtio unchanged). **Still to do:** a fuller **sockets layer**
-   (multi-connection, `bind`/`listen`/`accept`); TCP retransmit/windowing for lossy links. Unlocks
-   downloads, an app store, remote anything. Design: [virtio-net.md](virtio-net.md).
+   `[net] NIC e1000` + DHCP + ICMP; virtio unchanged). **TCP server landed** ✅ **2026-06-13**: passive
+   open (`net_tcp_listen`/`accept`) + CAP_NET-gated `SYS_NET_LISTEN`/`ACCEPT` + a shell `serve <port>`
+   one-shot HTTP server, so **tOS serves a page over the network** (the host fetches it through a SLIRP
+   host-forward) — one connection at a time. **Still to do:** a fuller **sockets layer** — multi-connection
+   state (a TCB table) + `bind` so clients/servers coexist; TCP retransmit/windowing for lossy links.
+   Unlocks downloads, an app store, remote anything. Design: [virtio-net.md](virtio-net.md).
 
-Also fold in a **real serial console** for input and **LAPIC timer calibration**.
+Also fold in a **real serial console** for input (✅ **2026-06-13**: COM1 RX on IRQ4 feeds the key
+ring, so the shell runs headless over the serial line) and **LAPIC timer calibration** (done).
 
 > **Drivers don't port from Linux.** Linux has no stable in-kernel ABI; its drivers are
 > welded to one kernel version's internals, and it's **GPLv2** — copying code makes tOS a

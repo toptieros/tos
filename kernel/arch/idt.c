@@ -24,6 +24,7 @@ extern uint64_t isr_stub_table[32];   /* exception handler entry points */
 extern void isr_syscall(void);        /* int 0x80 handler               */
 extern void isr_irq0(void);           /* IRQ0 timer handler (PIT, BSP)  */
 extern void isr_irq1(void);           /* IRQ1 keyboard handler          */
+extern void isr_irq4(void);           /* IRQ4 COM1 serial RX handler    */
 extern void isr_irq12(void);          /* IRQ12 PS/2 mouse handler       */
 extern void isr_lapic_timer(void);    /* LAPIC timer (vector 0x22)      */
 
@@ -43,6 +44,7 @@ void idt_init(void) {
 
     set_gate(0x20, (uint64_t)isr_irq0, 0x8e);            /* IRQ0 timer (ring 0)    */
     set_gate(0x21, (uint64_t)isr_irq1, 0x8e);            /* IRQ1 keyboard (ring 0) */
+    set_gate(0x24, (uint64_t)isr_irq4, 0x8e);            /* IRQ4 COM1 serial RX    */
     set_gate(0x2C, (uint64_t)isr_irq12, 0x8e);           /* IRQ12 PS/2 mouse       */
     set_gate(0x22, (uint64_t)isr_lapic_timer, 0x8e);     /* LAPIC timer (per-CPU)  */
     set_gate(0x80, (uint64_t)isr_syscall, 0xee);         /* DPL=3 so ring 3 can call */

@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,15 +40,23 @@ def _free_port():
 
 class Tos:
     def __init__(self, uefi=False, scratch=None, reuse=False, port=None, cpus=1, mem=None,
-                 extra_args=None):
+                 extra_args=None, serial_socket=False):
         # extra_args: raw QEMU args appended to the command (e.g. an extra virtio-blk
         # disk for a driver test). Kept out of the default boot so the smoke tier is
         # untouched. The caller owns any image files it references.
+        # serial_socket: route COM1 to a bidirectional TCP socket instead of a file,
+        # so a test can *inject* serial input (serial_send) as well as read output --
+        # for the headless serial console. Default off: the smoke tier is unchanged.
         self.uefi = uefi
         self.cpus = cpus
         self.mem = mem
         self.extra_args = extra_args or []
         self.port = port if port is not None else _free_port()
+        self.serial_socket = serial_socket
+        self.sport = _free_port() if serial_socket else None
+        self._sconn = None
+        self._sbuf = b""
+        self._slock = threading.Lock()
         self.serial_path = _qmp_path(f"tos_test_serial_{self.port}.log")
         if os.path.exists(self.serial_path):
             os.remove(self.serial_path)
@@ -64,11 +73,17 @@ class Tos:
         if not (reuse and os.path.exists(scratch)):
             shutil.copy(boot_src, scratch)
 
+        if serial_socket:
+            serial_arg = ["-chardev",
+                          f"socket,id=ser0,host=127.0.0.1,port={self.sport},server=on,wait=off",
+                          "-serial", "chardev:ser0"]
+        else:
+            serial_arg = ["-serial", f"file:{self.serial_path}"]
         common = [
             "-drive", f"format=raw,file={scratch},if=ide,index=0",
             "-smp", str(self.cpus),
             "-no-reboot", "-display", "none",
-            "-serial", f"file:{self.serial_path}",
+            *serial_arg,
             "-monitor", f"telnet:127.0.0.1:{self.port},server,nowait",
         ]
         if self.mem is not None:
@@ -86,6 +101,39 @@ class Tos:
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
         self._connect_monitor()
+        if serial_socket:
+            self._connect_serial()
+
+    def _connect_serial(self):
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                self._sconn = socket.create_connection(("127.0.0.1", self.sport), timeout=1)
+                self._sconn.settimeout(0.2)
+                threading.Thread(target=self._serial_reader, daemon=True).start()
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("could not connect to the serial socket")
+
+    def _serial_reader(self):
+        while True:
+            try:
+                d = self._sconn.recv(4096)
+                if not d:
+                    return
+                with self._slock:
+                    self._sbuf += d
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+
+    def serial_send(self, data):
+        """Inject bytes into COM1 (serial_socket mode). '\\r' is Enter to the shell."""
+        if isinstance(data, str):
+            data = data.encode("latin1")
+        self._sconn.sendall(data)
 
     def _connect_monitor(self):
         deadline = time.time() + 10
@@ -104,6 +152,9 @@ class Tos:
         raise RuntimeError("could not connect to QEMU monitor")
 
     def serial(self):
+        if self.serial_socket:
+            with self._slock:
+                return self._sbuf.decode("latin1")
         try:
             with open(self.serial_path, "rb") as f:
                 return f.read().decode("latin1")
@@ -256,6 +307,9 @@ class Tos:
             self.proc.wait(timeout=3)
         except Exception:
             self.proc.kill()
+        if self._sconn:
+            try: self._sconn.close()
+            except OSError: pass
         # Clean up the per-run temp files we created so they don't pile up in
         # /tmp (which is tmpfs/RAM-backed) across many runs. A caller-supplied
         # scratch path (e.g. a persistence test) is left for the caller to manage.

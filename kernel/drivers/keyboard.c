@@ -255,12 +255,32 @@ void keyboard_irq(void) {
     if (pushed) sched_wake_readers();            /* a key (or sequence) arrived */
 }
 
+/* --- COM1 serial input (headless operation) -------------------------------
+ * IRQ4 fires when a byte is waiting in the UART. We translate a terminal's wire
+ * conventions to what the PS/2 path emits -- CR (or CRLF) -> '\n', DEL -> '\b' --
+ * and push into the same key ring, so the shell (and any SYS_READ caller) can be
+ * driven entirely over the serial line. Ctrl bytes (e.g. ^C = 0x03) pass through. */
+#define COM1 0x3F8
+static int serial_last_cr = 0;
+void serial_irq(void) {
+    pushed = 0;
+    while (inb(COM1 + 5) & 0x01) {            /* LSR bit0: data ready */
+        uint8_t b = inb(COM1);
+        if (b == 0x0D) { serial_last_cr = 1; buf_push('\n'); continue; }
+        if (b == 0x0A) { if (serial_last_cr) { serial_last_cr = 0; continue; } buf_push('\n'); continue; }
+        serial_last_cr = 0;
+        buf_push(b == 0x7F ? '\b' : (char)b); /* DEL -> backspace; else as-is */
+    }
+    outb(0x20, 0x20);                         /* EOI to master PIC (IRQ4) */
+    if (pushed) sched_wake_readers();
+}
+
 static void pic_remap(void) {
     outb(0x20, 0x11); outb(0xA0, 0x11);   /* ICW1: begin init, expect ICW4 */
     outb(0x21, 0x20); outb(0xA1, 0x28);   /* ICW2: master->0x20, slave->0x28 */
     outb(0x21, 0x04); outb(0xA1, 0x02);   /* ICW3: cascade wiring */
     outb(0x21, 0x01); outb(0xA1, 0x01);   /* ICW4: 8086 mode */
-    outb(0x21, 0xFC); outb(0xA1, 0xFF);   /* unmask IRQ0 (timer) + IRQ1 (kbd) */
+    outb(0x21, 0xEC); outb(0xA1, 0xFF);   /* unmask IRQ0 (timer) + IRQ1 (kbd) + IRQ4 (COM1) */
 }
 
 void kbd_init(void) {

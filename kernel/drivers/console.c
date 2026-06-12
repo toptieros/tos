@@ -37,9 +37,10 @@ static void serial_setup(void) {
     outb(COM1 + 3, 0x80);
     outb(COM1 + 0, 0x03);                /* 38400 baud */
     outb(COM1 + 1, 0x00);
-    outb(COM1 + 3, 0x03);                /* 8N1 */
+    outb(COM1 + 3, 0x03);                /* 8N1 (clears DLAB -> reg 1 is IER again) */
     outb(COM1 + 2, 0xc7);
-    outb(COM1 + 4, 0x0b);
+    outb(COM1 + 4, 0x0b);                /* MCR: DTR|RTS|OUT2 (OUT2 gates the IRQ line) */
+    outb(COM1 + 1, 0x01);                /* IER: received-data-available interrupt (IRQ4) -> serial input */
 }
 
 void console_init(struct boot_info *bi) {

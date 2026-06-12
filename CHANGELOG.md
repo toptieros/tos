@@ -7,6 +7,25 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Serial console input — headless operation (2026-06-13).** COM1 now raises **IRQ4** on received
+  data (`console.c` enables the UART's RX interrupt; `keyboard.c`'s new `serial_irq` drains it). Bytes
+  are translated to match the PS/2 path (CR / CRLF → Enter, DEL → backspace, Ctrl chars pass through)
+  and pushed into the **same key ring**, so the shell — and any `SYS_READ` caller — can be driven
+  entirely over the serial line, no framebuffer or PS/2 needed. Wired an `isr_irq4` stub (vector 0x24)
+  into the IDT and unmasked IRQ4 in the PIC. Zero effect on the existing tests (their COM1 is an output
+  file, so no RX ever arrives). Verified with `repro_serial_input.py` (COM1 on a bidirectional socket;
+  the harness gained an opt-in `serial_socket` mode): typed `ls /` over the wire, the shell listed the
+  root. Output already mirrors to COM1 (ipc.c), so it's a full headless round-trip.
+- **TCP server: listen/accept + shell `serve` (2026-06-13).** tOS can now *serve* over the network,
+  not just fetch. Added passive open to `kernel/net/tcp.c` (`net_tcp_listen`/`net_tcp_accept`, reusing
+  the single-connection TCB: listen arms a port, accept blocks polling for a SYN and replies SYN-ACK,
+  then the established connection is read/written by the existing recv/send/close), exposed to userspace
+  as two more **CAP_NET-gated** syscalls (`SYS_NET_LISTEN`/`ACCEPT`, 83–84) with `ulib` wrappers, and a
+  shell **`serve <port>`** command — a one-shot HTTP server (listen, accept, read the request, send a
+  small HTML page, close). Verified with `repro_serve.py`: tOS listens on :80, the host fetches it
+  through a SLIRP host-forward and gets the served page ("Hello from tOS") — purely local, no internet.
+  Client fetch path unchanged (`repro_netcmd` still green). One connection at a time; multi-connection +
+  `bind` is the next step.
 - **e1000 NIC + a NIC-agnostic `netif` layer (2026-06-13).** Added a second network driver:
   `kernel/drivers/e1000.c`, the ubiquitous Intel 8254x (QEMU's `-device e1000` = 82540EM) — MMIO
   register block (BAR0, via `vmm_map_mmio`), legacy RX/TX descriptor rings + buffers in

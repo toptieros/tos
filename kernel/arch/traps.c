@@ -467,6 +467,9 @@ struct regs *isr_dispatch(struct regs *r) {
     case 0x21:                                /* PS/2 keyboard */
         keyboard_irq();                       /* reads scancode, sends its own EOI */
         return sched_yield(r);                /* let a just-woken reader run */
+    case 0x24:                                /* COM1 serial RX (headless input) */
+        serial_irq();                         /* drains the UART, sends its own EOI */
+        return sched_yield(r);                /* let a just-woken reader run */
     case 0x2C:                                /* PS/2 mouse (IRQ12) */
         mouse_irq();                          /* decodes a packet, sends its own EOI */
         return r;

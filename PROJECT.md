@@ -182,16 +182,17 @@ wraps them in `user/ulib.c`.
 44 MKDIR   46 CHDIR    48 READDIR (path, dirent*, max)   50 STAT (path, fstat*)
 45 RMDIR   47 GETCWD   49 RENAME  (oldpath, newpath)
 51-77  mmap, clipboard, notify, caps (SETCAPS/GETCAPS), drag-and-drop, INSTALL
-78 NET_PING  79 NET_CONNECT  80 NET_SEND  81 NET_RECV  82 NET_CLOSE  (CAP_NET)
+78 NET_PING 79 NET_CONNECT 80 NET_SEND 81 NET_RECV 82 NET_CLOSE 83 NET_LISTEN 84 NET_ACCEPT  (CAP_NET)
 ```
 (18 CPAINT = block cursor; 19 FBINFO = map framebuffer → struct fbinfo;
 20 CON_WINDOW = confine the text console to a pixel rect; 44-50 = the
 hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
-0x604/0xB004) before halting. The **net syscalls (78-82)** expose the TCP
-client to userspace and are each gated on `CAP_NET`: the kernel refuses them
-unless the caller holds the net capability (`sched_has_caps`), so only an app
-whose manifest declares `net` — the Terminal does, for the shell's `ping`/`get`
-— can touch the wire.
+0x604/0xB004) before halting. The **net syscalls (78-84)** expose the TCP
+client *and* a one-connection server to userspace — `CONNECT`/`SEND`/`RECV`/`CLOSE`
+plus `LISTEN`/`ACCEPT` (passive open) and `PING` — and are each gated on `CAP_NET`:
+the kernel refuses them unless the caller holds the net capability
+(`sched_has_caps`), so only an app whose manifest declares `net` — the Terminal
+does, for the shell's `ping`/`get`/`serve` — can touch the wire.
 
 ---
 
@@ -206,7 +207,10 @@ whose manifest declares `net` — the Terminal does, for the shell's `ping`/`get
   window; it also paints the shell's inverse block cursor
   (`console_paint_cursor`, screen-only).
 - **keyboard** — PS/2 set-1 scancodes → ASCII (+ arrows as control bytes) into a
-  ring buffer on IRQ1; blocking `READ` parks the caller until a key arrives.
+  ring buffer on IRQ1; blocking `READ` parks the caller until a key arrives. **COM1
+  serial input** feeds the *same* ring on IRQ4 (`serial_irq`: CR/CRLF → Enter, DEL →
+  backspace), so the shell can be driven entirely over the serial line — headless, no
+  framebuffer or PS/2 (output already mirrors to COM1).
 - **mouse** — PS/2 aux device on IRQ12; decodes 3-byte packets into an absolute
   position (clamped to the screen) + buttons; `SYS_MOUSE` reports it. Enabled
   only on framebuffer boots.
