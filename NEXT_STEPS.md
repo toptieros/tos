@@ -128,9 +128,15 @@ protocol). **Left:**
   a **block-device layer** (`blockdev.c`; ata0 + virtio0 + ahci0 + nvme0); **AHCI/SATA + DMA**
   (`ahci.c`: MMIO ABAR, command-list/PRDT DMA, READ/WRITE DMA EXT + IDENTIFY; new `vmm_map_mmio()`
   for BARs in the PCI hole; installs onto + boots straight off a SATA disk); **NVMe** (`nvme.c`:
-  MMIO regs, admin + I/O queue pair, PRP DMA, IDENTIFY ns; boots straight off an NVMe namespace)
-  (2026-06-12). **Next:** GPT/ESP(FAT) writer → USB (xHCI+HID+MSC) → ACPI (uACPI/LAI) →
-  virtio-net/e1000 + TCP/IP. GPU accel is VM-only. → [`roadmap.md`](design/roadmap.md)
+  MMIO regs, admin + I/O queue pair, PRP DMA, IDENTIFY ns; boots straight off an NVMe namespace);
+  **ACPI** (`acpi.c`: RSDP→RSDT/XSDT→MADT CPU topology + FADT poweroff/reset, no AML; SMP discovers
+  CPUs from the MADT; real S5 poweroff verified working alone) (2026-06-12). **Next:** GPT/ESP(FAT)
+  writer → USB (xHCI+HID+MSC) → virtio-net/e1000 + TCP/IP. GPU accel is VM-only.
+  → [`roadmap.md`](design/roadmap.md)
+  - **ACPI follow-on:** under UEFI the legacy RSDP scan finds nothing (`[acpi] no RSDP`) and CPU
+    discovery falls back to `fw_cfg` (no regression). Pass the RSDP from the UEFI loader's EFI ACPI
+    config table through `boot_info` so MADT/FADT work under UEFI too. Full uACPI/LAI (AML, runtime
+    ACPI, `_PRT`/IRQ routing) remains the long-term path.
 - [ ] **Growable filesystem.** Files are contiguous and a metadata change rewrites the whole slot
   table; the partition is fixed-size. Want extent/indirect blocks, a runtime-sized partition, and a
   journaled table.

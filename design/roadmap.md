@@ -107,8 +107,15 @@ Prioritized, VM-first so the installer is testable in QEMU before metal:
    [installation.md](installation.md)).
 5. **USB: xHCI + USB core + HID + mass-storage** — the big bare-metal tax (modern
    machines have no PS/2; live-USB media). Large, multi-part, unavoidable beyond VMs.
-6. **ACPI** — at least RSDP/MADT (APIC topology) and clean shutdown/reboot; prefer a
-   permissively-licensed library (uACPI / LAI) over writing an AML interpreter.
+6. **ACPI** — ✅ **landed 2026-06-12** (`kernel/acpi.c`): RSDP scan → RSDT/XSDT walk → **MADT**
+   (real CPU/APIC topology, replacing the QEMU-only `fw_cfg` count; SMP now discovers CPUs from it) +
+   **FADT** (PM1a control + the `_S5` byte scan → ACPI poweroff; RESET_REG → ACPI reset), with the old
+   magic ports kept as a fallback. No AML interpreter — just table walking + the standard tiny `_S5`
+   scan. Verified: MADT reports the right CPU count (`-smp 4` → 4, SMP 4/4 from the MADT) and ACPI S5
+   poweroff works *on its own* (QEMU exits with the fallbacks removed). Tables reached via
+   `vmm_map_mmio` (any e820 type). *Follow-on:* UEFI has no legacy RSDP in the BIOS area — pass it from
+   the loader's EFI config table via `boot_info` (today UEFI falls back to `fw_cfg` + magic ports, no
+   regression). Full uACPI/LAI is still the long-term path for AML/runtime ACPI.
 7. **Networking** — virtio-net / e1000 + a TCP/IP stack + sockets. Unlocks downloads, an
    app store, remote anything. Needed once the installer / app-store fetches. Design:
    [virtio-net.md](virtio-net.md).

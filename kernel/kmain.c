@@ -16,6 +16,7 @@
 #include "virtio_blk.h"
 #include "ahci.h"
 #include "nvme.h"
+#include "virtio_net.h"
 #include "blockdev.h"
 #include "ata.h"
 #include <stdint.h>

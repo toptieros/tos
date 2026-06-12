@@ -7,6 +7,18 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **ACPI: MADT topology + FADT poweroff/reset — Phase 4 #6 (2026-06-12).** `kernel/acpi.c`: real ACPI
+  table parsing (no AML interpreter). Finds the RSDP (legacy EBDA/BIOS scan), walks the RSDT/XSDT, and
+  pulls out the **MADT** (enabled CPUs' Local-APIC ids) and the **FADT** (PM1a control port + the `_S5`
+  sleep type via the standard tiny byte scan, plus the RESET_REG). SMP now discovers CPUs from the
+  MADT (real APIC ids that work on hardware/any VM) instead of the QEMU-only `fw_cfg` count, falling
+  back to `fw_cfg`. `SYS_SHUTDOWN`/`SYS_REBOOT` issue a real ACPI S5 poweroff / ACPI reset, generalising
+  the old hardcoded magic ports (which stay as a fallback) — on QEMU the parse independently derives
+  PM1a=`0x604`, exactly the old constant. Tables are reached via `vmm_map_mmio` (so any e820 region,
+  not just the RAM identity map). Verified: MADT reports the right CPU count (`-smp 4`→4, SMP 4/4 from
+  MADT; `-smp 2`→2) and ACPI S5 poweroff **works on its own** (QEMU exits with the magic-port fallbacks
+  patched out). Under UEFI the legacy RSDP scan finds nothing and it falls back cleanly (`[acpi] no
+  RSDP` → `fw_cfg` + magic ports, no regression); follow-on is to pass the RSDP from the UEFI loader.
 - **NVMe DMA block driver — Phase 4 #3 (2026-06-12).** `kernel/drivers/nvme.c`: a clean-room NVMe 1.x
   driver over the memory-mapped controller registers (BAR0/1, mapped with `vmm_map_mmio`). Probes PCI
   for an NVMe controller (class 01.08), enables memory-space + bus-master, disables then re-enables the

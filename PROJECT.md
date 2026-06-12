@@ -17,6 +17,7 @@ boot/                 BIOS bootloader (stage1.asm) + AP startup (trampoline.asm)
 uefi/                 UEFI loader (uefi.c) — embeds and boots the same kernel
 kernel/
   kmain.c             kernel entry; brings subsystems up in order
+  acpi.c acpi.h       ACPI tables: MADT (CPU topology) + FADT (poweroff/reset)
   sched.c sched.h     SMP scheduler, fork/exec/wait, dynamic kernel stacks
   percpu.h            per-CPU state (struct cpu, run queues)
   syscall.h           the int 0x80 ABI (numbers + shared structs), used by kernel+user
@@ -239,7 +240,15 @@ hierarchical filesystem.) SHUTDOWN does an ACPI poweroff (QEMU ports
   whichever disk carries the install (the `install` command clones the boot disk onto
   the target; fs/mount scans every bdev's MBR for the tosfs partition).
 - **speaker** — PC speaker via PIT channel 2; `SYS_BEEP` / the `beep` command.
-- system control: `SYS_REBOOT` resets via the 8042; `SYS_SHUTDOWN` ACPI-poweroff.
+- **acpi** (`kernel/acpi.c`) — minimal ACPI table parsing (no AML): RSDP scan →
+  RSDT/XSDT walk → **MADT** (enabled CPUs' Local-APIC ids; SMP discovers CPUs from
+  this, falling back to QEMU `fw_cfg`) and **FADT** (PM1a control + the `_S5` byte
+  scan for a real ACPI S5 poweroff; RESET_REG for ACPI reset). Tables are reached via
+  `vmm_map_mmio`. Runs in `kmain` after `vmm_init`. (UEFI has no legacy RSDP yet → it
+  falls back to `fw_cfg` + the magic ports.)
+- system control: `SYS_REBOOT` does an ACPI reset (FADT RESET_REG) then pulses the
+  8042; `SYS_SHUTDOWN` does a real ACPI S5 poweroff (FADT PM1a + `_S5`) then the
+  legacy QEMU poweroff ports — see **acpi** above.
 
 ---
 
