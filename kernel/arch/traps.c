@@ -19,6 +19,7 @@
 #include "ipc.h"
 #include "smp.h"
 #include "vmm.h"
+#include "acpi.h"
 #include "clipboard.h"
 #include "drag.h"
 #include "install.h"
@@ -127,9 +128,10 @@ static struct regs *syscall_dispatch(struct regs *r) {
         return sched_wait(r);
     case SYS_SHUTDOWN:
         console_puts("[kernel] shutdown requested -- powering off\r\n");
-        outw(0x604, 0x2000);                  /* ACPI poweroff (modern QEMU) */
-        outw(0xB004, 0x2000);                 /* ACPI poweroff (older QEMU)  */
-        for (;;) __asm__ volatile("cli; hlt");  /* fall back to halting the CPU */
+        acpi_poweroff();                      /* real ACPI S5 (FADT PM1a + _S5), if parsed */
+        outw(0x604, 0x2000);                  /* fallback: ACPI poweroff port (modern QEMU) */
+        outw(0xB004, 0x2000);                 /* fallback: ACPI poweroff port (older QEMU)  */
+        for (;;) __asm__ volatile("cli; hlt");  /* last resort: halt the CPU */
     case SYS_LS:
         fs_ls();
         r->rax = 0;
@@ -196,7 +198,8 @@ static struct regs *syscall_dispatch(struct regs *r) {
         return r;
     case SYS_REBOOT:
         console_puts("[kernel] reboot requested\r\n");
-        outb(0x64, 0xFE);                     /* pulse the 8042 reset line */
+        acpi_reset();                         /* real ACPI reset (FADT RESET_REG), if parsed */
+        outb(0x64, 0xFE);                     /* fallback: pulse the 8042 reset line */
         for (;;) __asm__ volatile("cli; hlt");
     case SYS_GETKEY:                          /* non-blocking keyboard read (compositor) */
         r->rax = (uint64_t)(int64_t)kbd_getc();

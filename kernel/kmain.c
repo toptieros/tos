@@ -6,6 +6,7 @@
 #include "gdt.h"
 #include "idt.h"
 #include "vmm.h"
+#include "acpi.h"
 #include "sched.h"
 #include "keyboard.h"
 #include "timer.h"
@@ -44,6 +45,7 @@ void kmain(struct boot_info *bi) {
     console_puts("[kernel] PIC remapped; timer on IRQ0, keyboard on IRQ1\r\n");
 
     vmm_init(&bootinfo);
+    acpi_init();                          /* RSDP/RSDT/XSDT -> MADT (CPU topology) + FADT (poweroff/reset) */
 
     if (bootinfo.console == BOOT_CONSOLE_FB) {
         mouse_init((int)bootinfo.width, (int)bootinfo.height);

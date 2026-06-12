@@ -14,6 +14,7 @@
 #include "idt.h"
 #include "console.h"
 #include "cpu.h"
+#include "acpi.h"
 #include "trampoline_blob.h"
 #include <stdint.h>
 
@@ -72,6 +73,10 @@ __attribute__((used)) static void ap_main(void) {
 #define FW_CFG_NB_CPUS  0x0005
 
 static int find_cpus(uint8_t *ids, int max) {
+    /* Prefer the ACPI MADT (real APIC ids, works on real hardware and any VM). */
+    int n = acpi_cpu_apic_ids(ids, max);
+    if (n >= 1) return n;
+    /* Fallback: QEMU's fw_cfg CPU count (APIC ids assumed 0..N-1). */
     outw(FW_CFG_SELECT, FW_CFG_NB_CPUS);
     uint32_t count = (uint32_t)inb(FW_CFG_DATA);
     count |= (uint32_t)inb(FW_CFG_DATA) << 8;          /* little-endian uint16 */
