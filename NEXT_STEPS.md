@@ -154,17 +154,28 @@ protocol). **Left:**
 - [ ] **Shell: interactive "fish feel" + the argv blocker + scripting (shell.md).** `shell.c` is a
   line editor over a fixed `if/else` builtin table — no parser, completion, highlighting, or argv.
   Three bands, cheapest-first:
-  - **Interactive layer — no kernel change.** Synchronous **syntax highlighting** (first token
-    green if it resolves to a builtin / `/System/bin` / `/Apps/*/bin` program, red if not),
-    **history autosuggestions** (dim suffix, accept with →/Ctrl+E), **Tab completion + a grid
-    pager** (command names with one-line descriptions, then `readdir` path completion), history
-    persisted under `~/.config`, and the rest of the emacs motions (Ctrl+A/E/U/K/W/L/R). Highest
-    felt value for the least risk — all redraw + `readdir` + ANSI.
-  - **argv passing — the shared blocker.** `exec(prog)` uses the whole string as *both* the ELF
-    path *and* the data-page seed, so a program gets a name but **no arguments**. Split path from
-    an argv tail (or add `SYS_EXEC2(path, argv)`) and seed the data page with the full argv.
-    Unblocks real commands (`ls /tmp`), the `tos` CLI (packaging below), and migrating the file
-    utilities out to `/System/bin`.
+  - [x] **Interactive layer — no kernel change (band 1 landed 2026-06-13).** Full-line redraw
+    with synchronous **syntax highlighting** (first token green if it's a builtin or a
+    `/System/bin` program, red if not — `cmd_known`), **Tab completion** (command names from the
+    `shellcmds.h` catalog for the first token, `readdir` path completion otherwise; extends the
+    common prefix, completes + adds a space/`/` when unique, lists the candidates when ambiguous),
+    **history persisted** under `~/.config/shell_history` (`hist_load`/`hist_save`), and the emacs
+    motions **Ctrl+A/E/B/F/U/K/W/L**. Only active when stdio is a pty (`isatty`); the bare
+    console / serial tests keep the plain incremental editor. Pure helpers are unit-tested
+    (`t_shellcmds`), the IO is screenshot-verified. **Deferred (serial-test fragility):**
+    history **autosuggestions** (dim inline suffix) and **Ctrl+R** reverse-search both echo
+    *previous commands* into the COM1-mirrored stream the harness substring-matches; and a Tab
+    **grid pager with per-command descriptions** (the candidate list is a plain wrapped row today).
+  - [x] **argv passing — the shared blocker (band 2 landed 2026-06-13).** `vmm_create_user` now
+    splits the launch string at the first space: the first token is the ELF path (`fs_find`), and
+    the **whole** string is seeded into the data page as the command line — so `exec("ls /tmp")`
+    works with **no new syscall** (chosen over `SYS_EXEC2`; zero-arg execs like `exec("twm")` are
+    byte-identical). Userspace reads it via `cmdline()` / `getargs()` (`user/lib/argv.h`'s pure
+    `argv_split`, unit-tested in `t_argv`); the shell now **execs an unknown first token that
+    resolves to a `/System/bin` program, passing the full argv** (`line_is_extprog` → `run_prog`).
+    Proven by the new `/System/bin/args` demo (`args hello world foo` → `argc=4`, screenshot).
+    **Next:** migrate the file utilities (`ls`/`cat`/`cp`/…) out of the shell into `/System/bin`
+    programs, and wire the `tos` CLI (packaging below) onto the same argv.
   - [⏸] **The language.** A small fish-shaped grammar behind a real tokenizer/parser: quoting,
     `$VAR`/env, command substitution `(…)`, globbing, pipes + redirection (needs `SYS_PIPE`/dup),
     `;`/`and`/`or`, control flow + functions. Big effort + a user heap; **not this round** unless

@@ -106,7 +106,9 @@ page tables, exits boot services, and jumps with `rdi = &boot_info`.
   page table (`upt`) covering the 2 MiB user window `[0x400000, 0x600000)`:
   - code/data/bss at the bottom (up to `USER_SEG_LIMIT`, ~1.9 MiB),
   - a 64 KiB stack just below the data page at the top (grows down),
-  - the data/role page at the very top (`USER_DATA_VADDR`, seeded with argv0).
+  - the data page at the very top (`USER_DATA_VADDR`, seeded with the full command
+    line; `vmm_create_user` splits the first token as the ELF path, so a program
+    reads its argv via `cmdline()`/`getargs()` — see design/shell.md band 2).
 - **ELF loader** (`vmm_create_user`): reads the ELF header + program headers,
   validates every `PT_LOAD` *before* allocating (so a bad ELF leaks nothing),
   then streams each segment from disk straight to its pages (`load_bytes`, up to

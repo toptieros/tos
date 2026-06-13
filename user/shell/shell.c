@@ -6,13 +6,17 @@
 #include "ulib.h"
 #include "registry.h"
 #include "humansize.h"     /* human_bytes: the `df` figures */
+#include "shellcmds.h"     /* the built-in catalog + pure helpers (Tab + highlight) */
 
 #define HISTN 64
 #define LINEMAX 512
 #define HOME "/Users/user"          /* the single user's home dir (see design/filesystem-layout.md) */
 #define HOME_LEN 11                 /* strlen("/Users/user") */
+#define HISTFILE HOME "/.config/shell_history"   /* persisted across sessions (design/shell.md) */
 static char hist[HISTN][LINEMAX];
 static int  hist_n = 0;
+
+static int slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 
 static void hist_add(const char *s) {
     if (!s[0]) return;
@@ -26,6 +30,30 @@ static void hist_add(const char *s) {
     for (; s[i] && i < LINEMAX - 1; i++) hist[hist_n][i] = s[i];
     hist[hist_n][i] = 0;
     hist_n++;
+}
+
+/* History persists across sessions in HISTFILE (one command per line). The fs has
+ * no O_APPEND, so hist_save() rewrites the whole ring each time -- HISTN is small. */
+static void hist_load(void) {
+    int fd = fopen(HISTFILE, O_RDONLY);
+    if (fd < 0) return;
+    char chunk[256], line[LINEMAX]; int ln = 0, r;
+    while ((r = fread_(fd, chunk, sizeof chunk)) > 0)
+        for (int i = 0; i < r; i++) {
+            char c = chunk[i];
+            if (c == '\n') { line[ln] = 0; if (ln) hist_add(line); ln = 0; }
+            else if (ln < LINEMAX - 1) line[ln++] = c;
+        }
+    if (ln) { line[ln] = 0; hist_add(line); }
+    fclose_(fd);
+}
+
+static void hist_save(void) {
+    mkdir(HOME "/.config");                       /* self-heal; harmless if it exists */
+    int fd = fopen(HISTFILE, O_CREATE | O_TRUNC);
+    if (fd < 0) return;
+    for (int i = 0; i < hist_n; i++) { fwrite_(fd, hist[i], slen(hist[i])); fwrite_(fd, "\n", 1); }
+    fclose_(fd);
 }
 
 /* --- line editor: keeps the on-screen line in sync using only printc and a
@@ -107,7 +135,10 @@ static int read_key(void) {
     }
 }
 
-static int readline(char *buf, int max) {
+/* The plain line editor: incremental in-place echo (printc + backspace), no full
+ * redraw, no colour. Used when stdio is not a pty (the bare console / serial tests)
+ * and for the one-line `write` prompt. The caller has already printed any prompt. */
+static int readline_plain(char *buf, int max) {
     int n = 0, pos = 0;
     int hpos = hist_n;
     char draft[LINEMAX];
@@ -143,12 +174,175 @@ static int readline(char *buf, int max) {
     return n;
 }
 
-/* run an external program as a child and wait for it */
-static int run_prog(const char *name) {
+/* --- rich line editor (fish-feel): full-line redraw with first-token syntax
+ * highlighting, Tab completion and emacs motions. Used when stdio is a pty (a real
+ * terminal). The catalog + pure string helpers live in shellcmds.h; the IO is here
+ * and is screenshot-verified. (See design/shell.md.) ------------------------- */
+
+/* Does `tok` name something runnable -- a built-in, or an executable in /System/bin?
+ * Drives the colour of the first token (green = known, red = unknown). */
+static int cmd_known(const char *tok) {
+    if (!tok[0]) return 0;
+    if (sh_is_builtin(tok)) return 1;
+    char p[80]; int o = 0;
+    for (const char *q = "/System/bin/"; *q; q++) p[o++] = *q;
+    for (int i = 0; tok[i] && o < 78; i++) p[o++] = tok[i];
+    p[o] = 0;
+    struct fstat st;
+    return stat_(p, &st) == 0 && st.type == FT_FILE;
+}
+
+/* Insert NUL-terminated `s` into buf at the cursor, advancing n and pos. */
+static void ins_str(char *buf, int *pn, int *ppos, int max, const char *s) {
+    for (int k = 0; s[k]; k++) {
+        int n = *pn, pos = *ppos;
+        if (n >= max - 1) return;
+        for (int i = n; i > pos; i--) buf[i] = buf[i - 1];
+        buf[pos] = s[k]; *pn = n + 1; *ppos = pos + 1;
+    }
+}
+
+/* Repaint the whole input line: carriage-return to col 0, the prompt, the buffer
+ * (first token coloured by cmd_known), erase any stale tail, then park the cursor
+ * back at `pos`. One write-burst per keystroke -- simpler than splice-editing and it
+ * makes live re-highlighting trivial. */
+static void redraw(const char *prompt, const char *buf, int n, int pos) {
+    printc('\r');
+    print(prompt);
+    int ts = 0; while (ts < n && (buf[ts] == ' ' || buf[ts] == '\t')) ts++;   /* first token */
+    int te = ts; while (te < n && buf[te] != ' ' && buf[te] != '\t') te++;
+    char tok[64]; int tn = 0; for (int i = ts; i < te && tn < 63; i++) tok[tn++] = buf[i]; tok[tn] = 0;
+    int known = tn > 0 && cmd_known(tok);
+    for (int i = 0; i < ts; i++) printc(buf[i]);                              /* leading spaces */
+    if (tn > 0) { print(known ? "\x1b[92m" : "\x1b[91m");                     /* green / red */
+                  for (int i = ts; i < te; i++) printc(buf[i]); print("\x1b[0m"); }
+    for (int i = te; i < n; i++) printc(buf[i]);                              /* arguments */
+    print("\x1b[K");                                                          /* clear stale tail */
+    for (int i = n; i > pos; i--) printc('\b');                               /* cursor -> pos */
+}
+
+/* Tab completion at the cursor: command names for the first token, directory entries
+ * otherwise. Extends by the unambiguous common prefix; completes + adds a separator
+ * when unique; lists the candidates (on their own line) when ambiguous. */
+static void complete(char *buf, int *pn, int *ppos, int max) {
+    int pos = *ppos;
+    int ts = pos; while (ts > 0 && buf[ts - 1] != ' ' && buf[ts - 1] != '\t') ts--;
+    char pre[256]; int pl = 0; for (int i = ts; i < pos && pl < 255; i++) pre[pl++] = buf[i]; pre[pl] = 0;
+
+    if (sh_in_first_token(buf, pos)) {                       /* --- command names --- */
+        const char *match[SH_NCMDS]; int m = 0;
+        for (int i = 0; i < SH_NCMDS; i++) if (sh_has_prefix(SH_CMDS[i].name, pre)) match[m++] = SH_CMDS[i].name;
+        if (m == 0) return;
+        if (m == 1) { char ext[80]; int e = 0; for (int i = pl; match[0][i] && e < 78; i++) ext[e++] = match[0][i];
+                      ext[e++] = ' '; ext[e] = 0; ins_str(buf, pn, ppos, max, ext); return; }
+        int common = slen(match[0]);
+        for (int i = 1; i < m; i++) { int c = sh_common_len(match[0], match[i]); if (c < common) common = c; }
+        if (common > pl) { char ext[80]; int e = 0; for (int i = pl; i < common && e < 78; i++) ext[e++] = match[0][i];
+                           ext[e] = 0; ins_str(buf, pn, ppos, max, ext); }
+        else { print("\r\n"); for (int i = 0; i < m; i++) { print(match[i]); print("  "); } print("\r\n"); }
+    } else {                                                 /* --- filesystem paths --- */
+        int slash = -1; for (int i = 0; i < pl; i++) if (pre[i] == '/') slash = i;
+        char dir[256], base[160];
+        if (slash >= 0) { int d = 0; for (int i = 0; i <= slash && d < 255; i++) dir[d++] = pre[i]; dir[d] = 0;
+                          int b = 0; for (int i = slash + 1; i < pl && b < 159; i++) base[b++] = pre[i]; base[b] = 0; }
+        else { dir[0] = '.'; dir[1] = 0; int b = 0; for (int i = 0; i < pl && b < 159; i++) base[b++] = pre[i]; base[b] = 0; }
+        struct dirent e[64]; int ne = readdir(dir, e, 64);
+        if (ne <= 0) return;
+        int idx[64], m = 0; for (int i = 0; i < ne; i++) if (sh_has_prefix(e[i].name, base)) idx[m++] = i;
+        if (m == 0) return;
+        int bl = slen(base);
+        if (m == 1) { const char *nm = e[idx[0]].name; char ext[64]; int x = 0;
+                      for (int i = bl; nm[i] && x < 62; i++) ext[x++] = nm[i];
+                      ext[x++] = (e[idx[0]].type == FT_DIR) ? '/' : ' '; ext[x] = 0; ins_str(buf, pn, ppos, max, ext); return; }
+        int common = slen(e[idx[0]].name);
+        for (int i = 1; i < m; i++) { int c = sh_common_len(e[idx[0]].name, e[idx[i]].name); if (c < common) common = c; }
+        if (common > bl) { const char *nm = e[idx[0]].name; char ext[64]; int x = 0;
+                           for (int i = bl; i < common && x < 62; i++) ext[x++] = nm[i]; ext[x] = 0; ins_str(buf, pn, ppos, max, ext); }
+        else { print("\r\n"); for (int i = 0; i < m; i++) { print(e[idx[i]].name); if (e[idx[i]].type == FT_DIR) print("/"); print("  "); } print("\r\n"); }
+    }
+}
+
+static int readline_rich(char *buf, int max, const char *prompt) {
+    int n = 0, pos = 0, hpos = hist_n;
+    char draft[LINEMAX]; draft[0] = 0;
+    buf[0] = 0;
+    redraw(prompt, buf, n, pos);
+    for (;;) {
+        cur_show(buf, n, pos);
+        int k = read_key();
+        cur_hide(buf, n, pos);
+        if (k >= 0) {
+            char c = (char)k;
+            if (c == '\r' || c == '\n') { printc('\r'); printc('\n'); break; }
+            else if (c == '\b' || c == 127) { if (pos > 0) { for (int i = pos; i < n; i++) buf[i - 1] = buf[i]; n--; pos--; } }
+            else if (c == 0x01) pos = 0;                                     /* ^A home */
+            else if (c == 0x05) pos = n;                                     /* ^E end  */
+            else if (c == 0x02) { if (pos > 0) pos--; }                      /* ^B left */
+            else if (c == 0x06) { if (pos < n) pos++; }                      /* ^F right */
+            else if (c == 0x15) { if (pos > 0) { for (int i = pos; i < n; i++) buf[i - pos] = buf[i]; n -= pos; pos = 0; } }  /* ^U kill-to-start */
+            else if (c == 0x0b) n = pos;                                     /* ^K kill-to-end */
+            else if (c == 0x17) {                                           /* ^W erase word */
+                int s = pos; while (s > 0 && buf[s - 1] == ' ') s--; while (s > 0 && buf[s - 1] != ' ') s--;
+                int d = pos - s; for (int i = s; i + d < n; i++) buf[i] = buf[i + d]; n -= d; pos = s;
+            }
+            else if (c == 0x0c) print("\x1b[2J\x1b[H");                      /* ^L clear screen */
+            else if (c == '\t') complete(buf, &n, &pos, max);               /* Tab completion */
+            else if (c >= 32 && c < 127) { if (n < max - 1) { for (int i = n; i > pos; i--) buf[i] = buf[i - 1]; buf[pos] = c; n++; pos++; } }
+        } else switch (-k) {
+            case K_LEFT:  if (pos > 0) pos--; break;
+            case K_RIGHT: if (pos < n) pos++; break;
+            case K_HOME:  pos = 0; break;
+            case K_END:   pos = n; break;
+            case K_DEL:   if (pos < n) { for (int i = pos; i < n - 1; i++) buf[i] = buf[i + 1]; n--; } break;
+            case K_UP:
+                if (hpos > 0) {
+                    if (hpos == hist_n) { for (int i = 0; i < n; i++) draft[i] = buf[i]; draft[n] = 0; }
+                    hpos--; n = 0; for (const char *p = hist[hpos]; *p && n < max - 1; p++) buf[n++] = *p; buf[n] = 0; pos = n;
+                }
+                break;
+            case K_DOWN:
+                if (hpos < hist_n) {
+                    hpos++; const char *src = (hpos == hist_n) ? draft : hist[hpos];
+                    n = 0; for (const char *p = src; *p && n < max - 1; p++) buf[n++] = *p; buf[n] = 0; pos = n;
+                }
+                break;
+        }
+        redraw(prompt, buf, n, pos);
+    }
+    buf[n] = 0;
+    return n;
+}
+
+/* Read a line. `rich` (a pty) gets highlighting + Tab + history redraw; otherwise the
+ * plain editor (the caller prints `prompt` first). */
+static int readline(char *buf, int max, const char *prompt, int rich) {
+    if (rich) return readline_rich(buf, max, prompt);
+    print(prompt);
+    return readline_plain(buf, max);
+}
+
+/* run an external program as a child and wait for it. `cmd` may carry arguments
+ * ("args one two"): the kernel splits the path token and seeds the rest as argv. */
+static int run_prog(const char *cmd) {
     int pid = fork();
-    if (pid == 0) { exec(name); print("exec failed: "); print(name); print("\r\n"); proc_exit(); }
+    if (pid == 0) { exec(cmd); print("exec failed: "); print(cmd); print("\r\n"); proc_exit(); }
     if (pid < 0) { print("fork failed\r\n"); return -1; }
     return wait_child();
+}
+
+/* Is the first token of `line` a runnable program (a `/System/bin/<tok>` or an
+ * absolute path to a file)? Decides the shell's "not a builtin -> exec it" fallback.
+ * Builtins are NOT consulted -- they're dispatched before we ever get here. */
+static int line_is_extprog(const char *line) {
+    char tok[80]; sh_first_token(line, tok, sizeof tok);
+    if (!tok[0]) return 0;
+    struct fstat st;
+    if (tok[0] == '/') return stat_(tok, &st) == 0 && st.type == FT_FILE;
+    char p[96]; int o = 0;
+    for (const char *q = "/System/bin/"; *q; q++) p[o++] = *q;
+    for (int i = 0; tok[i] && o < 94; i++) p[o++] = tok[i];
+    p[o] = 0;
+    return stat_(p, &st) == 0 && st.type == FT_FILE;
 }
 
 static void cmd_cat(const char *name) {
@@ -195,7 +389,7 @@ static void cmd_write(const char *name) {
     if (fd < 0) { print("write: cannot create "); print(name); print("\r\n"); return; }
     print("enter a line, ENTER to save:\r\n");
     char line[LINEMAX];
-    int n = readline(line, sizeof line);
+    int n = readline(line, sizeof line, "", 0);    /* plain: arbitrary content, no highlighting */
     fwrite_(fd, line, n);
     fwrite_(fd, "\n", 1);
     fclose_(fd);
@@ -495,20 +689,28 @@ static const char *home_disp(const char *cwd, char *out) {
     return cwd;
 }
 
+/* Append NUL-terminated `s` to dst at offset o; return the new offset. */
+static int sapp(char *dst, int o, const char *s) { while (*s) dst[o++] = *s++; dst[o] = 0; return o; }
+
 __attribute__((section(".text.start"), used, noreturn))
 void _ustart(void) {
     char line[LINEMAX];
     chdir(HOME);                                   /* start in the user's home directory */
     reg_load();                                    /* system + per-user settings (design/settings.md) */
-    if (isatty()) run_prog("fastfetch");          /* login banner on a real terminal */
+    hist_load();                                   /* command history persisted across sessions */
+    int rich = isatty();                           /* a pty gets highlighting + Tab + redraw */
+    if (rich) run_prog("fastfetch");               /* login banner on a real terminal */
     print("Welcome to the tOS shell. Type 'help'.\r\n");
     for (;;) {
-        char cwd[256], disp[256];
-        getcwd(cwd, sizeof cwd);                   /* show the working directory ("~" for home) */
-        print("\x1b[92mtos\x1b[0m:\x1b[94m"); print(home_disp(cwd, disp)); print("\x1b[0m$ ");
-        int n = readline(line, sizeof line);
+        char cwd[256], disp[256], prompt[320];
+        getcwd(cwd, sizeof cwd);                    /* show the working directory ("~" for home) */
+        int o = sapp(prompt, 0, "\x1b[92mtos\x1b[0m:\x1b[94m");
+        o = sapp(prompt, o, home_disp(cwd, disp));
+        sapp(prompt, o, "\x1b[0m$ ");
+        int n = readline(line, sizeof line, prompt, rich);
         if (n == 0) continue;
         hist_add(line);
+        hist_save();
 
         if (streq(line, "help")) {
             print("commands:\r\n");
@@ -663,6 +865,8 @@ void _ustart(void) {
             run_prog("memtest");             /* stress the multi-region frame pool (RAM across the 4 GiB hole) */
         } else if (streq(line, "selftest")) {
             run_prog("selftest");            /* in-OS self-checks: fs/registry/proc/clipboard (design/testing.md) */
+        } else if (line_is_extprog(line)) {
+            run_prog(line);                  /* external /System/bin program, with argv */
         } else {
             print("unknown command: "); print(line); print("\r\n");
         }

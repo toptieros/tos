@@ -1,4 +1,5 @@
 #include "ulib.h"
+#include "argv.h"      /* argv_split: the pure tokenizer behind getargs() */
 
 uint64_t sc(uint64_t num, uint64_t arg) {
     uint64_t ret;
@@ -22,6 +23,16 @@ char getch(void)              { return (char)sc(SYS_READ, 0); }
 long spawn(const char *prog)  { return (long)sc(SYS_SPAWN, (uint64_t)prog); }
 int  fork(void)               { return (int)sc(SYS_FORK, 0); }
 int  exec(const char *prog)   { return (int)sc(SYS_EXEC, (uint64_t)prog); }
+/* The kernel seeds this task's data page (USER_DATA_VADDR) with its full command
+ * line; cmdline() points at it and getargs() tokenizes a private copy into argv[]. */
+const char *cmdline(void)     { return (const char *)USER_DATA_VADDR; }
+int  getargs(char **argv, int maxv) {
+    static char buf[1024];
+    const char *src = cmdline();
+    int n = 0; while (src[n] && n < (int)sizeof(buf) - 1) { buf[n] = src[n]; n++; }
+    buf[n] = 0;
+    return argv_split(buf, argv, maxv);
+}
 int  wait_child(void)         { return (int)sc(SYS_WAIT, 0); }
 void yield(void)              { sc(SYS_YIELD, 0); }
 void sleep_ticks(unsigned n)  { sc(SYS_SLEEP, (uint64_t)n); }

@@ -3,10 +3,14 @@
 > Status: **partly built + roadmap.** A working shell ships today
 > (`user/shell/shell.c`): a line editor with history and cursor editing that
 > dispatches a fixed table of built-in commands and `fork`+`exec`s external
-> programs by name. This doc takes [`fish`](https://fishshell.com/) as the model
-> — friendly, discoverable, highlighted, autosuggesting — and lays out how to grow
-> the current command-dispatcher into a real interactive shell **and** a small
-> scripting language, bounded by what a freestanding userspace can do today.
+> programs by name. The **interactive "fish-feel" layer (band 1) landed
+> 2026-06-13**: first-token syntax highlighting, Tab completion (commands + paths),
+> persisted history, and the emacs motions — all over the same pty redraw, no
+> kernel change. Still ahead: **argv passing** (the shared blocker) and the
+> **scripting language**. This doc takes [`fish`](https://fishshell.com/) as the
+> model — friendly, discoverable, highlighted — and lays out how to grow the
+> command-dispatcher into a real interactive shell **and** a small scripting
+> language, bounded by what a freestanding userspace can do today.
 >
 > Companion: [`packaging.md`](packaging.md) (the `tos` command the shell drives),
 > the terminal/pty in `user/term/term.c` (the byte stream the shell edits over),
@@ -17,11 +21,24 @@
 
 `shell.c` is ~570 lines and already does more than a first shell usually does:
 
-- **A real line editor.** `readline()` keeps the on-screen line in sync with a
-  buffer using only `printc` + non-destructive backspace; it decodes the arrow /
-  Home / End / Delete keys from their ANSI escape sequences (`ESC [ …`), supports
-  insert-anywhere cursor editing, and walks an in-memory **history ring** (64
-  lines) on Up/Down with a preserved draft.
+- **A real line editor, two flavours.** When stdio is a pty (`isatty`), a **rich**
+  editor (`readline_rich`) does a full-line redraw each keystroke with first-token
+  **syntax highlighting** (green = `cmd_known`, a builtin or `/System/bin` program;
+  red = unknown), **Tab completion**, and the emacs motions **Ctrl+A/E/B/F/U/K/W/L**.
+  On the bare console / serial line (not a pty), and for the one-line `write` prompt,
+  the original **plain** editor (`readline_plain`) keeps incremental `printc` +
+  non-destructive backspace — no ANSI redraw — so the serial-log tests are byte-for-
+  byte unchanged. Both decode the arrow / Home / End / Delete keys from their ANSI
+  escapes (`ESC [ …`), support insert-anywhere editing, and walk an in-memory
+  **history ring** (64 lines) on Up/Down with a preserved draft.
+- **Tab completion + persisted history.** Tab completes the **first token** from the
+  `shellcmds.h` command catalog and **later tokens** by `readdir` path matching:
+  it extends the longest common prefix, completes + appends a space (or `/` for a
+  dir) when the match is unique, and lists the candidates on their own line when
+  ambiguous. History is loaded from / saved to **`~/.config/shell_history`**
+  (`hist_load`/`hist_save`; the fs has no `O_APPEND`, so save rewrites the small
+  ring). The catalog and the pure completion/highlight helpers live in
+  `user/lib/shellcmds.h` and are host-unit-tested (`tests/unit/t_shellcmds.c`).
 - **A fixed built-in table.** `help`, `ls`, `cd`, `pwd`, `mkdir`, `rmdir`, `tree`,
   `mv`, `cat`, `write`, `rm [-r]`, `cp`, `echo`, `clear`, `date`, `df`, `mem`,
   `uptime`, `sysinfo`, `uname`, `reg get/set/list`, `copy`/`paste`, `notify`,
@@ -36,10 +53,16 @@
   in and out, and the terminal already interprets ANSI colour + cursor moves.
 
 What it is **not** yet: there is no parser, so there are **no pipes, no
-redirection, no globbing, no variables, no command substitution, no scripting,
-no tab completion, no syntax highlighting, and no autosuggestions.** Every line is
-matched against the built-in table or treated as a bare program name. That is the
-gap this doc closes.
+redirection, no globbing, no variables, no command substitution, and no
+scripting**. argv *is* now passed to external programs (band 2 — `exec("ls /tmp")`
+works), but the file utilities are still shell built-ins, not `/System/bin` programs.
+Of the interactive features, highlighting + Tab completion + persisted history are
+**done** (band 1); **autosuggestions** (dim inline suffix) and **Ctrl+R** reverse-
+search are intentionally **deferred** — both would echo *previous commands* into the
+COM1-mirrored serial stream the integration harness substring-matches, making the
+smoke tests flaky; and the Tab pager is a plain wrapped row, not yet a described
+grid. Every line is still matched against the built-in table or treated as a bare
+program name. That is the gap the rest of this doc closes.
 
 ## Design philosophy (fish, adapted to tOS)
 
@@ -164,17 +187,21 @@ push utilities out.) Until argv lands, they remain built-ins.
 The interactive layer (highlight/suggest/complete/history/prompt) needs **no new
 kernel surface** — it's all redraw + `readdir` + ANSI. The *language* does:
 
-1. **argv passing to `exec`/`spawn` — the blocker.** Today `exec(prog)` takes a
-   single string used *both* as the ELF path *and* as the seed for the task's data
-   page (`USER_DATA_VADDR`, see `kernel/syscall.h`; `kernel/mm/vmm.c` copies the
-   whole `prog` string there as an "argv0-ish" value). So a program receives a
-   name but **no arguments**. Real commands (`ls /tmp`, and crucially `tos package
-   add git`) need argv. The clean fix: split the launch string into a **path
-   (first token)** + an **argument tail**, load the ELF from the path, and seed the
-   data page with the full argv (or add `SYS_EXEC2(path, argv)`). The delivery
-   vehicle — a mapped data page — already exists; only the loader's "use the whole
-   string as the path" assumption changes. This unblocks both external commands
-   and the `tos` CLI ([`packaging.md`](packaging.md)).
+1. **✅ argv passing to `exec`/`spawn` — done (band 2, 2026-06-13).** `kernel/mm/vmm.c`'s
+   `vmm_create_user` now **splits the launch string at the first space**: the first
+   token is the ELF path (`fs_find`), and the *whole* string is copied into the
+   task's data page (`USER_DATA_VADDR`) as its command line. So `exec("ls /tmp")`
+   loads `ls` and the program sees `argv = ["ls", "/tmp"]`. We took the
+   **combined-string split** rather than a separate `SYS_EXEC2(path, argv)` — no new
+   syscall, the delivery vehicle (the mapped data page) already existed, and zero-arg
+   execs (`exec("twm")`) are byte-identical. Userspace reads it with `cmdline()` (a
+   pointer at `USER_DATA_VADDR`) and `getargs(argv, maxv)` (copies + tokenizes via the
+   pure `argv_split` in `user/lib/argv.h`, unit-tested in `tests/unit/t_argv.c`); the
+   `/System/bin/args` program demonstrates the round trip. The shell forwards the full
+   line to any unknown first token that resolves to a `/System/bin` program
+   (`line_is_extprog` → `run_prog`). This unblocks external commands and the `tos` CLI
+   ([`packaging.md`](packaging.md)). *Remaining:* an **environment block** (item 4) for
+   `set -x`, and actually migrating `ls`/`cat`/`cp`/… out to `/System/bin` programs.
 2. **Pipes + redirection.** A `SYS_PIPE` (or reuse the pty machinery) plus an
    fd-dup primitive so a child's stdout can feed the next child's stdin and `>` can
    point stdout at a file. The pty already proves the kernel can wire one process's
@@ -191,16 +218,20 @@ kernel surface** — it's all redraw + `readdir` + ANSI. The *language* does:
 
 ## Phasing (keep `make test` green)
 
-1. **Discoverability first, no kernel change.** Add synchronous **syntax
-   highlighting** (known-command green / unknown red) and **history
-   autosuggestions** to `readline()`'s redraw. Biggest felt improvement for the
-   least risk.
-2. **Tab completion + pager.** Command-name completion from the built-in table +
-   the `/System/bin` and `/Apps` catalogs, then path completion; a grid pager for
-   many matches. Persist history to `~/.config`.
-3. **argv passing** (kernel/loader change) → move the file utilities out to
-   `/System/bin` programs; the shell keeps only state-mutating built-ins. This is
-   also what `tos` needs.
+1. **✅ Discoverability first, no kernel change (band 1, 2026-06-13).** Synchronous
+   **syntax highlighting** (known-command green / unknown red) in `readline_rich`'s
+   full-line redraw. (Autosuggestions deferred — they leak prior commands into the
+   serial stream the tests match.)
+2. **✅/~ Tab completion + persisted history (band 1, 2026-06-13).** Command-name
+   completion from the `shellcmds.h` catalog, then `readdir` path completion;
+   common-prefix extend / unique-complete / ambiguous-list. History persists to
+   `~/.config/shell_history`. **Remaining:** a fish-style **described grid pager**
+   (today the candidate list is a plain wrapped row) and **prefix-search on Up**.
+3. **✅/~ argv passing** (kernel/loader change, band 2, 2026-06-13) → done: the loader
+   splits path from args and seeds the data page; `getargs()` reads it; the shell
+   execs `/System/bin` programs with argv. **Remaining:** actually move the file
+   utilities (`ls`/`cat`/`cp`/…) out into `/System/bin` programs so the shell keeps
+   only state-mutating built-ins. This is also what `tos` needs.
 4. **The language:** tokenizer/parser → variables + command substitution → pipes +
    redirection (needs `SYS_PIPE`/dup) → control flow + functions + abbreviations.
 5. **Config + prompt overrides:** a startup script (`config` under `~/.config`) and

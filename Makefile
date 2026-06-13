@@ -67,7 +67,7 @@ ACCEL := -machine accel=kvm:tcg
 MEM  ?= 8G
 
 # --- user programs (each its own app dir + ELF executable, stored on the FS) -
-UPROGS   := init shell ticker twm term memtest selftest fastfetch
+UPROGS   := init shell ticker twm term memtest selftest fastfetch args
 CXXPROGS := files notepad clipboard spotlight launchpad settings
 UELFS    := $(patsubst %,$(BUILD)/%.elf,$(UPROGS) $(CXXPROGS))
 ULIBOBJ  := $(BUILD)/$(UDIR)/lib/ulib.o $(BUILD)/$(UDIR)/lib/ugfx.o $(BUILD)/$(UDIR)/lib/libc.o $(BUILD)/$(UDIR)/lib/sys.o $(BUILD)/$(UDIR)/lib/registry.o
@@ -178,6 +178,7 @@ $(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES)
 	    /System/bin/ticker=$(BUILD)/ticker.elf /System/bin/twm=$(BUILD)/twm.elf \
 	    /System/bin/fastfetch=$(BUILD)/fastfetch.elf /System/bin/memtest=$(BUILD)/memtest.elf \
 	    /System/bin/selftest=$(BUILD)/selftest.elf \
+	    /System/bin/args=$(BUILD)/args.elf \
 	    /System/bin/clipboard=$(BUILD)/clipboard.elf \
 	    /System/bin/spotlight=$(BUILD)/spotlight.elf \
 	    /System/bin/launchpad=$(BUILD)/launchpad.elf \

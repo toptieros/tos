@@ -7,6 +7,25 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **argv passing — shell fish-feel band 2 (2026-06-13).** `exec`/`spawn` programs now receive
+  **arguments**. `kernel/mm/vmm.c`'s `vmm_create_user` splits the launch string at the first space
+  — first token = the ELF path (`fs_find`), the *whole* string = the data-page seed — so
+  `exec("ls /tmp")` works with **no new syscall** (zero-arg execs unchanged). Userspace reads its
+  command line via `cmdline()` / `getargs()` (the pure `argv_split` in `user/lib/argv.h`, unit-
+  tested `t_argv`, 13 checks). The shell now runs an unknown first token that resolves to a
+  `/System/bin` program, forwarding the full argv (`line_is_extprog` → `run_prog`). New
+  `/System/bin/args` demo prints its argv (`args hello world foo` → `argc=4`, screenshot-verified);
+  smoke tier green. Foundation for migrating the file utilities out of the shell and for the `tos` CLI.
+- **Interactive shell — fish-feel band 1 (2026-06-13).** `shell.c` gains a rich line editor when
+  stdio is a pty (`isatty`): a full-line redraw with first-token **syntax highlighting** (green if
+  `cmd_known` — a builtin or a `/System/bin` program — else red), **Tab completion** (catalog
+  command names for the first token, `readdir` paths otherwise; extends the common prefix, completes
+  + adds a separator when unique, lists candidates when ambiguous), **history persistence** to
+  `~/.config/shell_history` (`hist_load`/`hist_save`), and **Ctrl+A/E/B/F/U/K/W/L** motions. The
+  catalog + pure helpers moved to `user/lib/shellcmds.h` (unit-tested, `t_shellcmds` 24 checks); the
+  bare console / serial path keeps the plain incremental editor unchanged. Screenshot-verified
+  (green `ls`/`tos`, red `re`; `self`+Tab→`selftest `; `re`+Tab lists `reboot reg`). Autosuggestions
+  + Ctrl+R reverse-search deferred (they echo prior commands into the serial stream tests match).
 - **Capability fs path-jails — sandbox Phase 3 (2026-06-13).** The reading + mutating fs syscalls
   (`open` + the fd read path, `mkdir`/`rmdir`/`unlink`/`rename`/`chdir`/`stat`/`readdir`) now gate
   path access on the fs caps: `kernel/fs/fs.c`'s `cap_may_reach(slot)` walks a resolved slot to its

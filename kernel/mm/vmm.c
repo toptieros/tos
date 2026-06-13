@@ -449,7 +449,15 @@ static int load_bytes(uint64_t *upt, uint32_t base_lba, uint32_t foff,
  * stack and data page round it out. Returns the PML4 phys addr and the entry
  * point in *entry; 0 on failure (no such file, bad/oversized ELF, disk error). */
 uint64_t vmm_create_user(const char *prog, uint64_t *entry) {
-    const struct tosfs_ent *e = fs_find(prog);
+    /* `prog` may carry arguments ("ls /tmp"): the first whitespace-delimited token is
+     * the ELF path (loaded here); the *whole* string is seeded into the task's data
+     * page below as its argv (USER_DATA_VADDR -> getargs() in userspace). This is the
+     * argv mechanism -- no new syscall, and zero-arg execs ("twm") are unchanged. */
+    char path[256];
+    { int i = 0; while (prog[i] == ' ') i++;            /* skip any leading spaces */
+      int k = 0; while (prog[i] && prog[i] != ' ' && k < (int)sizeof(path) - 1) path[k++] = prog[i++];
+      path[k] = 0; }
+    const struct tosfs_ent *e = fs_find(path);
     if (!e || e->size < sizeof(struct elf64_ehdr)) return 0;
     uint32_t lba0 = fs_base_lba() + e->start_lba;      /* partition-relative -> disk LBA */
 
@@ -505,10 +513,11 @@ uint64_t vmm_create_user(const char *prog, uint64_t *entry) {
     uint64_t *data = frame_alloc();
     upt[UPT_DATA_IDX] = (uint64_t)data | P | W | U;
 
-    /* seed this task's private data page with its program name (argv0-ish) */
+    /* seed this task's private data page with the full command line (argv): the path
+     * token is argv[0], any tail is argv[1..]. userspace reads it via getargs(). */
     char *d = (char *)data;
     int i = 0;
-    while (prog[i]) { d[i] = prog[i]; i++; }
+    while (prog[i] && i < 0xfff) { d[i] = prog[i]; i++; }
     d[i] = 0;
 
     *entry = eh->e_entry;

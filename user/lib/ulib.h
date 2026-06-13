@@ -19,7 +19,9 @@ void printc(char c);                        /* SYS_PUTC                         
 char getch(void);                           /* SYS_READ: blocking single key     */
 long spawn(const char *prog);               /* SYS_SPAWN: load+run a child -> pid */
 int  fork(void);                            /* SYS_FORK: 0 in child, child pid in parent, -1 err */
-int  exec(const char *prog);                /* SYS_EXEC: replace image; returns -1 on failure */
+int  exec(const char *prog);                /* SYS_EXEC: replace image (prog may carry args); -1 on failure */
+const char *cmdline(void);                  /* this task's full command line (argv0 + args), kernel-seeded */
+int  getargs(char **argv, int maxv);        /* tokenize cmdline() into argv[]; -> argc (argv[0]=path) */
 int  wait_child(void);                      /* SYS_WAIT: reap one child -> its pid, or -1 */
 void yield(void);                           /* SYS_YIELD                         */
 void sleep_ticks(unsigned n);               /* SYS_SLEEP: park ~n timer ticks    */
