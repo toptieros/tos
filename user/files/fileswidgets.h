@@ -695,6 +695,7 @@ public:
     uint32_t bg = C_LIST, sel_bg = C_SELROW;
     void *ctx = nullptr;
     void (*render_tile)(void *, int idx, ui::Rect cell, bool sel, int icon_box) = nullptr;
+    bool (*is_sel)(void *, int idx) = nullptr;        /* multi-select predicate (filesel.h); null = single `sel` */
     void (*on_select)(void *, int) = nullptr;
     void (*on_activate)(void *, int) = nullptr;
     ui::ScrollBar sb;
@@ -726,9 +727,10 @@ public:
             int x = r.x + col * tile_w, y = r.y + row * tile_h - top;
             if (y + tile_h <= r.y || y >= r.y + r.h) continue;           /* offscreen row */
             ui::Rect cell = { x, y, tile_w, tile_h };
-            if (i == sel)          ugfx_rrect_a(cell.x + 4, cell.y + 3, cell.w - 8, cell.h - 6, TH_R_SM, sel_bg);
+            bool gsel = is_sel ? is_sel(ctx, i) : (i == sel);            /* multi-set predicate wins when present */
+            if (gsel)              ugfx_rrect_a(cell.x + 4, cell.y + 3, cell.w - 8, cell.h - 6, TH_R_SM, sel_bg);
             else if (i == hover_i) ugfx_state_layer(cell.x + 4, cell.y + 3, cell.w - 8, cell.h - 6, TH_R_SM, TH_HOVER_A);
-            if (render_tile) render_tile(ctx, i, cell, i == sel, icon_box);
+            if (render_tile) render_tile(ctx, i, cell, gsel, icon_box);
         }
         ugfx_clip_none();
         sb.set(r, top, content_h(), r.h); sb.draw();                    /* pixel-unit scroll thumb */

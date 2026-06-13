@@ -18,17 +18,22 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
 ## Open — the road ahead
 
 ### Toolkit & desktop UI
-- [ ] **Files + Desktop suite (#10).** A shared `ui::FileView` powering both the Files window
-  and a new bottom-pinned `WIN_DESKTOP` layer over `~/Desktop`: **multi-select** (Ctrl/Shift-click
-  + rubber-band marquee — single-select today), **folder/multi-item copy-cut-paste** (today's
-  `CLIP_FILE`-of-bytes can't hold a directory → path-reference clipboard + recursive `cp_r`),
-  **rename**, context menus, and **drag-to-move** (the DnD protocol landed 2026-06-11; Files
-  list-view drag-a-file/folder-onto-a-folder works — left: icon/gallery sources, inter-window,
-  onto the desktop). Icon/gallery-view drag **sources** + onto-folder-tile drops landed 2026-06-13
-  (`view_row_at`); left here: inter-window drags and onto the future desktop layer. **Keyboard shortcuts:** F2 rename,
-  Ctrl+N new folder, Enter/Ctrl+O open, Delete (or Backspace) remove, Ctrl+A select-all,
-  Backspace/Alt+← up a directory, plus the existing Ctrl+C/X/V — surfaced in the context menu and a
-  menu bar (#6) so the accelerators show. → [`files-and-desktop.md`](design/files-and-desktop.md)
+- [~] **Files + Desktop suite (#10).** A shared `ui::FileView` powering both the Files window
+  and a new bottom-pinned `WIN_DESKTOP` layer over `~/Desktop`. **Landed 2026-06-13:** the
+  **selection-set algebra** (`user/lib/filesel.h`, the Finder contract — click/Ctrl/Shift/marquee/
+  Select-All/cursor moves, unit-tested `t_filesel` 43 checks) and **list-view multi-select** — a
+  backwards-compatible `ListView::is_sel` predicate paints the whole set, `list_pick` reads
+  `kbd_mods()` to route plain/Ctrl/Shift clicks, status shows "N selected", **Ctrl+A** / **Edit ▸
+  Select All** select every item (boot + screenshot verified; Ctrl/Shift-*click* works on hardware
+  but isn't e2e-able — the harness can't hold a modifier during a click). The **rubber-band marquee**
+  also landed: a new `Window::on_release` hook + Files `on_press`/`on_drag` live-select the row band a
+  drag over empty list space covers (e2e-verified via the drag helper; the rubber-band *rectangle* is
+  deferred polish). **Rename** (`renamefld`) and **drag-to-move** already exist (DnD protocol
+  2026-06-11; list-view onto-folder + icon/gallery sources 2026-06-13). **Left:** multi-select for the
+  **icon/gallery views**; **folder/multi-item copy-cut-paste** (today's `CLIP_FILE`-of-bytes can't
+  hold a directory → path-reference clipboard + recursive `cp_r`, acting on the whole set);
+  inter-window + onto-desktop drags; and the **`WIN_DESKTOP` layer + `desktop` app**
+  (`FileView(ICONS)` over `~/Desktop`). → [`files-and-desktop.md`](design/files-and-desktop.md)
 - [~] **Files app follow-ons (files-app.md).** The planned catalog landed 2026-06-11 (see
   CHANGELOG.md). **Done 2026-06-11:** the interactive **§6 status bar** — a clickable **zoom
   slider** (icon view) + `+`/`-`/`0` shortcuts, and a **Stop button** that halts a running job

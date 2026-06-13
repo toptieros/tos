@@ -192,6 +192,10 @@ public:
     Color bg, sel_bg;
     void *ctx = nullptr;
     void (*render_row)(void *ctx, int index, Rect cell, bool selected) = nullptr;
+    /* Optional multi-selection predicate: when set, it (not `sel`) decides whether a
+     * row draws selected, so a FileView can show a whole selection set (filesel.h).
+     * nullptr keeps the legacy single-`sel` highlight (Spotlight, split panes). */
+    bool (*is_sel)(void *ctx, int index) = nullptr;
     void (*on_select)(void *ctx, int index)   = nullptr;
     void (*on_activate)(void *ctx, int index) = nullptr;   /* double-click / Enter */
     ListView();
@@ -393,6 +397,10 @@ public:
      * so ordinary widgets don't fire on every drag step. Apps that want rubber-band
      * selection (Files) override this. */
     virtual void on_drag(int x, int y, int btn) { (void)x; (void)y; (void)btn; }
+    /* The pointer button was released (mirrors on_press). Default: ignored. Apps that
+     * track a gesture across the whole press..release (Files' rubber-band) override it
+     * to finalise/clear that state. Fires on every release, drag or not. */
+    virtual void on_release() {}
     virtual void on_scroll(int delta) { (void)delta; }   /* wheel not over any scrollable widget */
     /* Drag-and-drop (design/files-and-desktop.md). A source arms a typed payload with
      * begin_drag() from its on_drag (once the gesture leaves a draggable item); the

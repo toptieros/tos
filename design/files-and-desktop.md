@@ -26,10 +26,21 @@ behaviour is "obvious Finder," we just say so instead of re-deriving it.
 
 ## Current state (the honest baseline)
 
+> **Update (2026-06-13):** this baseline has largely been overtaken — multi-select,
+> rename, and drag-to-move have since landed (see the per-bullet notes + CHANGELOG).
+> The list below is kept as the original honest starting point.
+
 What exists in `user/files/files.cpp` + the toolkit today:
 
-- **Single selection only.** The list is a `ui::ListView` with one `sel` int. No
-  multi-select, no Ctrl-click toggle, no Shift-click range, no rubber-band marquee.
+- ~~**Single selection only.**~~ **Multi-select landed (2026-06-13).** The list-view
+  selection is now a shared set (`user/lib/filesel.h`: a row-index set + anchor + cursor
+  implementing the contract below — click/Ctrl/Shift/marquee/Select-All/cursor moves,
+  unit-tested in `t_filesel`). `ListView` grew an optional `is_sel` predicate so it paints
+  the whole set; the Files list reads `kbd_mods()` at click time to route plain/Ctrl/Shift
+  clicks, shows "N selected", and Ctrl+A / Edit ▸ Select All select all. The **rubber-band marquee**
+  is wired too (a drag over empty list space live-selects the row band, via a new `Window::on_release`
+  hook). Still single-select in the **icon/gallery** views, and the marquee's rubber-band rectangle is
+  deferred polish.
 - **Copy/Cut/Paste handles files only.** `copy_sel()` does `clip_put(CLIP_FILE, name,
   bytes, len)` — it stuffs the file's *bytes* into the clipboard ring, so it cannot
   represent a directory (the code says as much). `paste()` writes those bytes back;
@@ -216,9 +227,14 @@ The desktop *is* a `FileView(ICONS)` rooted at `~/Desktop`. Architecture:
 
 ## Phasing (keep `make test` green)
 
-1. **Shared FileView + multi-select + marquee (list view).** Refactor Files' pane into
-   `FileView(LIST)`; add the selection set + Ctrl/Shift-click + rubber-band. No kernel
-   changes, no desktop yet. Tests: existing Files tests still pass; add a multi-select smoke.
+1. **Shared FileView + multi-select + marquee (list view).** *Landed 2026-06-13:* the selection set
+   (`filesel.h`, unit-tested) + Ctrl/Shift-click + Ctrl+A wired into the Files list view (`is_sel`
+   predicate, `list_pick`, "N selected"), **plus the rubber-band marquee** (a new `Window::on_release`
+   hook + Files `on_press`/`on_drag` live-select the row band a drag over empty space covers). No
+   kernel changes. Existing Files tests still pass; multi-select is screenshot-verified (Ctrl+A) +
+   unit-pinned (held-modifier clicks can't be driven by the harness), the marquee is e2e-verified via
+   the drag helper. *Left here:* the marquee's rubber-band **rectangle** (cosmetic) and **icon/gallery
+   multi-select**.
 2. **Folder/multi-item copy-cut-paste + rename + New File.** `CLIP_FILEREF` + recursive
    `cp_r`; rename overlay. Tests: copy a folder (with a nested file) and verify the tree
    landed; rename round-trips.

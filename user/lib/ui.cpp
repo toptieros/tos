@@ -97,13 +97,14 @@ void ListView::draw() {
         int i = top + k;
         if (i >= count) break;
         Rect cell = { r.x, r.y + k * row_h, r.w, row_h };
+        bool rsel = is_sel ? is_sel(ctx, i) : (i == sel);   /* multi-set predicate wins when present */
         /* selection = an inset accent pill (Finder-style), under the row content so
          * its text reads on top; hover = a faint state layer painted OVER the content
          * (incl. any zebra fill the app draws), as a state layer should sit on top. */
-        if (i == sel)
+        if (rsel)
             ugfx_rrect_a(cell.x + TH_SP_XS, cell.y + 1, cell.w - 2 * TH_SP_XS, cell.h - 2, TH_R_SM, sel_bg);
-        if (render_row) render_row(ctx, i, cell, i == sel);
-        if (i != sel && i == hover_row)
+        if (render_row) render_row(ctx, i, cell, rsel);
+        if (!rsel && i == hover_row)
             ugfx_state_layer(cell.x + TH_SP_XS, cell.y + 1, cell.w - 2 * TH_SP_XS, cell.h - 2, TH_R_SM, TH_HOVER_A);
     }
     sb.set(r, top, count, rows_visible()); sb.draw();        /* the shared scroll thumb (Files / Spotlight) */
@@ -422,7 +423,7 @@ int Window::run() {
             case WEV_KEY:   feed_key((int)(ev.a & 0xff)); break;
             case WEV_MOUSE: {
                 int mx = (int)WEV_MOUSE_X(ev.a), my = (int)WEV_MOUSE_Y(ev.a), mb = (int)WEV_MOUSE_BTN(ev.a);
-                if (mb == 0)                  { if (focus) focus->on_button_up(); dispatch_hover(mx, my); }  /* move/release -> end drag, hover */
+                if (mb == 0)                  { if (focus) focus->on_button_up(); on_release(); dispatch_hover(mx, my); }  /* move/release -> end drag, hover */
                 else if (mb & WEV_MOUSE_DRAG)   {                                /* drag-select */
                     if (focus) focus->on_drag(mx, my);       /* widget-level (TextField selection)   */
                     on_drag(mx, my, mb & ~WEV_MOUSE_DRAG);   /* window-level (Files rubber-band)      */

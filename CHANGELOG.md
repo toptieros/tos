@@ -7,6 +7,23 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Files multi-selection — the shared selection-set algebra (2026-06-13).** First slice of the
+  Files+Desktop suite: a pure, header-only **`user/lib/filesel.h`** selection set (a row-index set +
+  anchor + cursor) implementing the Finder selection contract — plain click replaces, Ctrl/Super-click
+  toggles, Shift-click ranges from the anchor (Ctrl+Shift = additive), Ctrl+A select-all, marquee
+  band, arrow/Shift-arrow cursor moves — unit-tested in **`t_filesel`** (43 checks). Wired into the
+  Files **list view**: a backwards-compatible optional `ListView::is_sel` predicate paints the whole
+  set, `list_pick` reads `kbd_mods()` at click time to route the gesture, the status bar shows "N
+  selected", and **Ctrl+A** / a new **Edit ▸ Select All** select every item (skipping the ".." row).
+  Verified by a disposable boot + screenshot (Ctrl+A highlights all four `/Apps` bundles) and smoke
+  green. The set is the same component the desktop will use. (Ctrl/Shift-*click* works on hardware
+  but isn't e2e-tested — the harness can't hold a modifier during a click; the algebra is unit-pinned
+  instead.) Also landed the **rubber-band marquee**: a new symmetric `Window::on_release` hook +
+  Files `on_press`/`on_drag` arm a marquee on an empty-space press and live-select the row band the
+  drag covers (skipping ".."); guarded so a click on an open context menu / Quick Look / rename
+  overlay isn't misread as empty space (which had wiped the selection Delete acts on — caught + fixed
+  via `t_files_trash`). Marquee is e2e-verified (drag selects 4 rows, screenshot). The rubber-band
+  *rectangle* is cosmetic polish, deferred. → `design/files-and-desktop.md`.
 - **Dock pinning is policy + user choice, not the app's call (2026-06-13).** Removed the manifest
   `pinned` field — letting an app declare its own pin meant any installed app could ship `pinned =
   true` and force itself onto the dock. twm's `load_apps` now derives each app's pin state from the

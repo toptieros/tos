@@ -24,6 +24,7 @@
 #include "undojournal.h"   /* undo_journal: the Ctrl+Z/Ctrl+Y op journal (§12) */
 #include "places.h"        /* place codec + list ops: the editable Favorites (§7) */
 #include "thumb.h"         /* thumb_fit/thumb_scale: image thumbnails + Quick Look (§11) */
+#include "filesel.h"       /* the multi-selection set algebra (Ctrl/Shift-click) -- shared with the desktop */
 
 /* Undo journal op types -- Files interprets these; the journal stores them opaquely.
  * RENAME/MOVE/TRASH move a single item between paths a and b; CREATE/COPY create b
@@ -87,6 +88,7 @@ struct FilesApp : ui::Window {
     struct dirent ents[NMAX];
     int           nents = 0;
     int           view[NMAX]; int nview = 0;     /* ents indices currently shown (after filter) */
+    struct filesel lsel;                          /* multi-selection over the list rows [0,list.count) */
     int           nshown = 0;                    /* non-hidden, picker-allowed item count (status "N items") */
     unsigned char etags[NMAX] = {};              /* §10: tag bitmask per ents[] entry (from ~/.tags) */
     int           tag_filter = -1;               /* §10: only show items with this tag (-1 = off) */
@@ -378,6 +380,7 @@ struct FilesApp : ui::Window {
         }
         list.count = nview + has_up();
         list.sel = -1; list.top = 0;
+        fsel_init(&lsel, list.count);                           /* the filter/nav resets the multi-selection */
         grid.count = list.count; grid.sel = -1; grid.top = 0;   /* keep the icon view in sync */
         gal.count = list.count; gal.sel = -1; gal.strip_x = 0;  /* and the gallery (§1) */
         details.has = false;
@@ -568,7 +571,10 @@ struct FilesApp : ui::Window {
                                      side.vol_permille = (int)(((uint64_t)(sf.total_bytes - sf.free_bytes)) * 1000 / sf.total_bytes); }
         else { details.freeline[0] = 0; side.vol_permille = -1; }
         int hu = has_up();
-        if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
+        int nsel = (view_mode == 0 && lsel.n == list.count) ? fsel_count(&lsel) : 0;
+        if (nsel > 1) {                                  /* a multi-selection (Ctrl/Shift-click) */
+            snprintf(status.right, sizeof status.right, "%d selected", nsel);
+        } else if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
             if (details.is_file)
                 snprintf(status.right, sizeof status.right, "%s selected  --  %u bytes", details.name, details.size);
             else {                                       /* a folder: show its recursive size (§8) */
@@ -1102,6 +1108,38 @@ struct FilesApp : ui::Window {
         if (is_app_dir(e->type, e->name)) { if (appexec[idx][0]) sys_launch(appexec[idx]); return; }
         if (e->type == FT_DIR) { char t[256]; join(t, sizeof t, path, e->name); nav_to(t); }
         else open_file(e->name);
+    }
+    /* Whether list row `i` draws selected: once the user has made a multi-selection
+     * (Ctrl/Shift-click) the set drives it; otherwise fall back to the single cursor so
+     * programmatic selects (tab restore, search results) still highlight one row. */
+    bool row_selected(int i) {
+        if (lsel.n == list.count && fsel_count(&lsel) > 0) return fsel_has(&lsel, i);
+        return i == list.sel;
+    }
+    /* A click in the list pane, routed through the selection contract (filesel.h):
+     * plain = replace, Ctrl/Super = toggle, Shift = range from the anchor (Ctrl+Shift =
+     * additive range). The cursor + details + status still track the clicked row. */
+    void list_pick(int row) {
+        if (lsel.n != list.count) fsel_init(&lsel, list.count);
+        unsigned m = kbd_mods();
+        bool ctrl = (m & (KMOD_CTRL | KMOD_SUPER)) != 0, shift = (m & KMOD_SHIFT) != 0;
+        if (shift)     fsel_range(&lsel, row, ctrl);
+        else if (ctrl) fsel_toggle(&lsel, row);
+        else           fsel_click(&lsel, row);
+        select_row(row);
+    }
+    /* Ctrl+A: select every real item in the list view -- skipping the synthetic ".."
+     * up-entry at row 0, which is navigation, not a selectable file. */
+    void select_all_list() {
+        if (view_mode != 0) return;
+        fsel_init(&lsel, list.count);
+        int lo = has_up();                               /* first real row (0 at the volume root) */
+        if (list.count > lo) {
+            fsel_band(&lsel, lo, list.count - 1, 1);
+            lsel.anchor = lo; lsel.cursor = list.count - 1;
+        }
+        print("[files] selall "); printu((unsigned)fsel_count(&lsel)); print("\r\n");
+        update_status(); invalidate();
     }
     /* A row click mutates the details pane + status bar, which lie outside the
      * list's own rect; without a repaint request the damage-tracked frame would
@@ -1889,17 +1927,20 @@ struct FilesApp : ui::Window {
         side.cur = path;
 
         list.ctx = this; list.render_row = render_row;
-        list.on_select   = [](void *c, int i) { ((FilesApp *)c)->select_row(i); };
+        list.is_sel      = [](void *c, int i) { return ((FilesApp *)c)->row_selected(i); };
+        list.on_select   = [](void *c, int i) { ((FilesApp *)c)->list_pick(i); };
         list.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter(i); };
 
         grid.ctx = this; grid.bg = C_LIST; grid.sel_bg = C_SELROW;
         grid.render_tile = render_tile;
-        grid.on_select   = [](void *c, int i) { ((FilesApp *)c)->select_row(i); };
+        grid.is_sel      = [](void *c, int i) { return ((FilesApp *)c)->row_selected(i); };
+        grid.on_select   = [](void *c, int i) { ((FilesApp *)c)->list_pick(i); };
         grid.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter(i); };
         gal.ctx = this; gal.bg = C_LIST;                 /* gallery view (§1) */
         gal.render_tile = render_tile;
         gal.render_preview = render_preview;
-        gal.on_select   = [](void *c, int i) { ((FilesApp *)c)->select_row(i); };
+        gal.is_sel      = [](void *c, int i) { return ((FilesApp *)c)->row_selected(i); };
+        gal.on_select   = [](void *c, int i) { ((FilesApp *)c)->list_pick(i); };
         gal.on_activate = [](void *c, int i) { ((FilesApp *)c)->enter(i); };
 
         list2.ctx = this; list2.render_row = render_row2; list2.bg = C_LIST; list2.sel_bg = C_SELROW;
@@ -1980,6 +2021,9 @@ struct FilesApp : ui::Window {
                                        menu_item(me, "Move to Other Pane", 0, split ? 0 : WMI_DISABLED);   /* §4 (item 7) */
                                        menu_item(me, "Undo", 'Z', WMI_DISABLED);   /* §12 (item 8); sync_menus enables */
                                        menu_item(me, "Redo", 'Y', WMI_DISABLED);   /* §12 (item 9) */
+                                       menu_item(me, "Select All", 0);             /* item 10 -- appended last so
+                                                                                    * earlier indices don't shift;
+                                                                                    * Ctrl+A also reaches on_key */
             int mg = menu_add("Go");   menu_item(mg, "Up", 0); menu_item(mg, "Back", 0); menu_item(mg, "Forward", 0);
             int mv = menu_add("View");                          /* view mode + zoom (§1) */
             menu_item(mv, "as Icons", 0, view_mode == 1 ? WMI_CHECKED : 0);
@@ -2074,7 +2118,21 @@ struct FilesApp : ui::Window {
     int drop_row  = -1;            /* list row highlighted as the drop target (-1 none) */
     int place_src = -1;            /* §7: the Favorites index a press landed on (reorder source) */
     int dnd_place = 0;             /* §7: a Places drag-reorder is the in-flight drag */
+    int  marq_y0  = -1;            /* rubber-band marquee anchor (client y); -1 = no marquee in flight */
+    bool marq_add = false;         /* the marquee unions with the prior selection (a modifier was held) */
     static bool same_str(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+    /* The contiguous list rows whose cells intersect the client y-span [y0,y1] -- the
+     * rows a rubber-band marquee covers. Skips the synthetic ".." up-row; returns false
+     * if the band touches no real row (so it clears instead of selecting). */
+    bool marquee_band(int y0, int y1, int *a, int *b) const {
+        int lo = y0 < y1 ? y0 : y1, hi = y0 < y1 ? y1 : y0, aa = -1, bb = -1;
+        for (int i = has_up(); i < list.count; i++) {
+            int rt = list.r.y + (i - list.top) * list.row_h;
+            if (rt < hi && rt + list.row_h > lo) { if (aa < 0) aa = i; bb = i; }
+        }
+        if (aa < 0) return false;
+        *a = aa; *b = bb; return true;
+    }
     /* the list display-row under a client point, or -1 (matches render_row's `i`) */
     int list_row_at(int x, int y) const {
         if (view_mode != 0) return -1;
@@ -2097,9 +2155,40 @@ struct FilesApp : ui::Window {
         dnd_armed = 0; dnd_place = 0;          /* fresh gesture: clear a stale arm (a drag that was
                                                 * Esc-cancelled or dropped on another window never
                                                 * sent us an on_drop to reset it). */
+        marq_y0 = -1;
+        /* a left press on empty list space (in the list view, below the last row, not a
+         * Favorites row) clears the selection and arms a rubber-band marquee a drag extends.
+         * Empty space only exists when the rows don't overflow, so this never fights the
+         * scrollbar (no thumb to drag when everything fits). An open overlay (context menu /
+         * Quick Look / in-place rename) floats over the list, so a click meant for it must
+         * NOT be read as an empty-space press -- that would wipe the selection it acts on. */
+        if ((btn & 1) && view_mode == 0 && place_src < 0 && !menu.open && !ql.open && !renaming &&
+            x >= list.r.x && x < list.r.x + list.r.w && y >= list.r.y && y < list.r.y + list.r.h &&
+            list_row_at(x, y) < 0) {
+            unsigned m = kbd_mods();
+            marq_add = (m & (KMOD_CTRL | KMOD_SUPER | KMOD_SHIFT)) != 0;
+            marq_y0 = y;
+            if (!marq_add) {                   /* a plain click on empty space clears (Finder) */
+                fsel_init(&lsel, list.count); list.sel = -1; details.has = false;
+                update_status(); invalidate();
+            }
+        }
+    }
+    void on_release() override {
+        if (marq_y0 >= 0) {                     /* a marquee gesture ended: report the final set */
+            marq_y0 = -1;
+            print("[files] marquee "); printu((unsigned)fsel_count(&lsel)); print("\r\n");
+        }
     }
     void on_drag(int x, int y, int btn) override {
-        (void)x; (void)y; (void)btn;
+        (void)x; (void)btn;
+        if (marq_y0 >= 0) {                      /* extend the rubber-band marquee over the row band */
+            int a, b;
+            if (marquee_band(marq_y0, y, &a, &b)) { fsel_marquee(&lsel, a, b, marq_add); list.sel = lsel.cursor; }
+            else fsel_marquee(&lsel, -1, -1, marq_add);
+            update_status(); invalidate();
+            return;
+        }
         if (dnd_armed) return;
         if (place_src >= 0 && place_src < nplaces) {   /* §7: drag a Favorites row -> reorder it */
             const char *p = places[place_src].path;
@@ -2299,6 +2388,7 @@ struct FilesApp : ui::Window {
         if (key == 0x0c) { enter_path_edit(); return; }              /* Ctrl+L: edit the path literally */
         if (picker && key == ui::UK_ESC) { cancel_pick(); return; }   /* Esc cancels the picker */
         if (key == ui::UK_BACK) go_up();
+        else if (key == 0x01) select_all_list();  /* Ctrl+A: select all (list view) */
         else if (key == 0x03) copy_sel(false);   /* Ctrl+C */
         else if (key == 0x18) copy_sel(true);    /* Ctrl+X */
         else if (key == 0x16) paste();           /* Ctrl+V */
@@ -2330,6 +2420,7 @@ struct FilesApp : ui::Window {
             else if (item == 4) do_delete(); else if (item == 5) start_rename();
             else if (item == 6) copy_to_other(false); else if (item == 7) copy_to_other(true);  /* §4 */
             else if (item == 8) do_undo(); else if (item == 9) do_redo();                       /* §12 */
+            else if (item == 10) select_all_list();                                             /* Select All */
         } else if (menu == 2) {                                                               /* Go */
             if (item == 0) go_up(); else if (item == 1) go_back(); else if (item == 2) go_fwd();
         } else if (menu == 3) {                                                               /* View: mode + zoom */
