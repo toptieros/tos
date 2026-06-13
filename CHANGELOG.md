@@ -7,6 +7,13 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Notepad layout on `ui::Layout` (2026-06-13).** Notepad's `layout()` now uses the toolkit's
+  `ui::Layout` column (tab bar fixed / editor stretch / reserved status band) instead of
+  hand-computing `editor.r = {0, TBH, w, h-TBH-SBH}` etc.; the status Label's 10px text inset is
+  derived from the reserved band via `rect_of(2)`. Pixel-identical, boot-screenshot verified. The
+  deliberate *non*-conversions (Clipboard/Launchpad/Spotlight — centred-pill / asymmetric-margin
+  overlays a symmetric-pad placer doesn't simplify) are recorded in `design/ui.md`; Files'
+  `layout_widgets()` rewrite is folded into the Files + Desktop suite.
 - **Serial console input — headless operation (2026-06-13).** COM1 now raises **IRQ4** on received
   data (`console.c` enables the UART's RX interrupt; `keyboard.c`'s new `serial_irq` drains it). Bytes
   are translated to match the PS/2 path (CR / CRLF → Enter, DEL → backspace, Ctrl chars pass through)

@@ -51,8 +51,14 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   **Correction:** `fastfetch` is a CLI **_package_** (a headless system-info tool → `/System/bin`,
   the shell's login banner), **not** a dock app — per [`packaging.md`](design/packaging.md)'s
   app-vs-package split it stays on the shell, so it was **not** ported to the toolkit (a brief
-  `Fastfetch.app` GUI bundle was reverted). **Left:** convert the other toolkit apps' panes to
-  `ui::Layout` as they're touched; row/grid sugar only if an app needs it.
+  `Fastfetch.app` GUI bundle was reverted). **Done 2026-06-13:** **Notepad** now lays its content
+  stack (tab bar / editor-stretch / status band) out with `ui::Layout` — pixel-identical, the
+  status inset derived via `rect_of` (boot-screenshot verified). **Findings:** Clipboard /
+  Launchpad / Spotlight are intentionally left hand-rolled (centred-pill / asymmetric-margin
+  overlays a symmetric-pad placer doesn't simplify — see [`ui.md`](design/ui.md)); the one layout
+  that genuinely benefits, **Files' `layout_widgets()`**, is rewritten onto `ui::Layout` as part of
+  the Files + Desktop suite below, where it's heavily touched anyway. **Left:** convert app panes to
+  `ui::Layout` opportunistically as they're touched; row/grid sugar only if an app needs it.
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
 toolkit app for free. **Done:** blink caret, drag-select, Ctrl+A, double-click word-select,
@@ -93,6 +99,17 @@ protocol). **Left:**
   menu, with a status-bar deny-flash on the keyboard/toolbar paths (2026-06-11).
   **Remaining (folded into the Desktop suite below):** the same lock badge on the future
   `WIN_DESKTOP` layer (waits on that layer existing). → [`system-ownership.md`](design/system-ownership.md)
+- [ ] **Authentication & UAC elevation (system-ownership.md Phase 3).** Ownership Phase 1–2 landed
+  (per-entry `owner`, per-task `uid`, `may_write()` enforcement, the Files lock badge), but the
+  human-facing override is unbuilt: a **hashed user password** in a system-owned `/System/etc/auth`
+  (set at install / first boot); a **system-drawn trusted prompt** — drawn by the compositor /
+  authenticator, *never* the requesting app — that collects it (the same mechanism the capability
+  runtime-permission prompts in Phase 4 reuse); a short-lived **elevated** task state
+  (sudo-timestamp style); the mutating fs syscalls returning a distinct **"needs elevation"** result
+  (not a flat `-EPERM`) that drives the prompt-then-retry flow; and the **App-Store-vs-terminal
+  two-route** rule (a trusted first-party installer holds a standing install capability and doesn't
+  prompt; `rm /System/...` or a hand-typed `tos package add` does). UAC, not sudo — no root account.
+  → [`system-ownership.md`](design/system-ownership.md)
 - [~] **Capability sandbox.** **Done (Phase 1 Declare + Phase 2 coarse-enforce, 2026-06-11):**
   a per-task `caps` bitmask (`kernel/cap.h`, shared with userspace via `syscall.h`); init/the
   boot chain run at `CAP_ALL`, `fork` inherits, `exec` keeps; `SYS_SETCAPS` (drop-only) +
@@ -110,10 +127,24 @@ protocol). **Left:**
   Don't implement unless explicitly requested; needs DnD.
 
 ### Platform / runtime / storage
-- [⏸] **Real shell + scripting.** Replace `shell.c`'s hardcoded `if/else` dispatch with a real
-  lexer/parser + exec model (quoting, `$VAR`/env, pipes, redirection, `;`/`&&`/`||`, globbing,
-  background `&`, scripts). First step: drop `help`, move demo/diagnostic builtins to `/System/bin`
-  programs. Big effort; **not this round** unless asked.
+- [ ] **Shell: interactive "fish feel" + the argv blocker + scripting (shell.md).** `shell.c` is a
+  line editor over a fixed `if/else` builtin table — no parser, completion, highlighting, or argv.
+  Three bands, cheapest-first:
+  - **Interactive layer — no kernel change.** Synchronous **syntax highlighting** (first token
+    green if it resolves to a builtin / `/System/bin` / `/Apps/*/bin` program, red if not),
+    **history autosuggestions** (dim suffix, accept with →/Ctrl+E), **Tab completion + a grid
+    pager** (command names with one-line descriptions, then `readdir` path completion), history
+    persisted under `~/.config`, and the rest of the emacs motions (Ctrl+A/E/U/K/W/L/R). Highest
+    felt value for the least risk — all redraw + `readdir` + ANSI.
+  - **argv passing — the shared blocker.** `exec(prog)` uses the whole string as *both* the ELF
+    path *and* the data-page seed, so a program gets a name but **no arguments**. Split path from
+    an argv tail (or add `SYS_EXEC2(path, argv)`) and seed the data page with the full argv.
+    Unblocks real commands (`ls /tmp`), the `tos` CLI (packaging below), and migrating the file
+    utilities out to `/System/bin`.
+  - [⏸] **The language.** A small fish-shaped grammar behind a real tokenizer/parser: quoting,
+    `$VAR`/env, command substitution `(…)`, globbing, pipes + redirection (needs `SYS_PIPE`/dup),
+    `;`/`and`/`or`, control flow + functions. Big effort + a user heap; **not this round** unless
+    asked. → [`shell.md`](design/shell.md)
 - [ ] **Userspace runtime + SDK sysroot.** sysroot + `tos-cc`/`tos-c++`; a hosted C++ runtime
   (STL/exceptions/RTTI/unwind); `libposix`; a QPA-style framebuffer/input shim. The line between
   "teaching OS" and "runs third-party software." → [`app-porting.md`](design/app-porting.md)
@@ -161,6 +192,52 @@ protocol). **Left:**
 - [x] **Terminal scrollback.** Wheel + Shift-PgUp/PgDn over the ring done; the ring is now
   **heap-allocated and sized from `term.scrollback`** in the registry (default 256, clamped to
   at least one screenful), so the depth scales with the setting — no compiled-in wall (2026-06-11).
+- [ ] **Terminal emulator → a real VT (terminal.md).** `term.c`'s 3-state ANSI parser handles the
+  shell's own output but silently drops everything else, locking out real terminal programs. Grow it
+  on Ghostty's correctness shape (parser → handler → terminal/screen → glyph-diff renderer; the
+  renderer stays **software**): swap `feed()` for the **Williams DEC parser** (total — never wedges
+  on malformed/partial input); a **cell/style model** with **256-colour + 24-bit truecolor** +
+  italic/underline/reverse/dim/strike; **editing ops** (IL/DL/ICH/DCH/ECH, `DECSTBM` scroll region,
+  DECSC/DECRC, index/reverseIndex, real tab stops); a **DEC mode table** (`?25` cursor, `?7` wrap,
+  `?6` origin, `?2004` bracketed paste, mouse `1000/1002/1003/1006`); the **alternate screen**
+  (`?1049`) — the single biggest unlock (full-screen TUIs: a future `vi`/`less`/`htop`); **UTF-8
+  decode** (render what the font covers, box the rest); the **line-drawing charset** (`ESC ( 0`,
+  needed by our own `tree`); **mouse reporting**; **OSC** (window title via a new `win_settitle`,
+  clipboard `52` → the existing `clip_put`, cwd `7`, hyperlinks `8`); `DECSCUSR` cursor styles.
+  `TERM`/terminfo waits on the env mechanism shared with the shell. Almost all userspace in `term.c`
+  + the SDK — the pty is done. → [`terminal.md`](design/terminal.md)
+- [ ] **virtio-gpu (virtio-gpu.md) — VM-only.** A paravirtual GPU for a better *presentation* path.
+  **Level A (2D):** real modesetting (pick resolution — also unlocks VM window resize), a
+  host-composited **hardware cursor**, and damage-driven `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH`
+  scanout (twm's existing dirty rects map one-to-one; the rasteriser doesn't change). Reuses the
+  PCI/virtqueue transport the NIC drivers already have. **Level B (3D)** — GL/Vulkan via
+  virgl/Venus — is a separate stretch. Metal stays on the software compositor.
+  → [`virtio-gpu.md`](design/virtio-gpu.md)
+
+### Packaging & software distribution
+- [ ] **`tos` — apps, packages & the shared install engine (packaging.md).** The `.app` bundle
+  format is built (four `/Apps/*.app` bundles, `tools/mkapp.py`, twm's `/Apps` scan), but the
+  **install engine + CLI** the rest hangs off is not. Build: a **`.tpkg`** package format (the
+  headless sibling of `.app`, same `key=value` manifest grammar) + `tools/mkpkg.py`; a shared
+  **`copytree`** (also the OS installer's primitive); a **receipts DB** under `/System/var/tos/db/`
+  (the exact file list per unit → exact uninstall, reverse-dep safety, upgrade-as-diff); and the
+  **`tos` umbrella** (`tos app install/uninstall/list/info`, `tos package add/remove/list/info/
+  upgrade`) — one engine, two front-ends. Phase 1 (`tos app install/uninstall` of a local `.app` →
+  copytree into `/Apps` + a twm rescan) sits almost entirely on what exists. The real
+  `/System/bin/tos` binary needs **argv passing** (shell, above); until then it can live as a shell
+  built-in calling the same engine *library*. The elevation gate ties to the auth work above.
+  → [`packaging.md`](design/packaging.md)
+- [ ] **Software repository + remote update — `tos get` / `tos sync` (repository.md).** Now
+  **unblocked** — networking + an HTTP `get` landed 2026-06-12. A *dumb static* repo (an `index`
+  catalog in the manifest grammar + `apps/`/`pkg/`/`system/<channel>/` artifacts, each with an
+  `sha256`); the **client** half of `tos` (`get install` / `search` / `sync` / `upgrade`) that
+  resolves a name, downloads + **verifies the hash**, and installs through the packaging engine
+  above — exercisable against a **local-mirror path** before a packet is sent. The payoff is the
+  **remote system upgrade**: userland (`twm`/`term`/`shell`/`/System/bin`/`/Apps`) hot-swapped
+  **write-new-then-rename** + live relaunch (no reboot); a **kernel** bump **staged** to the boot
+  partition (the installer's raw block writer) + "reboot to finish." A `make repo` host target emits
+  a servable tree straight from the build. Signing/TLS + channels are later hardening.
+  → [`repository.md`](design/repository.md)
 
 ### Smaller ideas
 - _(nothing queued right now)_

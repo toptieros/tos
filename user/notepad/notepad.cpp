@@ -112,9 +112,14 @@ struct Notepad : ui::Window {
     /* -------------------------------------------------------------- layout */
     void layout() {
         fh = ugfx_font_h(); TBH = fh + 16; SBH = show_status ? fh + 8 : 0;
-        tabbar.r = { 0, 0, w, TBH };
-        status.r = { 10, h - SBH + (SBH - fh) / 2, w - 20, fh };
-        editor.r = { 0, TBH, w, h - TBH - SBH };
+        /* a full-bleed vertical stack (no gap/pad): tab bar, the editor (stretch),
+         * then the status band. The status Label keeps its 10px text inset, derived
+         * from the reserved band via rect_of -- see design/ui.md's Layout note. */
+        ui::Layout col(ui::LAY_COL, 0, 0);
+        col.add(&tabbar, TBH).add(&editor, 0).space(SBH);   /* status band = item 2 */
+        col.arrange({ 0, 0, w, h });
+        ui::Rect sb = col.rect_of(2);
+        status.r = { sb.x + 10, sb.y + (SBH - fh) / 2, sb.w - 20, fh };
     }
     void on_resize(int, int) override { layout(); }
 

@@ -188,8 +188,16 @@ ui::Rect b = col.rect_of(1);      // query a slot (e.g. to nest another Layout)
   a child's slot rect to an inner one (column → row → column…). No tree, no retained
   layout objects — call `arrange()` from `layout()`/`on_resize()` each time.
 - **In use:** **Settings** lays its full-bleed top bar + the rows column out with it
-  (replacing a hand-rolled y-cursor); new toolkit apps should reach for it instead of
-  open-coding rects. Cap: `MAXI = 24` items per Layout.
+  (replacing a hand-rolled y-cursor); **Notepad** lays its content stack out with it too
+  (tab bar / editor-stretch / status band — the status Label's 10px inset comes off the
+  reserved band via `rect_of`). New toolkit apps should reach for it instead of open-coding
+  rects. Cap: `MAXI = 24` items per Layout.
+- **Where it's *not* used (deliberately).** Clipboard, Launchpad, and Spotlight keep their
+  hand-rolled layouts: each is a one-stretch-region overlay with a *centred* search pill or
+  *asymmetric* margins (e.g. Spotlight's 8px list vs 14px query inset) that a symmetric-pad
+  linear placer doesn't simplify — converting them would be churn, not clarity. The genuinely
+  complex layout, Files' `layout_widgets()`, is rewritten onto `ui::Layout` as part of the
+  Files + Desktop suite (it's heavily touched there anyway), not as a standalone port.
 
 > A linear placer (not flex/grid/constraints) is deliberate — it covers the bars, lists,
 > and sidebars tOS apps actually have, stays a few dozen lines, and needs no allocation.
