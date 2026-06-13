@@ -19,6 +19,22 @@ namespace ui {
 /* a "word" character for double-click select + Ctrl+arrow word jumps */
 static inline bool tf_wordch(char c) { return tu_wordch(c); }  /* pure; unit-tested in tests/unit */
 
+/* The in-flight DRAG_TEXT source (one drag at a time): a drop back into the SAME
+ * field becomes a MOVE (delete the source span) instead of a COPY. */
+static TextField *s_text_src = nullptr;
+static int        s_text_a = 0, s_text_b = 0;
+
+/* X11-style PRIMARY selection: the most recent range selected in ANY TextField,
+ * separate from the Ctrl-C/V clipboard, pasted at a middle-click. */
+static char s_primary[1024];
+static int  s_primary_n = 0;
+static void tf_set_primary(const char *buf, int a, int b) {
+    int n = b - a; if (n <= 0) return;
+    if (n > (int)sizeof s_primary) n = (int)sizeof s_primary;
+    for (int i = 0; i < n; i++) s_primary[i] = buf[a + i];
+    s_primary_n = n;
+}
+
 TextField::TextField() { bg = TH_SURF_0; fg = TH_TEXT; focusable = true; cursor = CUR_IBEAM; }
 TextField::~TextField() {
     if (buf) free(buf);
@@ -181,6 +197,7 @@ int TextField::index_at(int px, int py) {
     return len;
 }
 bool TextField::on_mouse(int x, int y, int btn) {
+    if (btn & WEV_MOUSE_MID) return paste_primary(x, y);   /* middle-click: primary-selection paste */
     if (multiline && sb.hit(x)) { sb.dragging = true; sb_set_top_from_y(y); return true; }  /* press on the scroll track */
     brk = true;                            /* repositioning the caret ends the typing-coalesce run */
     press_in_sel = false; drag_armed = false;
@@ -189,6 +206,7 @@ bool TextField::on_mouse(int x, int y, int btn) {
     if (btn & WEV_MOUSE_SHIFT) {           /* Shift+click: extend the selection to the click */
         if (anchor < 0) anchor = caret;    /* seed the anchor from the existing caret */
         caret = idx;
+        if (has_sel()) { int a, b; sel_bounds(a, b); tf_set_primary(buf, a, b); }   /* update PRIMARY */
         printf("[ui] shsel %d %d\r\n", anchor < caret ? anchor : caret, anchor < caret ? caret : anchor);
     } else if (last_click_i >= 0 && (now - last_click_t) < TF_DBLCLICK &&
         idx >= last_click_i - 1 && idx <= last_click_i + 1) {
@@ -215,6 +233,7 @@ void TextField::select_word(int idx) {
         while (a > 0 && tf_wordch(buf[a - 1])) a--;
     } else { anchor = idx; caret = idx; return; }     /* not on a word: just place the caret         */
     anchor = a; caret = b;
+    tf_set_primary(buf, a, b);                        /* the word becomes the PRIMARY selection */
     printf("[ui] word %d %d\r\n", a, b);              /* double-click selection (also drives the test) */
 }
 int TextField::word_prev(int i) const { return buf ? tu_word_prev(buf, i) : 0; }
@@ -229,6 +248,7 @@ void TextField::drag_to(int x, int y) {
                 char lbl[32]; int ln = n < 31 ? n : 31;
                 for (int i = 0; i < ln; i++) lbl[i] = tmp[i]; lbl[ln] = 0;   /* ghost shows a preview */
                 win->begin_drag(DRAG_TEXT, lbl, tmp, n);
+                s_text_src = this; s_text_a = a; s_text_b = b;  /* arm same-field MOVE detection */
                 drag_armed = true;
                 printf("[ui] textdrag %d\r\n", n);
             }
@@ -243,17 +263,44 @@ void TextField::drag_to(int x, int y) {
 void TextField::on_button_up() {
     sb.dragging = false;
     if (press_in_sel && !drag_armed) { caret = last_click_i; anchor = -1; if (win) win->invalidate(); }
+    else if (has_sel()) { int a, b; sel_bounds(a, b); tf_set_primary(buf, a, b); }   /* drag-select -> PRIMARY */
     press_in_sel = drag_armed = false;
 }
 /* A DRAG_TEXT drop landed here: place the caret at the drop point and insert the
- * text (copy semantics -- cross-app text drag). Newlines flatten in a single-line field. */
+ * text. A drop back into the SAME field MOVES the text (deletes the source span)
+ * unless Ctrl is held; a cross-field drop COPIES (v1). Newlines flatten in a
+ * single-line field. (A move is two undo steps -- the delete and the insert.) */
 bool TextField::accept_text_drop(int x, int y, const char *s, int n) {
     if (n <= 0) return false;
-    caret = index_at(x, y); anchor = -1;
+    bool move = (this == s_text_src) && !(win && (win->drop_modifiers() & KMOD_CTRL));
+    int p = index_at(x, y);
     char tmp[1024]; if (n > (int)sizeof tmp) n = (int)sizeof tmp;
     for (int i = 0; i < n; i++) { char ch = s[i]; tmp[i] = (!multiline && (ch == '\n' || ch == '\r')) ? ' ' : ch; }
+    if (move) {
+        int a = s_text_a, b = s_text_b;
+        int dest = tu_textmove_dest(a, b, p);   /* pure offset math (unit-tested) */
+        del_range(a, b);                         /* remove the source span first */
+        caret = dest; anchor = -1;
+        ins(tmp, n);
+        anchor = dest;                           /* leave the moved text selected: [dest, dest+n) */
+    } else {
+        caret = p; anchor = -1;
+        ins(tmp, n);
+    }
+    s_text_src = nullptr;                     /* consume the drag session */
+    printf("[ui] textdrop %d %s\r\n", n, move ? "move" : "copy");
+    if (win) win->invalidate();
+    return true;
+}
+/* Middle-click: paste the X11-style primary selection (the last range selected in
+ * any TextField) at the click point. No-op if nothing has been selected yet. */
+bool TextField::paste_primary(int x, int y) {
+    if (s_primary_n <= 0) return false;
+    caret = index_at(x, y); anchor = -1;
+    char tmp[1024]; int n = s_primary_n;
+    for (int i = 0; i < n; i++) { char ch = s_primary[i]; tmp[i] = (!multiline && (ch == '\n' || ch == '\r')) ? ' ' : ch; }
     ins(tmp, n);
-    printf("[ui] textdrop %d\r\n", n);
+    printf("[ui] primary paste %d\r\n", n);
     if (win) win->invalidate();
     return true;
 }
@@ -270,7 +317,7 @@ bool TextField::on_key(int key, bool shift) {  /* shift => extend the selection 
     if (key == 0x16) { paste();         return true; }            /* Ctrl+V */
     if (key == 0x1a) { undo(); return true; }                     /* Ctrl+Z */
     if (key == 0x19) { redo(); return true; }                     /* Ctrl+Y */
-    if (key == 0x01) { anchor = 0; caret = len; brk = true; if (win) win->invalidate(); return true; }  /* Ctrl+A */
+    if (key == 0x01) { anchor = 0; caret = len; tf_set_primary(buf, 0, len); brk = true; if (win) win->invalidate(); return true; }  /* Ctrl+A */
     /* a caret jump (arrows / home / end / word-jump) ends the typing-coalesce run */
     if (key == UK_LEFT || key == UK_RIGHT || key == UK_UP || key == UK_DOWN ||
         key == UK_HOME || key == UK_END || key == UK_WORD_LEFT || key == UK_WORD_RIGHT) brk = true;
@@ -291,7 +338,7 @@ bool TextField::on_key(int key, bool shift) {  /* shift => extend the selection 
         return true;
     }
     /* report a shift-extended selection (drives the test + is handy telemetry) */
-    #define SHSEL() do { if (shift && has_sel()) { int _a, _b; sel_bounds(_a, _b); printf("[ui] shsel %d %d\r\n", _a, _b); } } while (0)
+    #define SHSEL() do { if (shift && has_sel()) { int _a, _b; sel_bounds(_a, _b); tf_set_primary(buf, _a, _b); printf("[ui] shsel %d %d\r\n", _a, _b); } } while (0)
     if (key == UK_LEFT)  { drop_sel_if(shift); if (caret > 0) caret--;   SHSEL(); if (win) win->invalidate(); return true; }
     if (key == UK_RIGHT) { drop_sel_if(shift); if (caret < len) caret++; SHSEL(); if (win) win->invalidate(); return true; }
     if (key == UK_WORD_LEFT)  { drop_sel_if(shift); caret = word_prev(caret); SHSEL(); printf("[ui] wjump %d\r\n", caret); if (win) win->invalidate(); return true; }

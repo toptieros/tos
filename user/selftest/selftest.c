@@ -136,6 +136,37 @@ static void group_clipboard(void) {
     CHECK(clip_count() == 0);
 }
 
+static void group_fsjail(void) {
+    /* Capability fs-jail (design/app-runtime.md Phase 3): a task that drops
+     * CAP_FS_SYSTEM can no longer reach the /System tree, but still reaches its home
+     * (CAP_FS_HOME held). We fork a child that drops ONLY CAP_FS_SYSTEM and have it
+     * report a pass/fail byte via a home file (writable: CAP_FS_HOME survives). The
+     * parent first proves /System/bin/twm is normally reachable, so the child's
+     * failure is the JAIL, not a missing file. */
+    int fd = fopen("/System/bin/twm", O_RDONLY);     /* full-cap baseline: it IS reachable */
+    CHECK(fd >= 0); if (fd >= 0) fclose_(fd);
+    int pid = fork();
+    if (pid == 0) {                                  /* child: confine to home, prove /System is walled off */
+        setcaps(CAP_NORMAL & ~CAP_FS_SYSTEM);
+        int ok = 1;
+        int cfd = fopen("/System/bin/twm", O_RDONLY);   /* must be DENIED now */
+        if (cfd >= 0) { ok = 0; fclose_(cfd); }
+        struct dirent de[4];
+        if (readdir("/System", de, 4) >= 0) ok = 0;     /* listing /System must be denied */
+        struct fstat st;
+        if (stat_("/System/bin/twm", &st) == 0) ok = 0; /* statting it must be denied */
+        if (write_file("/Users/user/.st_homeok", "x", 1) != 1) ok = 0;  /* home still writable */
+        funlink("/Users/user/.st_homeok");
+        write_file("/Users/user/.st_jail", ok ? "1" : "0", 1);
+        proc_exit();
+    }
+    CHECK(pid > 0);
+    CHECK(wait_child() == pid);
+    char b[4]; int n = read_file("/Users/user/.st_jail", b, 3);
+    CHECK(n == 1 && b[0] == '1');                     /* the child saw the jail enforced */
+    funlink("/Users/user/.st_jail");
+}
+
 static void group_caps(void) {
     /* Capability sandbox (design/app-runtime.md): a normal sandboxed app holds the
      * low-risk caps but NOT the dangerous ones, and the kernel refuses a dangerous
@@ -165,6 +196,7 @@ void _ustart(void) {
     group_registry();
     group_proc();
     group_clipboard();
+    group_fsjail();          /* before group_caps, which permanently drops this task's caps */
     group_caps();
     if (nfail == 0) {
         print("selftest: "); printu((unsigned)npass); print("/"); printu((unsigned)npass);

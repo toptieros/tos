@@ -231,6 +231,22 @@ static int owner_of(int slot) { return slot == TOSFS_ROOT ? TOS_UID_SYSTEM : sup
 /* May the running task write (create in / delete / modify) the entry at `slot`? */
 static int can_write(int slot) { return tos_may_write(sched_uid(), owner_of(slot)); }
 
+/* Phase 3 capability fs-jail (design/app-runtime.md): may the running task reach
+ * `slot` at all? Walk it to its top-level ancestor, classify the region by name
+ * (cap_fs_region_need, cap.h) and require that cap. The root dir is always reachable;
+ * a task holding every fs cap (init + every CAP_NORMAL app) takes the fast path, so
+ * this only confines an app that dropped a cap via SYS_SETCAPS. Separate from
+ * can_write (ownership) -- this gates READ access too. */
+static int cap_may_reach(int slot) {
+    if (sched_has_caps(CAP_FS_HOME | CAP_FS_SYSTEM | CAP_FS_BUNDLE)) return 1;
+    if (slot == TOSFS_ROOT) return 1;
+    int t = slot;
+    for (int guard = 0; guard < (int)TOSFS_MAX_FILES && super.ents[t].parent != TOSFS_ROOT; guard++)
+        t = super.ents[t].parent;
+    unsigned need = cap_fs_region_need(super.ents[t].name);
+    return need == 0u || sched_has_caps(need);
+}
+
 static const struct tosfs_ent *find_ent(const char *name) {
     if (!mounted) return 0;
     /* Resolve from root: an absolute path (e.g. an app bundle's "/Apps/X.app/bin/x")
@@ -287,6 +303,7 @@ static int mkdir_l(const char *path) {
     char leaf[TOSFS_NAME_MAX];
     int parent = resolve_parent(path, cwd[sched_current()], leaf);
     if (parent == R_NONE || !is_dir(parent)) return -1;
+    if (!cap_may_reach(parent)) return -1;                /* fs-jail: outside the app's region */
     if (!can_write(parent)) return -1;                    /* may not create in a system dir */
     if (names_equal(leaf, ".") || names_equal(leaf, "..")) return -1;
     if (child_named(parent, leaf) != R_NONE) return -1;   /* already exists */
@@ -320,6 +337,7 @@ static int rmdir_l(const char *path) {
     if (!mounted) return -1;
     int s = resolve(path, cwd[sched_current()]);
     if (s < 0 || super.ents[s].type != TOSFS_DIR) return -1;   /* not a dir / root */
+    if (!cap_may_reach(s)) return -1;                          /* fs-jail: outside the app's region */
     if (!can_write(s)) return -1;                              /* may not remove a system dir */
     if (has_children(s)) return -1;                            /* not empty */
     /* if any task's cwd sits on it, refuse so it can't dangle */
@@ -340,6 +358,7 @@ static int chdir_l(const char *path) {
     if (!mounted) return -1;
     int s = resolve(path, cwd[sched_current()]);
     if (!is_dir(s)) return -1;          /* R_NONE or a file */
+    if (!cap_may_reach(s)) return -1;   /* fs-jail: can't cd into another region */
     cwd[sched_current()] = s;
     return 0;
 }
@@ -385,10 +404,12 @@ static int rename_l(const char *oldp, const char *newp) {
     if (!mounted) return -1;
     int s = resolve(oldp, cwd[sched_current()]);
     if (s < 0) return -1;                               /* can't move the root */
+    if (!cap_may_reach(s)) return -1;                   /* fs-jail: source outside the app's region */
     if (!can_write(s)) return -1;                       /* may not move a system entry */
     char leaf[TOSFS_NAME_MAX];
     int parent = resolve_parent(newp, cwd[sched_current()], leaf);
     if (parent == R_NONE || !is_dir(parent)) return -1;
+    if (!cap_may_reach(parent)) return -1;              /* fs-jail: dest outside the app's region */
     if (!can_write(parent)) return -1;                  /* may not drop it into a system dir */
     if (names_equal(leaf, ".") || names_equal(leaf, "..")) return -1;
     if (child_named(parent, leaf) != R_NONE) return -1; /* destination exists */
@@ -410,6 +431,7 @@ static int stat_l(const char *path, struct fstat *st) {
     int s = resolve(path, cwd[sched_current()]);
     if (s == R_NONE) return -1;
     if (s == TOSFS_ROOT) { st->type = TOSFS_DIR; st->size = 0; st->owner = TOS_UID_SYSTEM; st->mtime = 0; return 0; }
+    if (!cap_may_reach(s)) return -1;   /* fs-jail: can't stat outside the app's region */
     st->type  = super.ents[s].type;
     st->size  = super.ents[s].size;
     st->owner = super.ents[s].owner;
@@ -447,6 +469,7 @@ static int readdir_l(const char *path, struct dirent *out, int max) {
     if (!mounted) return -1;
     int dir = (path && path[0]) ? resolve(path, cwd[sched_current()]) : cwd[sched_current()];
     if (!is_dir(dir)) return -1;
+    if (!cap_may_reach(dir)) return -1;   /* fs-jail: can't list outside the app's region */
     int n = 0;
     for (uint32_t i = 0; i < TOSFS_MAX_FILES && n < max; i++) {
         if (super.ents[i].type == TOSFS_FREE || super.ents[i].parent != dir) continue;
@@ -507,6 +530,7 @@ static int unlink_l(const char *path) {
     if (!mounted) return -1;
     int s = resolve(path, cwd[sched_current()]);
     if (s < 0 || super.ents[s].type != TOSFS_FILE) return -1;   /* not a file */
+    if (!cap_may_reach(s)) return -1;                           /* fs-jail: outside the app's region */
     if (!can_write(s)) return -1;                               /* may not delete a system file */
     return unlink_slot(s);
 }
@@ -526,6 +550,7 @@ static int open_l(const char *name, int flags) {
         char leaf[TOSFS_NAME_MAX];
         int parent = resolve_parent(name, cwd[sched_current()], leaf);
         if (parent == R_NONE || !is_dir(parent)) return -1;
+        if (!cap_may_reach(parent)) return -1;    /* fs-jail: outside the app's region */
         if (!can_write(parent)) return -1;        /* may not create in a system dir */
         if (leaf[0] == 0 || names_equal(leaf, ".") || names_equal(leaf, "..")) return -1;
         int ex = child_named(parent, leaf);
@@ -557,6 +582,7 @@ static int open_l(const char *name, int flags) {
 
     int s = resolve(name, cwd[sched_current()]);
     if (s < 0 || super.ents[s].type != TOSFS_FILE) return -1;
+    if (!cap_may_reach(s)) return -1;             /* fs-jail: can't open outside the app's region */
     int fd = alloc_fd(tbl);
     if (fd < 0) return -1;
     struct ofile *f = &tbl[fd];

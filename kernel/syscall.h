@@ -296,6 +296,9 @@ struct wininfo {              /* SYS_WIN_CREATE: in = w,h,title,flags; out = id,
  * can tell a drag-extend from a fresh press (used for terminal/Files selection).
  * A pure pointer move (hover) arrives with the whole button field 0. */
 #define WEV_MOUSE_DRAG 0x40
+/* bit2 = middle button. The compositor forwards a middle-PRESS edge inside a
+ * window's client area so a widget can paste the X11-style primary selection. */
+#define WEV_MOUSE_MID  0x04
 /* The compositor also ORs WEV_MOUSE_SHIFT into a PRESS's button field when Shift
  * was held at the click, so a widget can shift-extend a selection (Shift+click). */
 #define WEV_MOUSE_SHIFT 0x80

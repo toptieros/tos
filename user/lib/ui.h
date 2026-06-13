@@ -238,6 +238,7 @@ public:
     void        on_drag(int x, int y) override { if (sb.dragging) sb_set_top_from_y(y); else drag_to(x, y); }
     void        on_button_up() override;         /* end a scrollbar drag, or a drag-the-selection-out gesture */
     bool        accept_text_drop(int x, int y, const char *s, int n) override;  /* DRAG_TEXT drop: insert at the point */
+    bool        paste_primary(int x, int y);     /* middle-click: paste the X11-style primary selection at the point */
     bool        on_scroll(int delta) override;                     /* multiline: scroll the viewport */
     bool        shows_caret() const override { return visible; }    /* keeps the caret blinking when idle */
     bool        force_focus = false;        /* draw as focused (caret + accent edge) even when the
@@ -399,6 +400,7 @@ public:
      * hovers this window so it can highlight a drop zone (x<0 == the drag left); on_drop()
      * delivers the payload on release -- read `data`/`len` (typed by DRAG_*) and act. */
     void begin_drag(int type, const char *label, const void *data, int len) { drag_begin(type, label, data, len); }
+    int  drop_modifiers() const { return drop_mods; }   /* KMOD_* on the in-flight WEV_DROP (copy-on-Ctrl) */
     virtual void on_drag_over(int x, int y) { (void)x; (void)y; }
     /* Default: a DRAG_TEXT drop is routed to the topmost widget under (x,y) that
      * accepts text (any TextField). Apps override to handle other payload types. */

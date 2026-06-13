@@ -1619,6 +1619,8 @@ struct FilesApp : ui::Window {
         const char *name; int type; int idx = -1;
         if (a->has_up() && i == 0) { name = ".."; type = FT_DIR; }
         else { idx = a->ent_at(i); if (idx < 0) return; struct dirent *e = &a->ents[idx]; name = e->name; type = e->type; }
+        if (a->drop_row == i)                            /* DnD: highlight the folder tile under the drag */
+            ugfx_rrect_border(cell.x + 4, cell.y + 3, cell.w - 8, cell.h - 6, TH_R_SM, 2, TH_ACCENT);
         char label[64]; disp_name(name, label, sizeof label);
         int cx = cell.x + cell.w / 2, iy = cell.y + 8;
         if (idx >= 0 && a->thumb[idx]) {                 /* §11: thumbnail tile (aspect-fit) */
@@ -2063,10 +2065,11 @@ struct FilesApp : ui::Window {
     }
 
     /* ---- drag-and-drop (the DnD-protocol consumer, design/files-and-desktop.md) --
-     * Source: a button-held drag over a selected, non-system file arms a DRAG_FILES
-     * payload (the item's absolute path). Target: dropping it on a FOLDER row moves
-     * the file into that folder -- "move a path from dir A to dir B." List view only
-     * for now (icon/gallery hit-testing is a follow-on). */
+     * Source: a button-held drag over the active view's selected, non-system item arms
+     * a DRAG_FILES payload (its absolute path) -- in LIST, ICON, or GALLERY view (the
+     * source uses cur_sel()). Target: dropping on a FOLDER (a list row OR an icon tile,
+     * hit-tested by view_row_at) moves the path into that folder -- "move a path from
+     * dir A to dir B" (Ctrl = copy). */
     int dnd_armed = 0;             /* a drag-out is in flight (armed once per gesture) */
     int drop_row  = -1;            /* list row highlighted as the drop target (-1 none) */
     int place_src = -1;            /* §7: the Favorites index a press landed on (reorder source) */
@@ -2079,6 +2082,13 @@ struct FilesApp : ui::Window {
         if (x < lr.x || x >= lr.x + lr.w || y < lr.y || y >= lr.y + lr.h) return -1;
         int row = list.top + (y - lr.y) / list.row_h;
         return (row >= 0 && row < list.count) ? row : -1;
+    }
+    /* the display-row under a client point in WHATEVER view is active (icon tile,
+     * gallery thumb, or list row), or -1 -- so DnD drop-targeting works in every view */
+    int view_row_at(int x, int y) const {
+        if (view_mode == 1) return grid.index_at(x, y);
+        if (view_mode == 2) return gal.index_at(x, y);
+        return list_row_at(x, y);
     }
     /* note which Favorites row (if any) a fresh press landed on, so a drag from it
      * reorders Places rather than rubber-banding the list (§7). Reset every press. */
@@ -2099,8 +2109,7 @@ struct FilesApp : ui::Window {
             print("[files] place drag "); print(places[place_src].label); print("\r\n");
             return;
         }
-        if (view_mode != 0) return;
-        int idx = ent_at(list.sel);                    /* a real selected entry (not "..")? */
+        int idx = ent_at(cur_sel());                   /* the active view's selected entry (not "..")? */
         if (idx < 0) return;
         struct dirent *e = &ents[idx];
         if (owner_locked(e->owner)) return;            /* never drag a system-owned item out */
@@ -2118,7 +2127,7 @@ struct FilesApp : ui::Window {
         }
         int nr = -1;
         if (x >= 0) {
-            int row = list_row_at(x, y);
+            int row = view_row_at(x, y);               /* list row / icon tile / gallery thumb */
             if (row >= 0) { int idx = ent_at(row); if (idx >= 0 && ents[idx].type == FT_DIR) nr = row; }  /* folders accept */
         }
         if (nr != drop_row) { drop_row = nr; invalidate(); }
@@ -2141,7 +2150,7 @@ struct FilesApp : ui::Window {
         dnd_place = 0; side.drop_gap = -1;
         if (type != DRAG_FILES || !data || len <= 0) { invalidate(); return; }
         const char *src = (const char *)data;
-        int row = list_row_at(x, y), idx = (row >= 0) ? ent_at(row) : -1;
+        int row = view_row_at(x, y), idx = (row >= 0) ? ent_at(row) : -1;
         if (idx < 0 || ents[idx].type != FT_DIR) { invalidate(); return; }   /* must land on a folder */
         char folder[256]; join(folder, sizeof folder, path, ents[idx].name);
         if (same_str(folder, src)) { invalidate(); return; }                 /* not onto itself */

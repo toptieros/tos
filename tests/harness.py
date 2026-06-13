@@ -236,6 +236,13 @@ class Tos:
         self.mon.sendall(b"mouse_button 2\n"); time.sleep(0.05)
         self.mon.sendall(b"mouse_button 0\n"); time.sleep(0.05)
 
+    def middleclick(self, x, y):
+        """Middle-click (QEMU button bit 2 = the PS/2 middle button), forwarded by twm
+        as a WEV_MOUSE with WEV_MOUSE_MID -> a TextField pastes the primary selection."""
+        self.mouse_to(x, y)
+        self.mon.sendall(b"mouse_button 4\n"); time.sleep(0.05)
+        self.mon.sendall(b"mouse_button 0\n"); time.sleep(0.05)
+
     def screenshot(self, path):
         """Dump the framebuffer to a PPM via the QEMU monitor (for visual checks)."""
         self.mon.sendall(f"screendump {path}\n".encode())

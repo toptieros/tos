@@ -7,6 +7,30 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Capability fs path-jails — sandbox Phase 3 (2026-06-13).** The reading + mutating fs syscalls
+  (`open` + the fd read path, `mkdir`/`rmdir`/`unlink`/`rename`/`chdir`/`stat`/`readdir`) now gate
+  path access on the fs caps: `kernel/fs/fs.c`'s `cap_may_reach(slot)` walks a resolved slot to its
+  top-level ancestor and requires that region's cap via the pure `cap_fs_region_need` table in
+  `cap.h` (`/System`→`CAP_FS_SYSTEM`, `/Users`→`CAP_FS_HOME`, `/Apps`→`CAP_FS_BUNDLE`; root + `/tmp`
+  ungated). A task holding all three fs caps (init + every `CAP_NORMAL` app) hits a fast path, so the
+  jail only confines a cap-dropped app. Unit-tested (`t_cap`, 11 checks) + a new in-OS `selftest
+  group_fsjail` (a child dropping `CAP_FS_SYSTEM` can't open/stat/list `/System` but still writes
+  home → 56/56). Precise per-bundle `fs:bundle` is the remaining follow-on.
+- **Files icon/gallery-view drag sources (2026-06-13).** The Files file-drag now works in **all**
+  views, not just list: the source arms `DRAG_FILES` from `cur_sel()`, and the drop hit-tests with a
+  new view-aware `view_row_at()` (`grid.index_at` / `gal.index_at` / `list_row_at`) so a tile drops
+  onto a folder tile; the icon tile under the drag draws the same accent drop-target ring the list row
+  does. Verified by `repro_icondrag.py` (doc.txt tile → dest folder tile → moved on disk).
+- **Text-drag MOVE semantics + primary selection (2026-06-13).** A `DRAG_TEXT` drop back into the
+  **same** `TextField` now **moves** the text (deletes the source span, leaves the moved run selected)
+  unless **Ctrl** is held (copy, mirroring the Files file-drag); a cross-field drop still copies.
+  Source field + span tracked by `s_text_src` in `ui_textfield.cpp`; the post-delete insert offset is
+  the pure `tu_textmove_dest(a,b,p)` (`textutil.h`, new `t_textutil` cases). The X11-style **primary
+  selection** also landed: every selection path updates a shared primary buffer and a **middle-click**
+  pastes it — twm now forwards the middle button as `WEV_MOUSE` with the new **`WEV_MOUSE_MID`** bit
+  (sibling of the right-button path), routed to `TextField::paste_primary`. Added a `middleclick`
+  harness helper + `Window::drop_modifiers()` accessor. Verified by `repro_textdrag.py` (move → 11 B,
+  middle-paste → 16 B); smoke tier green.
 - **Notepad layout on `ui::Layout` (2026-06-13).** Notepad's `layout()` now uses the toolkit's
   `ui::Layout` column (tab bar fixed / editor stretch / reserved status band) instead of
   hand-computing `editor.r = {0, TBH, w, h-TBH-SBH}` etc.; the status Label's 10px text inset is

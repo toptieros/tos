@@ -46,6 +46,17 @@ static inline int tu_word_next(const char *buf, int len, int caret) {
     return i;
 }
 
+/* Destination index for a same-field text-drag MOVE: the source span [a,b) is
+ * deleted, then re-inserted at drop point `p` (an index into the ORIGINAL buffer).
+ * A drop inside the moved span lands at its start; a drop at or past the span end
+ * shifts left by the removed length. Returns the post-deletion insert index. Pure
+ * index arithmetic -- unit-tested in tests/unit. */
+static inline int tu_textmove_dest(int a, int b, int p) {
+    if (p > a && p < b) p = a;       /* inside the selection -> no real move */
+    if (p >= b) p -= (b - a);        /* removal shifts a right-of-span drop left */
+    return p;
+}
+
 /* Greedy word-wrap of `src` into at most `maxlines` lines no wider than `maxw`,
  * using measure(s) for the pixel width of a NUL-terminated string. Each completed
  * line is passed (NUL-terminated) to emit(ctx, line, index); pass emit=0 to only

@@ -1,13 +1,16 @@
-"""One-off repro for #8 (cross-app text drag, DRAG_TEXT). Boots BIOS, opens
-Notepad, types a line, keyboard-selects the word "world", then PRESSES inside the
-selection and drags it left to column 0. That exercises the whole text-DnD path:
+"""One-off repro for cross-app text drag (DRAG_TEXT) + MOVE semantics + the X11-style
+PRIMARY selection (middle-click paste). Boots BIOS, opens Notepad, types a line,
+keyboard-selects the word "world", then PRESSES inside the selection and drags it
+left to column 0. That exercises the whole text-DnD path:
   source  TextField::drag_to -> begin_drag(DRAG_TEXT)        ([ui] textdrag 5)
   session twm reads drag_state, draws the ghost, posts WEV_DROP ([twm] drag begin)
-  target  Window::on_drop -> TextField::accept_text_drop ins ([ui] textdrop 5)
-The drop uses copy semantics, so "hello world" becomes "worldhello world" (16 B).
-The protocol is app-agnostic (payload lives in the kernel, twm routes WEV_DROP to
-the window under the cursor), so within-Notepad proves the same path a cross-app
-drop takes. Screenshots the translucent text ghost mid-drag. Not part of make test."""
+  target  Window::on_drop -> TextField::accept_text_drop ins ([ui] textdrop 5 move)
+A drop back into the SAME field MOVES the text (deletes the source), so "hello world"
+becomes "worldhello " (11 B). The moved text stays selected -> it is now the PRIMARY
+selection, which a middle-click pastes at the click point. The protocol is app-agnostic
+(payload lives in the kernel, twm routes WEV_DROP to the window under the cursor), so
+within-Notepad proves the same path a cross-app drop takes. Screenshots the translucent
+text ghost mid-drag. Not part of make test."""
 import sys, time
 sys.path.insert(0, "tests")
 from harness import Tos
@@ -56,17 +59,25 @@ with Tos(uefi=False) as t:
     assert t.wait_for("[ui] textdrag 5", 6), "TextField did not arm a 5-char DRAG_TEXT payload"
     t.screenshot(GHOST)                  # capture the translucent text ghost mid-drag
     t.mon.sendall(b"mouse_button 0\n"); time.sleep(0.15)     # drop
-    assert t.wait_for("[ui] textdrop 5", 6), "drop did not insert the dragged text"
+    assert t.wait_for("[ui] textdrop 5 move", 6), "same-field drop did not MOVE the text"
     t.screenshot(DROPPED)
 
-    # End-to-end proof: copy semantics make "hello world" -> "worldhello world" (16 B).
+    # End-to-end proof: MOVE semantics make "hello world" -> "worldhello " (11 B).
     t.key("ctrl-s", delay=0.12)
     _accept_save_picker(t)
+    assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (11 bytes)", 8), \
+        "moved text did not land in the buffer (expected an 11-byte save)"
+
+    # PRIMARY selection: the moved "world" stayed selected, so a middle-click at the
+    # end of the line pastes it there ("worldhello " -> "worldhello world", 16 B).
+    t.middleclick(cx(11), cy)            # end of "worldhello " is column 11
+    assert t.wait_for("[ui] primary paste 5", 6), "middle-click did not paste the primary selection"
+    t.key("ctrl-s", delay=0.12)
     assert t.wait_for("[notepad] saved /Users/user/Documents/untitled.txt (16 bytes)", 8), \
-        "dropped text did not land in the buffer (expected a 16-byte save)"
+        "primary paste did not extend the buffer (expected a 16-byte save)"
 
     s = t.serial()
     assert "[EXCEPTION]" not in s and "PANIC" not in s, "kernel fault during text drag"
-    print("OK: text drag armed, ghosted, dropped (copy) -> 16-byte buffer")
+    print("OK: text drag armed/ghosted/dropped (MOVE) -> 11 B; middle-click primary paste -> 16 B")
     print("ghost screenshot:   " + GHOST)
     print("dropped screenshot: " + DROPPED)

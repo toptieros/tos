@@ -29,3 +29,23 @@
 
 /* The OS itself -- init and the boot chain (twm/shell/term) -- holds every cap. */
 #define CAP_ALL     0xffffffffu
+
+/* Phase 3 fs path-jail (design/app-runtime.md). The kernel classifies a resolved
+ * path by its TOP-LEVEL region (the first component: "System"/"Users"/"Apps") and
+ * requires the matching cap to reach it; any other region (the root dir, /tmp
+ * scratch) is ungated. `cap_fs_region_need` is the pure region->cap table, shared by
+ * the kernel jail check (kernel/fs/fs.c) and the host unit test (t_cap). With no
+ * multi-user yet, fs:home is the single /Users tree; a precise per-bundle fs:bundle
+ * jail (an app sees only its OWN /Apps/<x>.app) is a follow-on -- today /Apps is the
+ * bundle region as a whole. A task holding all three fs caps is unrestricted, so the
+ * jail only confines an app that has dropped one via SYS_SETCAPS. */
+static inline int cap__streq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == 0 && *b == 0;
+}
+static inline unsigned cap_fs_region_need(const char *top) {
+    if (cap__streq(top, "System")) return CAP_FS_SYSTEM;
+    if (cap__streq(top, "Users"))  return CAP_FS_HOME;
+    if (cap__streq(top, "Apps"))   return CAP_FS_BUNDLE;
+    return 0u;   /* ungated region (root, /tmp, ...) */
+}

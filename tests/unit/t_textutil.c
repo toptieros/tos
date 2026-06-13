@@ -83,11 +83,23 @@ static void test_wrap_count_only(void) {
               "count-only mode (no emit) returns the line count");
 }
 
+/* tu_textmove_dest: where a same-field text-drag MOVE re-inserts its span after the
+ * source [a,b) is deleted. Sentinel selection [6,10) ("beta") in the 16-char SENT. */
+static void test_textmove_dest(void) {
+    CHECK_INT(tu_textmove_dest(6, 10, 0),  0,  "drop before the span: index unchanged");
+    CHECK_INT(tu_textmove_dest(6, 10, 6),  6,  "drop at span start: no move");
+    CHECK_INT(tu_textmove_dest(6, 10, 8),  6,  "drop inside the span: lands at its start");
+    CHECK_INT(tu_textmove_dest(6, 10, 10), 6,  "drop at span end: collapses to start (no move)");
+    CHECK_INT(tu_textmove_dest(6, 10, 11), 7,  "drop just past the span shifts left by its length (4)");
+    CHECK_INT(tu_textmove_dest(6, 10, 16), 12, "drop at buffer end shifts left by the removed 4");
+}
+
 int main(void) {
     RUN(test_ci_contains);
     RUN(test_word_prev);
     RUN(test_word_next);
     RUN(test_wordch);
+    RUN(test_textmove_dest);
     RUN(test_wrap_no_glue);
     RUN(test_wrap_fits_one_line);
     RUN(test_wrap_maxlines);

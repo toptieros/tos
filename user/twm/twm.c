@@ -717,7 +717,7 @@ void _ustart(void) {
     print("[twm] desktop ready\r\n");                   /* the harness waits for this */
 
     struct mousestate ms;
-    int last_b = 0, last_rb = 0, last_back = 0, last_fwd = 0, last_sec = -1, frame = 0;
+    int last_b = 0, last_rb = 0, last_mb = 0, last_back = 0, last_fwd = 0, last_sec = -1, frame = 0;
     unsigned last_kmods = 0;         /* modifier mask last frame, to detect key-UP transitions */
     int bar_hover = 0;               /* 0 none / 1 logo / 2 app: repaint the bar on hover changes */
     int last_focus = -1;
@@ -1361,6 +1361,26 @@ void _ustart(void) {
                 }
             }
             last_rb = rb;
+        }
+
+        /* middle-click in a window's client area -> forward as a PRIMARY-selection
+         * paste request (button bit 2 set); the focused TextField pastes the last
+         * selection at the click. Mirrors the right-click path; chrome/dock ignore it. */
+        {
+            int mb = ms.buttons & 4;
+            if (mb && !last_mb) {
+                for (int zi = nz - 1; zi >= 0; zi--) {
+                    struct cwin *c = &cw[zo[zi]];
+                    int ox, oy, ow, oh; outer_rect(c, &ox, &oy, &ow, &oh);
+                    if (ms.x < ox || ms.x >= ox + ow || ms.y < oy || ms.y >= oy + oh) continue;
+                    if (!c->min && in_client(c, ms.x, ms.y)) {
+                        int cx, cy, cwd, chd; client_rect(c, &cx, &cy, &cwd, &chd);
+                        wm_post(c->id, WEV_MOUSE, WEV_MOUSE_PACK(ms.x - cx, ms.y - cy, WEV_MOUSE_MID));
+                    }
+                    break;
+                }
+            }
+            last_mb = mb;
         }
 
         /* mouse side buttons -> back/forward navigation gestures for the focused app */

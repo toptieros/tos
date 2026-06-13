@@ -221,12 +221,24 @@ the toolkit as three `ui::Window` members:
   override `on_drop` for *non-text* payloads (Files overrides it for `DRAG_FILES`).
 - **`Widget::accept_text_drop(x, y, s, n)`** (virtual) — a `DRAG_TEXT` drop reached this
   widget; insert the `n` bytes and return `true`, or `false` to pass it on. `TextField`
-  overrides it to place the caret at the drop point and insert (**copy** semantics).
+  overrides it to place the caret at the drop point and insert. A drop back into the **same**
+  field **moves** the text (deletes the source span, leaves the moved run selected) unless
+  **Ctrl** is held (`Window::drop_modifiers()` → copy, like the Files file-drag); a
+  **cross-field** drop **copies** (v1). The post-delete insert offset is the pure
+  `tu_textmove_dest(a,b,p)` (`textutil.h`, unit-tested); the in-flight source field is tracked
+  by a file-scope `s_text_src` in `ui_textfield.cpp` (one drag at a time).
 
 Because the payload lives in the kernel and the compositor routes `WEV_DROP` by
 window-under-cursor, **cross-app text drag is free**: any `TextField` is both a drag
 source (press-and-drag from within a selection arms `DRAG_TEXT`) and a drop target, with
 no per-app code — Notepad's editor, unchanged, both gives and takes dragged text.
+
+- **Primary selection (X11-style middle-click paste).** Every `TextField` selection path
+  (drag-select, double-click word, Ctrl+A, shift-arrows) copies the selection into a shared
+  *primary* buffer (separate from the Ctrl-C/V clipboard). twm forwards a **middle-button**
+  press inside a client area as a `WEV_MOUSE` with **`WEV_MOUSE_MID`** (bit2 — the right-button
+  path's sibling); `TextField::on_mouse` routes it to `paste_primary(x,y)`, inserting the
+  primary buffer at the click. Free for every toolkit text field, no per-app code.
 
 - **`on_press(x, y, btn)`** (virtual) — a left-button press, *before* it routes to a
   child widget. Apps use it to capture where a gesture began (Files notes the Favorites

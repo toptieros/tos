@@ -137,6 +137,18 @@ twm, shell, term) runs **unsandboxed** (full caps) — they are the OS.
    `selftest group_caps` proves a normal app is confined.
 3. **FS jails** — `fs:bundle` / `fs:home` path enforcement; an app sees only its
    bundle + the user's home (and a private `~/.config/<app>` it always owns).
+   **✅ Done 2026-06-13 (region jail).** The reading *and* mutating fs syscalls
+   (`open`+the fd read path, `mkdir`/`rmdir`/`unlink`/`rename`/`chdir`/`stat`/`readdir`)
+   gate on the fs caps: `kernel/fs/fs.c`'s `cap_may_reach(slot)` walks a resolved slot
+   to its top-level ancestor and requires the region's cap via the pure
+   `cap_fs_region_need` table in `cap.h` (`/System`→`CAP_FS_SYSTEM`, `/Users`→`CAP_FS_HOME`,
+   `/Apps`→`CAP_FS_BUNDLE`; root + `/tmp` ungated). A task holding all three fs caps
+   (init + every `CAP_NORMAL` app) takes a fast path, so the jail only confines an app
+   that dropped a cap. Unit-tested (`t_cap`) + `selftest group_fsjail` (a child dropping
+   `CAP_FS_SYSTEM` can't open/stat/list `/System`, still writes home). **Left:** a
+   *precise per-bundle* `fs:bundle` (an app reaches only its OWN `/Apps/<x>.app`, not all
+   of `/Apps`) — needs the kernel to track each task's bundle root, set by the launcher
+   at exec.
 4. **Runtime prompts (the Android model proper)** — a **system-drawn** permission
    dialog (the shared trusted-prompt from [`system-ownership.md`](system-ownership.md))
    that grants a dangerous cap on first use, persisted per app in the registry, and a

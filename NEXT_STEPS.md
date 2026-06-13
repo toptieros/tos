@@ -24,7 +24,8 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   `CLIP_FILE`-of-bytes can't hold a directory → path-reference clipboard + recursive `cp_r`),
   **rename**, context menus, and **drag-to-move** (the DnD protocol landed 2026-06-11; Files
   list-view drag-a-file/folder-onto-a-folder works — left: icon/gallery sources, inter-window,
-  onto the desktop). **Keyboard shortcuts:** F2 rename,
+  onto the desktop). Icon/gallery-view drag **sources** + onto-folder-tile drops landed 2026-06-13
+  (`view_row_at`); left here: inter-window drags and onto the future desktop layer. **Keyboard shortcuts:** F2 rename,
   Ctrl+N new folder, Enter/Ctrl+O open, Delete (or Backspace) remove, Ctrl+A select-all,
   Backspace/Alt+← up a directory, plus the existing Ctrl+C/X/V — surfaced in the context menu and a
   menu bar (#6) so the accelerators show. → [`files-and-desktop.md`](design/files-and-desktop.md)
@@ -73,8 +74,16 @@ protocol). **Left:**
   (**copy** semantics for v1). Because the payload lives in the kernel and twm routes `WEV_DROP` by
   window-under-cursor, any toolkit text field is a source *and* a target for free (Notepad's editor,
   unmodified, gets text-drop). Verified: select "world", drag it left → "worldhello world" (ghost
-  chip screenshotted mid-flight). **Left:** *move* semantics (delete source on same-field drop) +
-  the X11-style **primary selection** (middle-click paste of the last selection).
+  chip screenshotted mid-flight).
+  - [x] **Move semantics + primary selection (2026-06-13).** A drop back into the **same** field now
+    **moves** the text (deletes the source span, leaves the moved run selected) unless **Ctrl** is held
+    (then it copies, mirroring the Files file-drag's copy-on-Ctrl); a cross-field drop still copies (v1).
+    The same-field source is tracked in `ui_textfield.cpp` (`s_text_src` + the span); the post-delete
+    insert offset is the pure `tu_textmove_dest(a,b,p)` in `textutil.h` (unit-tested, `t_textutil`). The
+    X11-style **primary selection** landed too: every `TextField` selection path (drag-select, double-click
+    word, Ctrl+A, shift-arrows) updates a shared primary buffer, and a **middle-click** (`WEV_MOUSE_MID`,
+    bit2 — twm now forwards the middle button, like it does the right button) pastes it at the click via
+    `TextField::paste_primary`. Verified by `repro_textdrag.py` (move → 11 B, middle-paste → 16 B).
 
 ### Input / event foundations
 - [x] **Drag-and-drop protocol (2026-06-11).** A source arms a **typed payload** (`DRAG_FILES` /
@@ -87,8 +96,14 @@ protocol). **Left:**
   Files **drag-reorder Places** (`DRAG_PLACE`, ghost chip + accent insertion line, persisted to the
   registry — verified Downloads→above Desktop). **Esc-to-cancel** a drag (twm clears the session, no
   drop) and **copy-on-Ctrl** for the Files file-drag (mods ride in the `WEV_DROP`'s packed byte →
-  `Window::drop_mods`; Ctrl+drop copies, leaving the source) both landed too. **Left:**
-  icon/gallery-view drag sources (list view today). Unlocks the desktop + Pocket Dimension.
+  `Window::drop_mods`; Ctrl+drop copies, leaving the source) both landed too.
+  - [x] **Icon/gallery-view drag sources (2026-06-13).** The Files file-drag now works in **every**
+    view, not just list: the source arms `DRAG_FILES` from `cur_sel()` (the active view's selection),
+    and the drop hit-tests with a new view-aware `view_row_at()` (`grid.index_at` / `gal.index_at` /
+    `list_row_at`), so a file/folder TILE drops onto a folder TILE — the icon tile under the drag gets
+    the same accent drop-target ring the list row does. Verified by `repro_icondrag.py` (drag doc.txt's
+    tile onto the dest folder tile → moved on disk; ghost + tile-highlight screenshotted). Unlocks the
+    desktop + Pocket Dimension.
 
 ### System & security
 - [~] **System ownership (#1).** **Done:** tosfs v3 carries a per-entry `owner`; tasks carry a
@@ -118,8 +133,17 @@ protocol). **Left:**
   low-risk cap, none of the dangerous ones). The kernel **enforces `CAP_NOTIFY`** at the
   `SYS_NOTIFY` boundary (the one dangerous cap with a real syscall today); the `selftest`
   `group_caps` proves a normal app is confined and the notify gate refuses it. All four bundle
-  manifests declare `caps`. **Left:** Phase 3 fs path-jails (`fs:home`/`fs:bundle`), and Phase 4
-  the runtime permission prompts + Settings review/revoke (needs the device caps to exist).
+  manifests declare `caps`. **Done (Phase 3 fs path-jails, 2026-06-13):** the mutating *and* reading
+  fs syscalls (open/read via the fd, mkdir/rmdir/unlink/rename/chdir/stat/readdir) now gate path
+  access on the fs caps — the kernel walks a resolved slot to its top-level ancestor and requires the
+  region's cap (`/System`→`CAP_FS_SYSTEM`, `/Users`→`CAP_FS_HOME`, `/Apps`→`CAP_FS_BUNDLE`; root/`/tmp`
+  ungated). The pure region→cap table is `cap_fs_region_need` in `cap.h` (unit-tested, `t_cap`); the
+  slot-walk jail is `cap_may_reach` in `fs.c`. A task holding all three fs caps (init + every
+  `CAP_NORMAL` app) takes a fast-path, so the jail only bites a cap-dropped app — proven by the new
+  `selftest group_fsjail` (a child that drops `CAP_FS_SYSTEM` can't open/stat/list `/System` but still
+  writes home). **Left:** a *precise* per-bundle `fs:bundle` (an app sees only its OWN `/Apps/<x>.app`,
+  not all of `/Apps` — needs the kernel to know each task's bundle root), and Phase 4 the runtime
+  permission prompts + Settings review/revoke (needs the device caps + the trusted prompt to exist).
   → [`app-runtime.md`](design/app-runtime.md)
 - [~] **Ctrl+C/X/V everywhere.** Landed in `TextField`, the terminal (Ctrl+Shift+C/X/V), and Files
   (files). Remaining: **folders** — folded into the Files + Desktop suite above.
