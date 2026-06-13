@@ -38,7 +38,7 @@ VBE_MODE        equ 0x2400               ; VBE mode info (transient)
 %endif
 
 FS_PART_LBA   equ 2048           ; tosfs partition start (1 MiB in, past the kernel)
-FS_PART_CNT   equ 4096           ; tosfs partition size in sectors (== TOSFS_DISK_SECTORS)
+FS_PART_CNT   equ 8192           ; tosfs partition size in sectors (== TOSFS_DISK_SECTORS)
 FS_PART_TYPE  equ 0x7f           ; MBR type byte for the tosfs partition (== TOSFS_PART_TYPE)
 
 ; ---------------------------------------------------------------------------

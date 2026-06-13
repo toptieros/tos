@@ -374,6 +374,9 @@ static struct regs *syscall_dispatch(struct regs *r) {
     case SYS_ISATTY:
         r->rax = (sched_get_tty(sched_current()) >= 0) ? 1 : 0;
         return r;
+    case SYS_APPS_GEN:
+        r->rax = (uint64_t)wm_apps_gen((int)r->rdi);
+        return r;
     case SYS_WIN_RESIZE:
         r->rax = (uint64_t)(int64_t)win_resize((int)r->rdi, (int)r->rsi, (int)r->rdx);
         return r;

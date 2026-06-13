@@ -1,0 +1,7 @@
+name      = Hello
+exec      = bin/args
+icon      = icon.argb
+version   = 1.0
+category  = utility
+caps      = window, time
+pinned    = true

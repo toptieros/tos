@@ -18,9 +18,11 @@
 #define TOSFS_MAGIC     0x33534F54u   /* "TOS3" little-endian (v3 = per-entry owner) */
 #define TOSFS_NAME_MAX  32
 
-#define TOSFS_DISK_SECTORS 4096u       /* image is padded to 2 MiB so files (now incl. hi-res
-                                        * 128px app icons) fit with headroom; kept in sync with
-                                        * FS_PART_CNT (boot/stage1.asm) and UFS_SECTORS (Makefile) */
+#define TOSFS_DISK_SECTORS 8192u       /* image is padded to 4 MiB: the shipped tree is ~1.8 MiB
+                                        * (hi-res 128px app icons), leaving ~2 MiB free for app/
+                                        * package installs (tos app install -- design/packaging.md).
+                                        * Kept in sync with FS_PART_CNT (boot/stage1.asm) and
+                                        * UFS_SECTORS (Makefile). A growable fs is a later track. */
 
 /* Entry types. FREE (0) is the zero value, so a zeroed slot is a free slot. */
 #define TOSFS_FREE 0u

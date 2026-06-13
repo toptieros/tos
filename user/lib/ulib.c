@@ -21,6 +21,7 @@ void print(const char *s)     { sc(SYS_WRITE, (uint64_t)s); }
 void printc(char c)           { sc(SYS_PUTC, (uint64_t)(uint8_t)c); }
 char getch(void)              { return (char)sc(SYS_READ, 0); }
 long spawn(const char *prog)  { return (long)sc(SYS_SPAWN, (uint64_t)prog); }
+unsigned apps_refresh(int bump){ return (unsigned)sc(SYS_APPS_GEN, (uint64_t)(unsigned)bump); }
 int  fork(void)               { return (int)sc(SYS_FORK, 0); }
 int  exec(const char *prog)   { return (int)sc(SYS_EXEC, (uint64_t)prog); }
 /* The kernel seeds this task's data page (USER_DATA_VADDR) with its full command

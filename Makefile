@@ -67,7 +67,7 @@ ACCEL := -machine accel=kvm:tcg
 MEM  ?= 8G
 
 # --- user programs (each its own app dir + ELF executable, stored on the FS) -
-UPROGS   := init shell ticker twm term memtest selftest fastfetch args
+UPROGS   := init shell ticker twm term memtest selftest fastfetch args tos
 CXXPROGS := files notepad clipboard spotlight launchpad settings
 UELFS    := $(patsubst %,$(BUILD)/%.elf,$(UPROGS) $(CXXPROGS))
 ULIBOBJ  := $(BUILD)/$(UDIR)/lib/ulib.o $(BUILD)/$(UDIR)/lib/ugfx.o $(BUILD)/$(UDIR)/lib/libc.o $(BUILD)/$(UDIR)/lib/sys.o $(BUILD)/$(UDIR)/lib/registry.o
@@ -156,7 +156,7 @@ endef
 $(foreach p,$(CXXPROGS),$(eval $(call CXXPROG_RULE,$(p))))
 
 # --- filesystem image: programs + text files, packed by the host mkfs tool -
-$(MKFS): tools/mkfs.c $(KDIR)/fs/tosfs.h
+$(MKFS): tools/mkfs.c $(KDIR)/fs/tosfs.h $(KDIR)/fs/perm.h $(KDIR)/fstime.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -o $@ tools/mkfs.c
 
@@ -172,13 +172,14 @@ APP_BUNDLES := fs/apps/Terminal.app/manifest fs/apps/Terminal.app/icon.argb \
                fs/apps/Files.app/manifest    fs/apps/Files.app/icon.argb \
                fs/apps/Notepad.app/manifest  fs/apps/Notepad.app/icon.argb \
                fs/apps/Settings.app/manifest fs/apps/Settings.app/icon.argb
-$(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES)
+$(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES) fs/examples/Hello.app/manifest
 	$(MKFS) $@ \
 	    /System/bin/init=$(BUILD)/init.elf /System/bin/shell=$(BUILD)/shell.elf \
 	    /System/bin/ticker=$(BUILD)/ticker.elf /System/bin/twm=$(BUILD)/twm.elf \
 	    /System/bin/fastfetch=$(BUILD)/fastfetch.elf /System/bin/memtest=$(BUILD)/memtest.elf \
 	    /System/bin/selftest=$(BUILD)/selftest.elf \
 	    /System/bin/args=$(BUILD)/args.elf \
+	    /System/bin/tos=$(BUILD)/tos.elf \
 	    /System/bin/clipboard=$(BUILD)/clipboard.elf \
 	    /System/bin/spotlight=$(BUILD)/spotlight.elf \
 	    /System/bin/launchpad=$(BUILD)/launchpad.elf \
@@ -196,6 +197,9 @@ $(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES)
 	    /Apps/Settings.app/manifest=fs/apps/Settings.app/manifest \
 	    /Apps/Settings.app/icon.argb=fs/apps/Settings.app/icon.argb \
 	    /Apps/Settings.app/bin/settings=$(BUILD)/settings.elf \
+	    /System/share/examples/Hello.app/manifest=fs/examples/Hello.app/manifest \
+	    /System/share/examples/Hello.app/icon.argb=fs/apps/Terminal.app/icon.argb \
+	    /System/share/examples/Hello.app/bin/args=$(BUILD)/args.elf \
 	    /Users/user/Documents /Users/user/Desktop /Users/user/Downloads /Users/user/Pictures /Users/user/.config
 
 # --- BIOS disk image: MBR+boot | kernel | ... | tosfs partition @ LBA 2048 --
@@ -229,7 +233,7 @@ $(EFIAPP): $(EDIR)/uefi.c $(BUILD)/kernel_blob.h
 ESP_LBA     := 2048
 ESP_SECTORS := 32768
 UFS_LBA     := 34816
-UFS_SECTORS := 4096          # tosfs partition size in sectors (== TOSFS_DISK_SECTORS / FS_PART_CNT)
+UFS_SECTORS := 8192          # tosfs partition size in sectors (== TOSFS_DISK_SECTORS / FS_PART_CNT)
 $(UEFIIMG): $(EFIAPP) $(FSIMG)
 	truncate -s $$(( $(ESP_SECTORS) * 512 )) $(ESPPART)
 	mformat -i $(ESPPART) ::

@@ -445,3 +445,13 @@ int wm_poll_notify(struct notif *out) {
     spin_unlock_irqrestore(&ipc_lock, f);
     return got;
 }
+
+/* A monotonic "/Apps changed" generation. An installer (tos app install/uninstall)
+ * calls this with bump!=0 after it mutates /Apps; the compositor polls it (bump==0)
+ * each frame and re-reads /Apps when the value moves, so a newly installed app shows
+ * in the dock without a restart. Advisory + lock-free: a single counter, no payload. */
+static volatile uint32_t apps_generation = 0;
+unsigned wm_apps_gen(int bump) {
+    if (bump) __sync_add_and_fetch(&apps_generation, 1);
+    return apps_generation;
+}

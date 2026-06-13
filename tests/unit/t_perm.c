@@ -19,6 +19,8 @@ static void test_owner_for(void) {
     CHECK_INT(tos_owner_for("/"),                            TOS_UID_SYSTEM, "root is system-owned");
     CHECK_INT(tos_owner_for("/System"),                      TOS_UID_SYSTEM, "/System is system");
     CHECK_INT(tos_owner_for("/System/bin/twm"),              TOS_UID_SYSTEM, "/System/bin/twm is system");
+    CHECK_INT(tos_owner_for("/Apps"),                        TOS_UID_USER,   "the /Apps dir itself is user-writable (install apps)");
+    CHECK_INT(tos_owner_for("/Apps/Files.app"),              TOS_UID_SYSTEM, "a shipped bundle is system-owned (protected)");
     CHECK_INT(tos_owner_for("/Apps/Files.app/bin/files"),    TOS_UID_SYSTEM, "shipped app bundle is system");
     CHECK_INT(tos_owner_for("/Users"),                       TOS_UID_USER,   "/Users is the user's");
     CHECK_INT(tos_owner_for("/Users/user"),                  TOS_UID_USER,   "the home dir is the user's");

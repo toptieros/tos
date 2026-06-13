@@ -108,6 +108,8 @@
 #define SYS_NET_CLOSE    82 /* ()                  -> TCP close (FIN); 0                                 */
 #define SYS_NET_LISTEN   83 /* (port)              -> arm a TCP listen port; 0 / -1                     */
 #define SYS_NET_ACCEPT   84 /* ()                  -> block for a client; 0 established / -1 (timeout)   */
+#define SYS_APPS_GEN     85 /* (bump)              -> /Apps change generation; bump!=0 increments (the
+                             *                        installer), 0 reads it (twm polls -> rescan dock)    */
 
 #include "cap.h"           /* CAP_* bits, shared with userspace's manifest->caps mapping */
 

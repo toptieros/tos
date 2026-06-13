@@ -25,6 +25,12 @@ static inline int tos_path_under(const char *path, const char *pre) {
     return path[i] == 0 || path[i] == '/';
 }
 
+/* True when `path` is exactly `s` (no trailing component). */
+static inline int tos_path_eq(const char *path, const char *s) {
+    int i = 0; while (s[i] && path[i] == s[i]) i++;
+    return s[i] == 0 && path[i] == 0;
+}
+
 /* The owner uid mkfs stamps an absolute path with when it seeds the disk: the
  * user owns the /Users subtree and /tmp; the system owns everything else (the root tree,
  * /System and its subtree, the shipped /Apps bundles). (Runtime-created entries
@@ -32,5 +38,9 @@ static inline int tos_path_under(const char *path, const char *pre) {
 static inline int tos_owner_for(const char *path) {
     if (tos_path_under(path, "/Users")) return TOS_UID_USER;
     if (tos_path_under(path, "/tmp"))   return TOS_UID_USER;
+    if (tos_path_eq(path, "/Apps"))     return TOS_UID_USER;  /* the dir itself: a user may
+        install apps into /Apps (the new bundle is created owned by them). The shipped
+        bundles *under* /Apps stay system-owned -> protected from deletion. See
+        design/packaging.md (apps are user-owned; packages need elevation). */
     return TOS_UID_SYSTEM;
 }

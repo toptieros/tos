@@ -41,3 +41,4 @@ int  wm_get_menu(int id, struct winmenu *out);    /* compositor: read it; 1 if a
 int  wm_kill_window(int id);                      /* compositor: kill a window's owner */
 int  notify_post(const struct notif *n);          /* any app: post a notification  */
 int  wm_poll_notify(struct notif *out);           /* compositor: dequeue one; 1/0  */
+unsigned wm_apps_gen(int bump);                   /* /Apps change generation: bump (installer) / read (twm) */

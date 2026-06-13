@@ -18,6 +18,7 @@ void print(const char *s);                  /* SYS_WRITE: NUL-terminated string 
 void printc(char c);                        /* SYS_PUTC                          */
 char getch(void);                           /* SYS_READ: blocking single key     */
 long spawn(const char *prog);               /* SYS_SPAWN: load+run a child -> pid */
+unsigned apps_refresh(int bump);            /* SYS_APPS_GEN: /Apps generation; bump after install, read to poll */
 int  fork(void);                            /* SYS_FORK: 0 in child, child pid in parent, -1 err */
 int  exec(const char *prog);                /* SYS_EXEC: replace image (prog may carry args); -1 on failure */
 const char *cmdline(void);                  /* this task's full command line (argv0 + args), kernel-seeded */

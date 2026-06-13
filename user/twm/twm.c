@@ -731,6 +731,7 @@ void _ustart(void) {
     int last_click_win = -1, last_click_wframe = -1000;   /* double-click a title bar -> toggle fullscreen */
     int hover_id = -1;               /* window currently receiving hover-move events */
     unsigned last_dock_sig = 0;
+    unsigned last_apps_gen = apps_refresh(0);   /* /Apps generation: an installer bumps it (tos) */
     struct wmwin snap[MAXW];
     struct rtctime t;
 
@@ -738,6 +739,16 @@ void _ustart(void) {
         frame++;
         if (launch_busy) { busy_until = frame + 80; launch_busy = 0; }   /* ~1s spinner */
         if (busy_until && frame >= busy_until) busy_until = 0;
+
+        /* An app was installed/removed (tos app install/uninstall bumped the gen):
+         * re-read /Apps so the dock picks up the change without a restart. */
+        unsigned g = apps_refresh(0);
+        if (g != last_apps_gen) {
+            last_apps_gen = g;
+            napps = 0; load_apps();                 /* rebuild the catalog from /Apps */
+            rebuild_dock(); layout_dock();
+            add_dirty(0, 0, W, H);
+        }
 
         /* --- reconcile the live window set ----------------------------------- */
         int n = wm_windows(snap, MAXW);
