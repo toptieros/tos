@@ -1355,12 +1355,21 @@ void _ustart(void) {
             }
         }
 
-        /* right-click in a window's client area -> forward as a context-menu request
-         * (button bit 1 set in the packed mouse event); chrome/title/dock ignore it */
+        /* right-click: on a dock tile it pins/unpins the app (the dock is a top-most
+         * overlay, so it gets the click first); otherwise it forwards a context-menu
+         * request to the window's client area (button bit 1 in the packed event).
+         * Chrome/title bars ignore right-click. */
         {
             int rb = ms.buttons & 2;
             if (rb && !last_rb) {
-                for (int zi = nz - 1; zi >= 0; zi--) {
+                if (ms.x >= dock_x && ms.x < dock_x + dock_w && ms.y >= dock_y && ms.y < dock_y + dock_h) {
+                    for (int i = 0; i < nicons; i++) {     /* pin/unpin the tile under the cursor */
+                        int x = icons[i].cx - TH_TILE / 2, y = icons[i].cy - TH_TILE / 2;
+                        if (ms.x < x || ms.x >= x + TH_TILE || ms.y < y || ms.y >= y + TH_TILE) continue;
+                        if (dock_toggle_pin(i)) { rebuild_dock(); layout_dock(); add_dirty(0, 0, W, H); }
+                        break;
+                    }
+                } else for (int zi = nz - 1; zi >= 0; zi--) {
                     struct cwin *c = &cw[zo[zi]];
                     int ox, oy, ow, oh; outer_rect(c, &ox, &oy, &ow, &oh);
                     if (ms.x < ox || ms.x >= ox + ow || ms.y < oy || ms.y >= oy + oh) continue;

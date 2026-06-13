@@ -106,10 +106,43 @@ static uint32_t *load_icon(const char *path, int *w, int *h) {
     return px;
 }
 
+/* The registry key holding a user's pin/unpin override for app `label` (design/
+ * ui.md). Spaces in the label collapse to '_' so the key is a single token the
+ * registry parser accepts (a key ends at the first space). */
+static void pin_key(char *dst, const char *label) {
+    const char *p = "dock.pin.";
+    int i = 0; for (; p[i]; i++) dst[i] = p[i];
+    for (int j = 0; label[j] && i < REG_KEYMAX - 1; j++)
+        dst[i++] = (label[j] == ' ') ? '_' : label[j];
+    dst[i] = 0;
+}
+/* True when `item` is one of the comma-separated tokens in `list` (surrounding
+ * spaces ignored), e.g. csv_has("Terminal, Files", "Files"). */
+static int csv_has(const char *list, const char *item) {
+    int i = 0;
+    while (list[i]) {
+        while (list[i] == ' ' || list[i] == ',') i++;       /* skip separators + leading space */
+        int s = i; while (list[i] && list[i] != ',') i++;   /* token spans [s, i)               */
+        int e = i; while (e > s && list[e - 1] == ' ') e--; /* trim trailing space              */
+        int k = 0; while (s + k < e && item[k] && list[s + k] == item[k]) k++;
+        if (s + k == e && item[k] == 0) return 1;           /* whole token matched              */
+    }
+    return 0;
+}
+
 /* Catalog every /Apps/<Name>.app bundle once (design/app-package-format.md): its
- * display name, absolute exec path, icon, and whether the manifest pins it to the
- * dock (pinned != false). rebuild_dock() composes the visible dock from this plus
- * the running window set. Replaces the old flat shortcuts file + baked icon table. */
+ * display name, absolute exec path, icon, and whether it sits on the dock.
+ *
+ * Whether an app is pinned is NOT the app's own call -- a manifest has no pin field,
+ * so a downloaded app can't shove itself onto the dock. Two trusted sources decide:
+ *   (1) the OS ships a default-pinned set in `dock.pinned`, a system-owned registry
+ *       key under /System that an installed app can't write (design/settings.md);
+ *   (2) the user layers per-app choices on top by right-clicking a tile, saved as a
+ *       `dock.pin.<name>` override in their own registry (design/ui.md).
+ * The user override wins; absent one, membership in the OS default set decides. So
+ * the only way an installed app reaches the dock is the user pinning it -- and the
+ * layout is a per-user choice that survives a reboot. rebuild_dock() then composes
+ * the visible dock from this catalog plus the running window set. */
 void load_apps(void) {
     struct dirent ents[2 * MAXAPPS];
     int n = readdir("/Apps", ents, 2 * MAXAPPS);
@@ -129,9 +162,9 @@ void load_apps(void) {
         int j = 0; for (; val[j] && j < 23; j++) a->label[j] = val[j]; a->label[j] = 0;
         if (!manifest_get(buf, "exec", val, sizeof val)) continue;
         path_join(a->exec, base, val);                             /* absolute exec path */
-        a->pinned = 1;
-        if (manifest_get(buf, "pinned", val, sizeof val) &&
-            (streq(val, "false") || streq(val, "0") || streq(val, "no"))) a->pinned = 0;
+        char pk[REG_KEYMAX]; pin_key(pk, a->label);        /* user's right-click pin/unpin beats the OS default */
+        const char *ov = reg_get(pk, 0);
+        a->pinned = ov ? reg_bool(pk, 0) : csv_has(reg_get("dock.pinned", ""), a->label);
         a->img = 0; a->iw = APPICON_SZ; a->ih = APPICON_SZ;
         char iconrel[40];
         if (manifest_get(buf, "icon", iconrel, sizeof iconrel) && iconrel[0]) {
@@ -181,6 +214,23 @@ void rebuild_dock(void) {
         ic->special = 0;
     }
     dock_runsep = (nicons > pin_end) ? pin_end : -1;       /* divider only when >=1 running-unpinned tile exists */
+}
+/* Right-clicking a dock tile pins a running app to the dock (moving it from the
+ * running side over to the pinned side) or unpins a pinned one; the choice is saved
+ * to the registry so it survives a reboot (design/ui.md). Returns 1 when the tile
+ * maps to an installed /Apps bundle (and its pin state flipped), 0 for the Launchpad
+ * button or a transient window with no bundle. The caller rebuilds + repaints. */
+int dock_toggle_pin(int ic) {
+    if (ic < 0 || ic >= nicons || icons[ic].special) return 0;
+    int ai = -1;
+    for (int i = 0; i < napps; i++) if (streq(apps[i].label, icons[ic].label)) { ai = i; break; }
+    if (ai < 0) return 0;                                  /* a window with no installed bundle: nothing to pin */
+    int now = !apps[ai].pinned;
+    apps[ai].pinned = now;                                 /* flip in place; rebuild_dock reads apps[].pinned */
+    char pk[REG_KEYMAX]; pin_key(pk, apps[ai].label);
+    reg_set(pk, now ? "true" : "false"); reg_save();
+    print("[twm] dock pin "); print(apps[ai].label); print(now ? " 1\r\n" : " 0\r\n");
+    return 1;
 }
 /* A cheap hash of the running non-popup window set (by id); the dock rebuilds +
  * re-lays-out only when this changes, so layout_dock's serial trace and the

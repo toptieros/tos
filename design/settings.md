@@ -41,6 +41,18 @@ are plain text; the reader interprets them (`reg_int`, `reg_bool`, a CSV list, a
 `#RRGGBB` colour). No nesting, no schema enforcement — keep it dead simple, like
 the `.app` manifest parser.
 
+### Dock pinning is policy + user choice, never the app's call
+
+`dock.pinned` (a CSV of app names) is the **OS-shipped default-pinned set**. Because
+it lives in the system layer (`/System/etc/registry`, which an installed app can't
+write — `design/system-ownership.md`), no downloaded app can pin itself; the manifest
+has no `pinned` field at all. On top of the default set the user pins/unpins
+individual apps by **right-clicking a dock tile**, which writes a per-app override
+`dock.pin.<name> = true|false` to *their* registry. twm computes each app's pin state
+as: user override if present, else membership in `dock.pinned`. So the factory layout
+stays pristine and the user's customisation is a resettable delta on top (see
+`design/ui.md`).
+
 ### Two layers
 
 | File | Role | Writable |

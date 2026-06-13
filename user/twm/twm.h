@@ -158,6 +158,7 @@ int  app_for_title(const char *title);                 /* catalog app a window t
 int  tile_hovered(struct icon *ic);
 void draw_dock(void);
 void rebuild_dock(void);
+int  dock_toggle_pin(int ic);                          /* right-click pin/unpin a tile (persisted) */
 void layout_dock(void);
 void place_dock_icons(void);
 unsigned running_sig(void);

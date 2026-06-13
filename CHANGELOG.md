@@ -7,6 +7,23 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **Dock pinning is policy + user choice, not the app's call (2026-06-13).** Removed the manifest
+  `pinned` field — letting an app declare its own pin meant any installed app could ship `pinned =
+  true` and force itself onto the dock. twm's `load_apps` now derives each app's pin state from the
+  **OS default set** (`dock.pinned`, a CSV in the **system-owned** registry an installed app can't
+  write) overridden by a **per-app user choice** (`dock.pin.<name>` in the user registry). **Right-
+  click a running app's dock tile** to pin it (it moves from the running side to the pinned side) or
+  to unpin a pinned one — `dock_toggle_pin` saves the choice so it survives a reboot. Installed apps
+  no longer auto-pin; only the OS defaults (Terminal, Files) do. Manifests dropped the field;
+  `ui.md`/`settings.md`/`app-package-format.md` updated. Disposable boot + screenshot + smoke green.
+- **`tos` packaging engine — Phase 1 (2026-06-13).** Real `/System/bin/tos` (built on the new argv
+  passing): `tos app install/uninstall/list/info` of a local `.app`. A shared recursive `copytree`/
+  `rmtree` (`user/lib/copytree.h`); `/Apps` made user-writable (`perm.h`) so installs land
+  **user-owned** while shipped bundles stay system-owned (a system app refuses uninstall); a
+  `SYS_APPS_GEN` counter the installer bumps + twm polls to **rescan the dock live**. tosfs grown to
+  4 MB (`TOSFS_DISK_SECTORS` 8192, kept in sync with stage1.asm + the Makefile) for install headroom.
+  End-to-end verified: install → `/Apps` + live dock rescan, list with `[system]`/`[user]` tags,
+  protected + clean uninstall (screenshot). → `design/packaging.md`.
 - **argv passing — shell fish-feel band 2 (2026-06-13).** `exec`/`spawn` programs now receive
   **arguments**. `kernel/mm/vmm.c`'s `vmm_create_user` splits the launch string at the first space
   — first token = the ELF path (`fs_find`), the *whole* string = the data-page seed — so

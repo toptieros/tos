@@ -49,12 +49,18 @@ exec      = bin/files          # path relative to the bundle root
 icon      = icon.argb
 version   = 1.0
 category  = utility            # used to group in a launcher later
-pinned    = true               # show on the dock by default
 min_width = 360                # optional window hints
 min_height= 220
 # permissions (future, advisory for now):
 caps      = fs, window
 ```
+
+There is deliberately **no `pinned` field**. Whether an app sits on the dock is not
+the app's call — otherwise any installed app could ship `pinned = true` and shove
+itself onto the dock. Pinning is decided by the OS (a default-pinned set in the
+system-owned `dock.pinned` registry key) and the user (right-click a tile to pin/
+unpin, saved as a `dock.pin.<name>` override in their own registry). See
+`design/ui.md` (dock) and `design/settings.md`.
 
 Keep the parser dead-simple (the existing `fs/shortcuts` parser in twm is a good
 model): trim whitespace, split on the first `=`, ignore blank/`#` lines. No need
@@ -73,9 +79,10 @@ pixels.
 - **Install:** copy `MyApp.app/` into `/Apps` (a future Files-app action, or just
   `cp -r`). **Uninstall:** `rm -r /Apps/MyApp.app`.
 - **twm / launcher:** on startup, scan `/Apps/*.app`, read each `manifest`, load
-  `icon.argb`, and build the dock from the bundles whose `pinned = true`
-  (replacing the baked icon table + the flat `shortcuts` file). Double-click
-  `exec`s `<bundle>/exec`.
+  `icon.argb`, and build the dock from the OS default-pinned set (`dock.pinned`)
+  plus the user's `dock.pin.<name>` overrides — never from the manifest (replacing
+  the baked icon table + the flat `shortcuts` file). Double-click `exec`s
+  `<bundle>/exec`.
 - **Loader:** `exec` takes an absolute path; for a dir bundle that's just
   `/Apps/Files.app/bin/files`. The kernel ELF loader already loads by path, so no
   kernel change is needed for option A. Option B would add: open the `.app` zip,

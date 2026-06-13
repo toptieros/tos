@@ -250,18 +250,27 @@ protocol). **Left:**
   → [`virtio-gpu.md`](design/virtio-gpu.md)
 
 ### Packaging & software distribution
-- [ ] **`tos` — apps, packages & the shared install engine (packaging.md).** The `.app` bundle
-  format is built (four `/Apps/*.app` bundles, `tools/mkapp.py`, twm's `/Apps` scan), but the
-  **install engine + CLI** the rest hangs off is not. Build: a **`.tpkg`** package format (the
-  headless sibling of `.app`, same `key=value` manifest grammar) + `tools/mkpkg.py`; a shared
-  **`copytree`** (also the OS installer's primitive); a **receipts DB** under `/System/var/tos/db/`
-  (the exact file list per unit → exact uninstall, reverse-dep safety, upgrade-as-diff); and the
-  **`tos` umbrella** (`tos app install/uninstall/list/info`, `tos package add/remove/list/info/
-  upgrade`) — one engine, two front-ends. Phase 1 (`tos app install/uninstall` of a local `.app` →
-  copytree into `/Apps` + a twm rescan) sits almost entirely on what exists. The real
-  `/System/bin/tos` binary needs **argv passing** (shell, above); until then it can live as a shell
-  built-in calling the same engine *library*. The elevation gate ties to the auth work above.
-  → [`packaging.md`](design/packaging.md)
+- [~] **`tos` — apps, packages & the shared install engine (packaging.md).** **Phase 1 landed
+  (2026-06-13):** real `/System/bin/tos` binary (now that argv passing exists) — `tos app
+  install/uninstall/list/info` of a local `.app`, a shared recursive `copytree`/`rmtree`
+  (`user/lib/copytree.h`), `/Apps` made user-writable (`perm.h` `tos_owner_for("/Apps")`) so installs
+  land **user-owned** while shipped bundles stay system-owned (uninstall of a system app refused), and
+  a `SYS_APPS_GEN` generation counter the installer bumps + twm polls to **rescan the dock live**.
+  Disk grown to 4 MB for install headroom. Installed apps **do not** auto-pin — pinning is OS policy +
+  user choice, never the manifest (see the dock-pinning entry below). Disposable boot + screenshot +
+  `make test` green. **Still to build:** a **`.tpkg`** package format (headless sibling of `.app`) +
+  `tools/mkpkg.py`; a **receipts DB** under `/System/var/tos/db/` (exact file list per unit → exact
+  uninstall, reverse-dep safety, upgrade-as-diff); `tos package add/remove/list/info/upgrade`; and the
+  elevation gate (ties to the auth work above). → [`packaging.md`](design/packaging.md)
+- [x] **Dock pinning is OS policy + user choice, never the app's declaration (2026-06-13).** Removed
+  the insecure manifest `pinned` field (any installed app could have shipped `pinned = true` to shove
+  itself onto the dock). twm's `load_apps` now sets each app's pin state from the OS default set
+  (`dock.pinned`, a CSV in the **system-owned** registry an app can't write) overridden by a per-app
+  user choice (`dock.pin.<name>` in the user registry). **Right-clicking a running app's dock tile**
+  pins it (moves it from the running side to the pinned side) or unpins a pinned one, saved via the
+  registry so it survives a reboot (`dock_toggle_pin`). Manifests dropped the field; `app-package-
+  format.md` / `settings.md` / `ui.md` updated. Verified by disposable boot + screenshot (defaults
+  only at boot, install ≠ pin, right-click pins + persists). → [`ui.md`](design/ui.md)
 - [ ] **Software repository + remote update — `tos get` / `tos sync` (repository.md).** Now
   **unblocked** — networking + an HTTP `get` landed 2026-06-12. A *dumb static* repo (an `index`
   catalog in the manifest grammar + `apps/`/`pkg/`/`system/<channel>/` artifacts, each with an

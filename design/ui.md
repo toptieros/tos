@@ -34,10 +34,22 @@
   **thin vertical separator**, then the **running-but-unpinned apps to its right**, with a
   focus underline and a minimized dot (already partly there). The separator appears **only
   when ≥1 running-unpinned app exists** (no trailing divider on an all-pinned dock).
-  `rebuild_dock()` already emits the clusters in this order — it just needs to record the
-  boundary (index after the last pinned tile) and the renderer draws a 1px divider there when
-  the running cluster is non-empty. Rounded translucent panel, subtle magnification on hover
+  `rebuild_dock()` emits the clusters in this order, records the boundary (index after the
+  last pinned tile in `dock_runsep`), and `draw_dock()` draws a 1px divider there when the
+  running cluster is non-empty. Rounded translucent panel, subtle magnification on hover
   (optional, later).
+  - **What's pinned is policy + user choice, never the app's own declaration.** A
+    manifest has **no** pin field, so an installed app can't shove itself onto the dock.
+    `load_apps()` sets each app's `pinned` from two trusted sources: the OS default set
+    `dock.pinned` (a CSV in the system-owned registry) and, winning over it, a per-app
+    user override `dock.pin.<name>` in the user registry.
+  - **Right-click a tile to pin/unpin it.** Right-clicking a running app's transient
+    tile pins it — it moves from the running side to the pinned side (the divider drops
+    once nothing unpinned is running) — and `dock_toggle_pin()` saves `dock.pin.<name> =
+    true` so it survives a reboot. Right-clicking a pinned tile unpins it (`= false`);
+    an unpinned app then drops off the dock when its last window closes. (The dock is a
+    top-most overlay, so it gets the right-click before any window beneath it; a
+    right-click elsewhere is still forwarded to a window as a context-menu request.)
 - **Launchers are a single-instance group.** Spotlight (Super+Space), Launchpad (Super tap)
   and the Clipboard manager (Super+V) are transient, modal-lite launchers — **only one is up
   at a time.** Summoning any of them first dismisses the others (a `dismiss_launchers(except)`
