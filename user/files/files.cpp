@@ -571,8 +571,8 @@ struct FilesApp : ui::Window {
                                      side.vol_permille = (int)(((uint64_t)(sf.total_bytes - sf.free_bytes)) * 1000 / sf.total_bytes); }
         else { details.freeline[0] = 0; side.vol_permille = -1; }
         int hu = has_up();
-        int nsel = (view_mode == 0 && lsel.n == list.count) ? fsel_count(&lsel) : 0;
-        if (nsel > 1) {                                  /* a multi-selection (Ctrl/Shift-click) */
+        int nsel = (lsel.n == list.count) ? fsel_count(&lsel) : 0;   /* same set across all views */
+        if (nsel > 1) {                                  /* a multi-selection (Ctrl/Shift-click / marquee) */
             snprintf(status.right, sizeof status.right, "%d selected", nsel);
         } else if (details.has && list.sel >= 0 && !(hu && list.sel == 0)) {
             if (details.is_file)
@@ -1128,10 +1128,9 @@ struct FilesApp : ui::Window {
         else           fsel_click(&lsel, row);
         select_row(row);
     }
-    /* Ctrl+A: select every real item in the list view -- skipping the synthetic ".."
-     * up-entry at row 0, which is navigation, not a selectable file. */
+    /* Ctrl+A: select every real item in the current view (list / icon / gallery -- they
+     * share the row-index space) -- skipping the synthetic ".." up-entry at row 0. */
     void select_all_list() {
-        if (view_mode != 0) return;
         fsel_init(&lsel, list.count);
         int lo = has_up();                               /* first real row (0 at the volume root) */
         if (list.count > lo) {

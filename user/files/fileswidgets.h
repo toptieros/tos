@@ -964,6 +964,7 @@ public:
     void *ctx = nullptr;
     void (*render_tile)(void *, int idx, ui::Rect cell, bool sel, int icon_box) = nullptr;
     void (*render_preview)(void *, int idx, ui::Rect area) = nullptr;
+    bool (*is_sel)(void *, int idx) = nullptr;       /* multi-select predicate; preview still tracks the cursor `sel` */
     void (*on_select)(void *, int) = nullptr;
     void (*on_activate)(void *, int) = nullptr;
     unsigned last_tick = 0; int last_i = -1;         /* double-click detector (as IconGrid) */
@@ -997,9 +998,10 @@ public:
             int x = r.x + i * tile_w - strip_x;
             if (x + tile_w <= r.x || x >= r.x + r.w) continue;
             ui::Rect cell = { x, sy + 4, tile_w, strip_h - 8 };
-            if (i == sel)          ugfx_rrect_a(cell.x + 3, cell.y, cell.w - 6, cell.h, TH_R_SM, C_SELROW);
+            bool gsel = is_sel ? is_sel(ctx, i) : (i == sel);
+            if (gsel)              ugfx_rrect_a(cell.x + 3, cell.y, cell.w - 6, cell.h, TH_R_SM, C_SELROW);
             else if (i == hover_i) ugfx_state_layer(cell.x + 3, cell.y, cell.w - 6, cell.h, TH_R_SM, TH_HOVER_A);
-            if (render_tile) render_tile(ctx, i, cell, i == sel, 48);
+            if (render_tile) render_tile(ctx, i, cell, gsel, 48);
         }
         ugfx_clip_none();
     }
