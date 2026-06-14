@@ -160,6 +160,9 @@ int rects_hit(struct rect a, struct rect b) {
 }
 
 /* z-order list ---------------------------------------------------------------*/
+/* The focused window is the topmost one (zo[nz-1]). The desktop is not a window --
+ * it is drawn by the compositor below everything (draw_desktop) -- so it is never
+ * in zo[] and never focusable. */
 int focus_slot(void) { return nz ? zo[nz - 1] : -1; }
 static void zo_remove(int slot) {
     int k = -1; for (int i = 0; i < nz; i++) if (zo[i] == slot) { k = i; break; }
@@ -167,7 +170,9 @@ static void zo_remove(int slot) {
     for (int i = k; i < nz - 1; i++) zo[i] = zo[i + 1];
     nz--;
 }
-static void zo_raise(int slot) { zo_remove(slot); zo[nz++] = slot; }   /* to the top */
+static void zo_raise(int slot) {
+    zo_remove(slot); zo[nz++] = slot;                      /* to the top */
+}
 
 /* dirty rectangles -----------------------------------------------------------*/
 static int overlay_slot(void);                         /* defined near compose() */
@@ -492,6 +497,7 @@ static void compose(struct rect r) {
     cur_clip = r;
     ugfx_set_clip(r.x, r.y, r.w, r.h);
     draw_desk(r.x, r.y, r.w, r.h);
+    draw_desktop();                                     /* the ~/Desktop icons, over the wallpaper, below all windows */
     int ov = overlay_slot();
     int md = modal_slot();
     for (int i = 0; i < nz; i++) if (zo[i] != ov && zo[i] != md) draw_window(zo[i]);   /* back to front (overlay + modal drawn last) */
@@ -536,7 +542,7 @@ static void flush_dirty(void) {
     ndirty = 0;
 }
 
-static void launch(const char *prog) {
+void launch(const char *prog) {
     unsigned caps = appcaps_for_exec(prog);             /* the bundle's declared caps (CAP_NORMAL default) */
     int pid = fork();
     if (pid == 0) { setcaps(caps); exec(prog); proc_exit(); }   /* confine the child to its manifest caps */
@@ -712,6 +718,7 @@ void _ustart(void) {
     dock_sig = running_sig();
     cc_layout();
 
+    desktop_init();                                     /* scan ~/Desktop so the first paint shows its icons */
     add_dirty(0, 0, W, H);                              /* initial full paint */
     flush_dirty();
     print("[twm] desktop ready\r\n");                   /* the harness waits for this */
@@ -1204,6 +1211,10 @@ void _ustart(void) {
                 }
                 handled = 1;
             }
+            /* Nothing above claimed the press -> it landed on the wallpaper: route it to
+             * the desktop layer (select an icon, double-click opens it, empty deselects).
+             * The desktop is below every window, so it only ever sees background clicks. */
+            if (!handled && ms.y >= bar_h) desktop_click(ms.x, ms.y, frame);
         } else if (!down) {
             if (dnd_type) {                             /* release ends a drag-and-drop session */
                 if (dnd_target >= 0) {                  /* dropped on a window: deliver WEV_DROP */
@@ -1434,7 +1445,8 @@ void _ustart(void) {
         rtc_time(&t);                                   /* clock ticks once a second */
         if (t.sec != last_sec) { last_sec = t.sec;     /* repaint the whole status cluster */
             int cx = cc_btn_x - 8; add_dirty(cx, 0, W - cx, bar_h);
-            apply_settings_live(); }                    /* pick up Settings-app changes from disk */
+            apply_settings_live();                      /* pick up Settings-app changes from disk */
+            desktop_tick(); }                           /* pick up files dropped into ~/Desktop */
 
         poll_notifications();                           /* drain notify() posts -> toast + center */
         switcher_tick(frame);                           /* Alt-Tab card: commit-on-release + highlight ease */

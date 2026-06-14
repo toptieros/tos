@@ -18,8 +18,9 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
 ## Open — the road ahead
 
 ### Toolkit & desktop UI
-- [~] **Files + Desktop suite (#10).** A shared `ui::FileView` powering both the Files window
-  and a new bottom-pinned `WIN_DESKTOP` layer over `~/Desktop`. **Landed 2026-06-13:** the
+- [~] **Files + Desktop suite (#10).** A rich Files window (`ui::FileView`) plus a desktop that
+  is a **compositor feature** (`user/twm/desktop.c`, a peer of the dock) drawing `~/Desktop`
+  over the wallpaper. **Landed 2026-06-13:** the
   **selection-set algebra** (`user/lib/filesel.h`, the Finder contract — click/Ctrl/Shift/marquee/
   Select-All/cursor moves, unit-tested `t_filesel` 43 checks) and **list-view multi-select** — a
   backwards-compatible `ListView::is_sel` predicate paints the whole set, `list_pick` reads
@@ -28,12 +29,25 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   but isn't e2e-able — the harness can't hold a modifier during a click). The **rubber-band marquee**
   also landed: a new `Window::on_release` hook + Files `on_press`/`on_drag` live-select the row band a
   drag over empty list space covers (e2e-verified via the drag helper; the rubber-band *rectangle* is
-  deferred polish). **Rename** (`renamefld`) and **drag-to-move** already exist (DnD protocol
-  2026-06-11; list-view onto-folder + icon/gallery sources 2026-06-13). **Left:** multi-select for the
-  **icon/gallery views**; **folder/multi-item copy-cut-paste** (today's `CLIP_FILE`-of-bytes can't
-  hold a directory → path-reference clipboard + recursive `cp_r`, acting on the whole set);
-  inter-window + onto-desktop drags; and the **`WIN_DESKTOP` layer + `desktop` app**
-  (`FileView(ICONS)` over `~/Desktop`). → [`files-and-desktop.md`](design/files-and-desktop.md)
+  deferred polish). **Icon + gallery views** now share the same set too (each got the `is_sel`
+  predicate; click + Ctrl+A multi-select, screenshot-verified). **Rename** (`renamefld`) and
+  **drag-to-move** already exist (DnD protocol 2026-06-11; list-view onto-folder + icon/gallery sources
+  2026-06-13). **Folder + multi-item copy/paste** landed too: the clipboard is now a `CLIP_FILEREF`
+  path-reference list (the whole selection, files + folders); `paste` recursively copies each via
+  `copy_across` (deduped, Cut = move), each journaled (e2e-verified — a nested tree copied through the
+  clipboard). **The desktop landed 2026-06-14** — but **not** as the originally-drafted
+  `WIN_DESKTOP` window + standalone `desktop` app. That draft was scrapped (letting an app's
+  *window* declare itself "the desktop" is the same anti-pattern as an app's manifest pinning
+  itself to the dock — desktop-ness is shell policy). The desktop is now a twm feature,
+  `user/twm/desktop.c` (peer of `dock.c`): twm scans `~/Desktop`, paints the icon grid over
+  the wallpaper in `compose()` below every window, single-click selects, double-click opens a
+  folder in Files, and a 1 Hz re-scan picks up live changes. Verified by a disposable boot
+  (`[twm] desktop items/reload N`) + screenshots; modelled on Plasma's desktop *containment*
+  living inside plasmashell (`inspiration/plasma-desktop`). **Left:** a 2D grid marquee + the
+  rubber-band rectangle; inter-window + onto-desktop drags; the desktop right-click context
+  menu; and multi-select/marquee/clipboard/rename **on the desktop** (these don't come free —
+  `desktop.c` is C and can't embed the C++ `FileView`, so each is reimplemented as needed).
+  → [`files-and-desktop.md`](design/files-and-desktop.md)
 - [~] **Files app follow-ons (files-app.md).** The planned catalog landed 2026-06-11 (see
   CHANGELOG.md). **Done 2026-06-11:** the interactive **§6 status bar** — a clickable **zoom
   slider** (icon view) + `+`/`-`/`0` shortcuts, and a **Stop button** that halts a running job
@@ -117,8 +131,9 @@ protocol). **Left:**
   Files now shows a **gold padlock badge** on system-owned items in the list/icon/split views
   (off the new `dirent.owner`, no per-row stat) and **greys Cut/Rename/Delete** in the context
   menu, with a status-bar deny-flash on the keyboard/toolbar paths (2026-06-11).
-  **Remaining (folded into the Desktop suite below):** the same lock badge on the future
-  `WIN_DESKTOP` layer (waits on that layer existing). → [`system-ownership.md`](design/system-ownership.md)
+  **Remaining (folded into the Desktop suite below):** the same lock badge on the twm desktop
+  (`user/twm/desktop.c` now scans `dirent.owner`; the badge is a small `draw_desktop` add).
+  → [`system-ownership.md`](design/system-ownership.md)
 - [ ] **Authentication & UAC elevation (system-ownership.md Phase 3).** Ownership Phase 1–2 landed
   (per-entry `owner`, per-task `uid`, `may_write()` enforcement, the Files lock badge), but the
   human-facing override is unbuilt: a **hashed user password** in a system-owned `/System/etc/auth`
@@ -146,7 +161,11 @@ protocol). **Left:**
   slot-walk jail is `cap_may_reach` in `fs.c`. A task holding all three fs caps (init + every
   `CAP_NORMAL` app) takes a fast-path, so the jail only bites a cap-dropped app — proven by the new
   `selftest group_fsjail` (a child that drops `CAP_FS_SYSTEM` can't open/stat/list `/System` but still
-  writes home). **Left:** a *precise* per-bundle `fs:bundle` (an app sees only its OWN `/Apps/<x>.app`,
+  writes home). **Regression fixed 2026-06-14:** the `CAP_NOTIFY` gate had silently broken the
+  shell's `notify` command — the Terminal manifest never granted `notify`, so the shell running
+  under its caps got `-1` and no toast (deterministic `t_notif_click_routing` failure). Terminal
+  (already a `net`-capable power tool) now declares `notify`. **Left:** a *precise* per-bundle
+  `fs:bundle` (an app sees only its OWN `/Apps/<x>.app`,
   not all of `/Apps` — needs the kernel to know each task's bundle root), and Phase 4 the runtime
   permission prompts + Settings review/revoke (needs the device caps + the trusted prompt to exist).
   → [`app-runtime.md`](design/app-runtime.md)

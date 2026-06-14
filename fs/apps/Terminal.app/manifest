@@ -3,6 +3,6 @@ exec      = bin/term
 icon      = icon.argb
 version   = 1.0
 category  = system
-caps      = window, fs:bundle, fs:home, fs:system, time, spawn, net
+caps      = window, fs:bundle, fs:home, fs:system, time, spawn, net, notify
 min_width = 360
 min_height= 200

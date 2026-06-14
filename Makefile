@@ -200,7 +200,8 @@ $(FSIMG): $(MKFS) $(UELFS) fs/motd fs/etc/registry $(APP_BUNDLES) fs/examples/He
 	    /System/share/examples/Hello.app/manifest=fs/examples/Hello.app/manifest \
 	    /System/share/examples/Hello.app/icon.argb=fs/apps/Terminal.app/icon.argb \
 	    /System/share/examples/Hello.app/bin/args=$(BUILD)/args.elf \
-	    /Users/user/Documents /Users/user/Desktop /Users/user/Downloads /Users/user/Pictures /Users/user/.config
+	    /Users/user/Documents /Users/user/Desktop /Users/user/Downloads /Users/user/Pictures /Users/user/.config \
+	    /Users/user/Desktop/Projects /Users/user/Desktop/readme.txt=fs/motd
 
 # --- BIOS disk image: MBR+boot | kernel | ... | tosfs partition @ LBA 2048 --
 # One disk now: the boot sector's partition table points the kernel at the

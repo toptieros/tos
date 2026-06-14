@@ -1366,32 +1366,88 @@ struct FilesApp : ui::Window {
         print("[files] trash empty\r\n");
         if (in_trash()) load_dir();
     }
-    /* Ctrl+C / Ctrl+X: stash the selected file on the clipboard ring; Cut also
-     * remembers the source so a later Paste moves it. Files only for now -- copying a
-     * whole directory needs a recursive walk we don't do yet. */
-    void copy_sel(bool cut) {
-        int idx = ent_at(list.sel);
-        if (idx < 0) return;
-        struct dirent *e = &ents[idx];
-        if (e->type != FT_FILE) return;
-        if (cut && owner_locked(e->owner)) { deny_flash(e->name); return; }   /* §1: can't move a system file */
-        char full[256]; join(full, sizeof full, path, e->name);
-        int n = 0; char *b = sys_slurp(full, &n);
-        if (!b) return;
-        clip_put(CLIP_FILE, e->name, b, n);
-        free(b);
-        have_cut = cut;
-        if (cut) { strncpy(cut_src, full, sizeof cut_src - 1); cut_src[sizeof cut_src - 1] = 0; }
-        else cut_src[0] = 0;
-        print(cut ? "[files] cut " : "[files] copy "); print(e->name); print("\r\n");
+    /* Build a NUL-separated absolute-path list of the current selection (the multi-set,
+     * or the cursor if no set) into buf[cap]; returns the byte length, sets *count + a
+     * label (the sole item's name, or "N items"). On a Cut an owner-locked item is
+     * skipped -- it can't be moved (§1). Files AND folders are included. */
+    int gather_sel_paths(char *buf, int cap, bool cut, char *label, int lcap, int *count) {
+        int len = 0, c = 0; label[0] = 0;
+        int nsel = (lsel.n == list.count) ? fsel_count(&lsel) : 0;
+        for (int r = 0; r < list.count; r++) {
+            bool take = nsel > 0 ? (fsel_has(&lsel, r) != 0) : (r == list.sel);
+            if (!take) continue;
+            int idx = ent_at(r); if (idx < 0) continue;            /* skip the synthetic ".." */
+            struct dirent *e = &ents[idx];
+            if (cut && owner_locked(e->owner)) { deny_flash(e->name); continue; }
+            char full[256]; join(full, sizeof full, path, e->name);
+            int fl = 0; while (full[fl]) fl++;
+            if (len + fl + 1 > cap) break;                         /* clipboard buffer full */
+            for (int i = 0; i <= fl; i++) buf[len++] = full[i];    /* copy incl the NUL separator */
+            if (c == 0) { strncpy(label, e->name, lcap - 1); label[lcap - 1] = 0; }
+            c++;
+        }
+        *count = c; return len;
     }
-    /* Ctrl+V: drop the active clipboard file into the current directory. Dedupes the
-     * name ("copy of X") rather than clobbering; a pending Cut deletes the source. */
+    /* Ctrl+C / Ctrl+X: stash the whole selection (files + folders) on the clipboard as a
+     * path-reference list; Cut marks it to move on the next Paste. The heavy copy is done
+     * lazily at paste time (a small reference now, the recursive walk later). */
+    void copy_sel(bool cut) {
+        char buf[4096], label[32]; int count = 0;
+        int len = gather_sel_paths(buf, sizeof buf, cut, label, sizeof label, &count);
+        if (count == 0) return;
+        if (count > 1) snprintf(label, sizeof label, "%d items", count);
+        clip_put(CLIP_FILEREF, label, buf, len);
+        have_cut = cut; cut_src[0] = 0;                            /* the sources travel in the clipboard now */
+        print(cut ? "[files] cut " : "[files] copy "); printu((unsigned)count); print("\r\n");
+    }
+    /* Ctrl+V: paste a CLIP_FILEREF path list (files + folders, the whole selection) into
+     * the current dir -- each source is recursively copied with collision dedupe via
+     * copy_across; a pending Cut then deletes the source (a move). Multi-item: every path
+     * in the list is pasted, each journaled for undo. */
+    void paste_fileref(int idx, int len) {
+        char *buf = (char *)malloc(len + 1);
+        if (!buf) return;
+        int n = clip_get(idx, buf, len);
+        if (n <= 0) { free(buf); return; }
+        int done = 0, off = 0;
+        while (off < n) {
+            const char *src = buf + off;
+            int sl = 0; while (off + sl < n && buf[off + sl]) sl++;
+            off += sl + 1;
+            if (sl == 0) continue;
+            int slash = -1; for (int i = 0; i < sl; i++) if (src[i] == '/') slash = i;
+            if (slash < 0) continue;
+            char srcdir[256]; int dl = (slash == 0) ? 1 : slash, j = 0;
+            for (; j < dl && j < (int)sizeof srcdir - 1; j++) srcdir[j] = src[j];
+            srcdir[j] = 0;
+            char name[80]; int k = 0;
+            for (int i = slash + 1; i < sl && k < (int)sizeof name - 1; i++) name[k++] = src[i];
+            name[k] = 0;
+            if (have_cut && eqn(srcdir, path)) continue;            /* same-dir cut+paste: no-op */
+            char out[256] = {0};
+            copy_across(srcdir, name, path, out, sizeof out);       /* recursive + dedup; reports dst */
+            if (out[0]) {
+                struct fstat st; int isdir = (stat_(out, &st) == 0 && st.type == FT_DIR);
+                if (have_cut) { rmrf(src); rec_op(OP_MOVE, src, out, isdir); }
+                else          rec_op(OP_COPY, "", out, isdir);      /* copy-paste: undo deletes the copy */
+                done++;
+            }
+        }
+        free(buf);
+        have_cut = false; cut_src[0] = 0;
+        print("[files] paste "); printu((unsigned)done); print("\r\n");
+        load_dir(); invalidate();
+    }
+    /* Ctrl+V: drop the active clipboard item(s) into the current directory. A path-ref
+     * list (the normal case) goes through paste_fileref; a legacy CLIP_FILE-of-bytes is
+     * still honoured. Dedupes the name rather than clobbering; a pending Cut moves. */
     void paste() {
         if (clip_count() <= 0) return;
         int idx = clip_active(-1);
         struct clipinfo ci;
-        if (idx < 0 || clip_info(idx, &ci) != 0 || ci.type != CLIP_FILE || ci.len == 0) return;
+        if (idx < 0 || clip_info(idx, &ci) != 0 || ci.len == 0) return;
+        if (ci.type == CLIP_FILEREF) { paste_fileref(idx, (int)ci.len); return; }
+        if (ci.type != CLIP_FILE) return;
         char name[40]; strncpy(name, ci.name, sizeof name - 1); name[sizeof name - 1] = 0;
         char dst[256]; join(dst, sizeof dst, path, name);
         if (have_cut && cut_src[0] && eqn(dst, cut_src)) {     /* cut+paste in the same dir: no-op */

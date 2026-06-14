@@ -7,6 +7,33 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **The desktop is now a compositor feature, not a window/app (2026-06-14).** `~/Desktop` is drawn
+  by **twm itself** (`user/twm/desktop.c`, a peer of `dock.c`): `desktop_init` scans the folder,
+  `draw_desktop()` paints the icon grid over the wallpaper in `compose()` below every window,
+  single-click selects, double-click opens a folder in Files (path handed off via `/tmp/.open-doc`,
+  then twm's capped `launch()`), and a 1 Hz `desktop_tick` re-scan picks up live changes. **This
+  replaces a scrapped draft** — a bottom-pinned `WIN_DESKTOP` window owned by a standalone `desktop`
+  app, colour-keyed through the compositor. That was the wrong shape: an app's *window* shouldn't get
+  to declare itself "the desktop" any more than an app's *manifest* should pin itself to the dock —
+  desktop-ness is shell policy. Modelled on Plasma, where the desktop is a *containment* inside
+  plasmashell alongside the panel, not a launched program (`inspiration/plasma-desktop`). Removing it
+  deleted the `WIN_DESKTOP` flag, the `desktop` ELF + `user/desktop/`, the colour-key/snapshot/launch
+  plumbing, and the `ui::Window::desktop` field. Verified by a disposable boot (`[twm] desktop
+  items/reload N`) + screenshots; smoke 13/13 + units green. → `design/files-and-desktop.md`.
+- **Fix: `notify` from the shell silently failed — Terminal lacked `CAP_NOTIFY` (2026-06-14).** The
+  capability sandbox gates `SYS_NOTIFY` on `CAP_NOTIFY`, but the Terminal bundle manifest never
+  granted it, so the shell (running under Terminal's caps) got `-1` and no toast ever appeared —
+  a deterministic `t_notif_click_routing` failure since the cap work landed. Terminal (already a
+  `net`-capable power tool) now declares `notify`. → `design/app-runtime.md`.
+- **Files: folder + multi-item copy/paste — path-reference clipboard (2026-06-13).** The file
+  clipboard switched from a single file's *bytes* (`CLIP_FILE`) to a **`CLIP_FILEREF`** payload — a
+  NUL-separated list of absolute source paths for the **whole selection**, files *and folders*. `copy_sel`
+  gathers the multi-select set (skipping ".." and, on a Cut, owner-locked items); `paste` walks the list
+  and recursively copies each source into the current dir via the existing `copy_across`/`copy_tree`
+  (collision-deduped), a pending Cut then deleting the source (a move), each item journaled for undo.
+  Folder copy (previously refused) and multi-item copy/paste now work. End-to-end verified: a folder with
+  a nested subdir + file copied through the clipboard, whole tree confirmed on disk (screenshot); smoke
+  + units green. → `design/files-and-desktop.md`.
 - **Files multi-selection — the shared selection-set algebra (2026-06-13).** First slice of the
   Files+Desktop suite: a pure, header-only **`user/lib/filesel.h`** selection set (a row-index set +
   anchor + cursor) implementing the Finder selection contract — plain click replaces, Ctrl/Super-click
@@ -23,7 +50,9 @@ Terse one-liners; the full prose lives in git history and the design/ docs.
   drag covers (skipping ".."); guarded so a click on an open context menu / Quick Look / rename
   overlay isn't misread as empty space (which had wiped the selection Delete acts on — caught + fixed
   via `t_files_trash`). Marquee is e2e-verified (drag selects 4 rows, screenshot). The rubber-band
-  *rectangle* is cosmetic polish, deferred. → `design/files-and-desktop.md`.
+  *rectangle* is cosmetic polish, deferred. **Icon + gallery views** then got the same set (each grew
+  an `is_sel` predicate; click + Ctrl+A multi-select work there too, screenshot-verified) — the set is
+  truly shared across all three views now. → `design/files-and-desktop.md`.
 - **Dock pinning is policy + user choice, not the app's call (2026-06-13).** Removed the manifest
   `pinned` field — letting an app declare its own pin meant any installed app could ship `pinned =
   true` and force itself onto the dock. twm's `load_apps` now derives each app's pin state from the

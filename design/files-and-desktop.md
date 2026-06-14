@@ -39,8 +39,9 @@ What exists in `user/files/files.cpp` + the toolkit today:
   the whole set; the Files list reads `kbd_mods()` at click time to route plain/Ctrl/Shift
   clicks, shows "N selected", and Ctrl+A / Edit ▸ Select All select all. The **rubber-band marquee**
   is wired too (a drag over empty list space live-selects the row band, via a new `Window::on_release`
-  hook). Still single-select in the **icon/gallery** views, and the marquee's rubber-band rectangle is
-  deferred polish.
+  hook). The **icon and gallery views** share the same set (each got an `is_sel` predicate; click +
+  Ctrl+A multi-select work there too). Deferred polish: the marquee's rubber-band rectangle and a 2D
+  grid marquee.
 - **Copy/Cut/Paste handles files only.** `copy_sel()` does `clip_put(CLIP_FILE, name,
   bytes, len)` — it stuffs the file's *bytes* into the clipboard ring, so it cannot
   represent a directory (the code says as much). `paste()` writes those bytes back;
@@ -75,13 +76,14 @@ A `FileView` owns:
   icon or empty space) once the DnD protocol lands.
 
 The Files **window** = chrome (toolbar: back/fwd/up, path bar, Info pane, sidebar) wrapped
-around one `FileView(LIST)` rooted at the navigated path. The **desktop** = a borderless,
-bottom-pinned window wrapped around one `FileView(ICONS)` rooted at `~/Desktop`. The
-sidebar shortcuts, history, and the details pane stay Files-window-only.
+around one `FileView(LIST)` rooted at the navigated path, with the rich toolkit affordances
+(sidebar shortcuts, history, details pane, rename, DnD).
 
-Benefit: "support everything Files does, on the desktop" becomes *use the same component*
-— not a parallel re-implementation. It is the same philosophy as the global `ui::TextField`
-contract and the global `ui::ScrollBar`.
+The **desktop** is a different beast — see "[The desktop is part of the compositor](#the-desktop-is-part-of-the-compositor-not-a-window-not-an-app)"
+below. It is drawn by `twm` itself (a peer of the dock), not a Files window, and it
+re-implements only the small icon-grid subset it needs rather than embedding the C++
+`FileView` (the compositor is C). They share the *idea* — `~/Desktop` as a grid of icons —
+not the code.
 
 ## The selection contract (shared by every FileView and surface)
 
@@ -180,36 +182,53 @@ Two distinct things share the word "drag":
    This same protocol unlocks cross-app text drag and the Pocket Dimension shelf
    (NEXT_STEPS), so design it once, generally (payload types: files, text, image bytes).
 
-## The desktop as a Files view
+## The desktop is part of the compositor (not a window, not an app)
 
-The desktop *is* a `FileView(ICONS)` rooted at `~/Desktop`. Architecture:
+**The desktop is a feature of `twm`, a peer of the dock and the control center** — it
+lives in `user/twm/desktop.c`, drawn by `compose()` directly over the wallpaper, below
+every window. This mirrors how real shells are built: in KDE Plasma the *desktop
+containment* and the *panel containment* (the task bar) are both hosted by **plasmashell**,
+the one shell process — KWin only composites; the desktop is **not** a launched program
+(see `inspiration/plasma-desktop`, `containments/desktop`, `"KPackageStructure":
+"Plasma/Applet"`). In tOS `twm` is *both* the compositor and the shell — it already owns
+the wallpaper, the bar and the dock — so the desktop belongs in it too.
 
-- **A new window layer `WIN_DESKTOP`.** Today `wininfo.flags` has `WIN_POPUP` and
-  `WIN_OVERLAY`; add `WIN_DESKTOP`, which the compositor **pins at the bottom of the
-  z-order** (above the wallpaper, below every normal window), **never focus-raises**, and
-  sizes full-screen (minus the menu bar). It is transparent where it has no icon so the
-  wallpaper shows through — reuse the colour-key blit (`ugfx_blit_round_key`, the sentinel
-  the Launchpad already uses) so the desktop surface paints only its icons/labels/selection
-  and lets the precomputed wallpaper behind it show everywhere else.
-- **A separate `desktop` app** (not twm) owns that window and runs the `FileView` — this
-  keeps the compositor out of the file-management business and makes the desktop *literally*
-  the same code as Files. `init` launches it at session start, like it launches `twm`.
-  (Alternative considered: twm draws desktop icons itself — rejected; it would drag readdir,
-  selection, clipboard and DnD into the compositor and duplicate Files.)
-- **Desktop specifics**:
-  - **Auto-grid** layout to start (top-left, column-major, like Finder's "snap to grid").
-    **Free icon positions** (drag an icon anywhere, remembered) is a follow-up — persist
-    per-item `(x,y)` in a dotfile (`~/Desktop/.positions`) or the registry; absence ⇒
-    auto-grid.
-  - **Right-click empty desktop** → context menu: New Folder, Paste, Get Info, "Change
-    Wallpaper…" (opens Settings), "Clean Up" (re-snap to grid).
-  - **Right-click an icon** → the same item context menu as Files.
-  - **Double-click an icon**: open (dir → a Files window at that path; file → default app).
-  - **Live updates**: re-`readdir` `~/Desktop` when it changes. For now **poll** once a
-    second (the same cadence twm uses to re-read the registry); later, an fs-change
-    notification (an inotify-like `WEV`/signal) avoids the poll — note as future.
-  - Selection / Ctrl-click / Shift / marquee / copy-cut-paste / rename all come **free**
-    from the shared FileView — that is the whole point.
+Architecture:
+
+- **No window, no `WIN_DESKTOP` flag, no separate process.** twm scans `~/Desktop` at
+  startup (`desktop_init`) and paints its icon grid in `draw_desktop()`, called by
+  `compose()` right after the wallpaper and before any window. The wallpaper simply shows
+  wherever there is no icon — there is nothing to colour-key, no surface to blit, no IPC
+  snapshot to reconcile, and the desktop is never in the z-order so it is never focusable.
+  (This replaces an earlier, over-engineered draft — a bottom-pinned `WIN_DESKTOP` window
+  owned by a standalone `desktop` app, colour-keyed through `ugfx_blit_round_key`. It was
+  scrapped: letting an app's *window* declare itself "the desktop" is the same mistake as
+  letting an app's *manifest* pin itself to the dock — desktop-ness is shell policy, not an
+  app's to claim. Folding it into twm also deleted a whole process, a window flag, the
+  colour-key path, and the snapshot/launch plumbing.)
+- **Why not literally reuse the Files `FileView`?** `FileView` is C++ on the `ui::` toolkit;
+  twm is C. They can't share a binary component, so the desktop re-implements the *small*
+  slice it needs (read a dir, lay out an icon grid, select, double-click-open) in ~150 lines
+  of C. The Files window keeps the rich `FileView` (sidebar, history, details, rename, DnD);
+  the desktop is deliberately the lightweight subset. They share the *idea* (`~/Desktop` as
+  an icon grid), not the code — the right trade for keeping file-management logic out of the
+  compositor.
+- **Desktop specifics (in `desktop.c`)**:
+  - **Auto-grid** layout (top-left, row-major), inset from the work-area edges. **Free icon
+    positions** (drag an icon anywhere, remembered) is a follow-up — persist per-item
+    `(x,y)` in a dotfile or the registry; absence ⇒ auto-grid.
+  - **Single-click** selects an icon (translucent pill); **clicking empty space** deselects.
+  - **Double-click**: open — a folder opens navigated-to in Files (the path is handed off via
+    `/tmp/.open-doc`, then twm's capped `launch()` starts Files); a file opens Files at the
+    Desktop. (Open-with-default-app is a follow-up.)
+  - **Live updates**: re-scan `~/Desktop` once a second (`desktop_tick`, the same cadence twm
+    re-reads the registry), repainting only when a cheap content signature changes; a file
+    dropped in from the shell or Files appears within a second. An fs-change notification
+    (inotify-like `WEV`/signal) to avoid the poll is future work.
+  - **Right-click empty desktop** → context menu (New Folder, Paste, Change Wallpaper…,
+    Clean Up) and **multi-select / marquee / clipboard / rename on the desktop** are
+    follow-ups, reimplemented in `desktop.c` as needed (they do not come "free" — that
+    convenience was the cost of not sharing the C++ component).
 
 ## Gaps this design opens (and where they're closed)
 
@@ -219,8 +238,7 @@ The desktop *is* a `FileView(ICONS)` rooted at `~/Desktop`. Architecture:
 | Rubber-band marquee | `Window::on_drag` (exists) → FileView |
 | Path-reference, multi-item, folder-aware clipboard | `CLIP_FILEREF` + `cp_r`/recursive paste |
 | Rename overlay widget | toolkit (one new widget, shared) |
-| `WIN_DESKTOP` bottom-pinned layer | `wininfo.flags` + compositor z-order |
-| Desktop app rendering `~/Desktop` | new `user/desktop/` app on `FileView(ICONS)` |
+| Desktop rendering `~/Desktop` | `user/twm/desktop.c` — a twm feature, drawn over the wallpaper in `compose()` (no window, no `WIN_DESKTOP`, no separate app) |
 | Drag-to-move between folders/desktop/dock | **DnD protocol** (NEXT_STEPS) — typed payload + ghost + `WEV_DROP` |
 | Deleting system files must fail | [`system-ownership.md`](system-ownership.md) |
 | Live folder change without polling | future fs-change notification |
@@ -233,14 +251,26 @@ The desktop *is* a `FileView(ICONS)` rooted at `~/Desktop`. Architecture:
    hook + Files `on_press`/`on_drag` live-select the row band a drag over empty space covers). No
    kernel changes. Existing Files tests still pass; multi-select is screenshot-verified (Ctrl+A) +
    unit-pinned (held-modifier clicks can't be driven by the harness), the marquee is e2e-verified via
-   the drag helper. *Left here:* the marquee's rubber-band **rectangle** (cosmetic) and **icon/gallery
-   multi-select**.
-2. **Folder/multi-item copy-cut-paste + rename + New File.** `CLIP_FILEREF` + recursive
-   `cp_r`; rename overlay. Tests: copy a folder (with a nested file) and verify the tree
-   landed; rename round-trips.
-3. **`WIN_DESKTOP` layer + the `desktop` app.** Render `~/Desktop` as an icon grid with the
-   shared FileView; context menu; open on double-click; poll for changes. Tests: drop a file
-   into `~/Desktop` via the shell, confirm the desktop shows it (serial marker), open it.
+   the drag helper. **Icon + gallery views** share the same set too (each got the `is_sel` predicate;
+   click + Ctrl+A multi-select work there, screenshot-verified). *Left here:* the marquee's rubber-band
+   **rectangle** (cosmetic) and a 2D **grid marquee** (the list marquee is 1D-contiguous; a grid rect
+   selects a non-contiguous set, so it needs a per-tile hit loop rather than `fsel_marquee`).
+2. **Folder/multi-item copy-cut-paste + rename + New File.** *Landed 2026-06-13.* The clipboard is a
+   `CLIP_FILEREF` path-reference list (the whole selection, files + folders); `copy_sel` gathers the
+   multi-set, `paste` recursively copies each source via `copy_across`/`copy_tree` (deduped; a Cut moves
+   by deleting the source), each item journaled. Rename (`renamefld`) + New Folder/New File already
+   existed. Verified: a folder with a nested subdir + file copied through the clipboard, whole tree
+   confirmed on disk (boot + screenshot); the dedupe naming (`dupname.h`) + the set algebra (`filesel.h`)
+   are unit-tested.
+3. **The desktop, in twm.** *Landed 2026-06-14.* `user/twm/desktop.c` — a compositor feature
+   (peer of the dock), **not** a window or a separate app. twm scans `~/Desktop` at startup
+   and paints the icon grid over the wallpaper in `compose()`; single-click selects,
+   double-click opens (folder → Files navigated there), and a once-a-second re-scan picks up
+   files dropped in live. Verified by a disposable boot (`[twm] desktop items N` /
+   `[twm] desktop reload N`) + screenshots. *An earlier `WIN_DESKTOP` window + standalone
+   `desktop` app draft was scrapped — see the architecture section.* *Left here:* the
+   right-click desktop context menu, and multi-select / marquee / clipboard / rename on the
+   desktop (reimplemented in `desktop.c` when needed).
 4. **DnD protocol → drag-to-move.** General typed-payload DnD (files/text/image); wire
    FileView as source + target; drag between folders, window↔desktop, onto folder icons and
    the dock. Tests: drag a file from a Files window to the desktop and confirm the move.
@@ -251,8 +281,9 @@ The desktop *is* a `FileView(ICONS)` rooted at `~/Desktop`. Architecture:
   set) and the recursive-copy *planner* (source tree → list of (mkdir/copy) ops, collision
   dedupe) are pure logic — unit-test them in `tests/unit/`.
 - **e2e (QEMU, a few canaries):** one multi-select + folder-paste journey; one desktop
-  journey (file appears on the desktop, opens). Drive by the serial markers FileView prints
-  (`[fileview] sel N`, `[files] paste …`, `[desktop] …`) the way the dock/Spotlight tests do.
+  journey (file appears on the desktop, opens). Drive by the serial markers the surfaces
+  print (`[files] paste …`, and the compositor's `[twm] desktop items N` /
+  `[twm] desktop reload N` / `[twm] desktop open …`) the way the dock/Spotlight tests do.
 
 ## Out of scope (for now)
 

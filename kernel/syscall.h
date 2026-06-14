@@ -130,8 +130,11 @@
 #define KMOD_ALT   4
 #define KMOD_SUPER 8
 
-#define CLIP_TEXT 0
-#define CLIP_FILE 1
+#define CLIP_TEXT    0
+#define CLIP_FILE    1   /* a single file's *bytes* (legacy single-file copy)              */
+#define CLIP_FILEREF 2   /* a NUL-separated list of absolute source paths (the whole        *
+                          * selection, files+folders); paste recursively copies each. A     *
+                          * distinct type so a "paste as text" never dumps raw file bytes.   */
 struct clipinfo { uint32_t type; uint32_t len; uint32_t active; char name[32]; };
 
 /* Drag-and-drop payload types: the typed bytes a drag carries (kernel/drag.c +

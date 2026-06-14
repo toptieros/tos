@@ -74,7 +74,8 @@ struct cwin { int used, id, wx, wy; uint32_t w, h, seq; uint64_t vaddr; char tit
               int curs; };                                 /* app-declared cursor hint (SYS_WIN_SETCURSOR, CUR_*) */
 
 /* The installed-app catalog entry: a /Apps/<Name>.app bundle (name, absolute exec
- * path, loaded icon, and whether its manifest pins it to the dock). */
+ * path, loaded icon, and whether the dock pins it -- OS policy + user choice via the
+ * registry, never the app's own declaration; see dock.c load_apps()). */
 struct app { char label[24], exec[120]; uint32_t *img; int iw, ih; int pinned; };
 
 /* a dock tile: display name, absolute exec path, icon (img==0 -> generic or, for the
@@ -134,6 +135,7 @@ void add_dirty(int x, int y, int w, int h);
 int  rects_hit(struct rect a, struct rect b);
 int  focus_slot(void);
 void focus_window(int slot);
+void launch(const char *prog);                                 /* fork+exec a program, dropped to its caps */
 void fit_text(char *dst, int cap, const char *src, int maxw);   /* truncate with ".." to maxw px */
 void notif_activate(const char *target, int frame);            /* focus/launch a notification's sender */
 
@@ -199,5 +201,13 @@ void draw_menu(void);
 void menu_click(int idx);
 int  menu_row_at(int my);        /* dropdown row index under a y inside the menu */
 void refresh_app_menu(void);
+
+/* ---------------------------------------------------------------- desktop.c
+ * The ~/Desktop icon field, drawn by the compositor over the wallpaper (a peer of
+ * the dock: part of twm, not a separate app). */
+void desktop_init(void);                         /* scan ~/Desktop at startup */
+void draw_desktop(void);                         /* paint the icons; called by compose() over the wallpaper */
+void desktop_tick(void);                         /* once a second: re-scan, repaint if it changed */
+int  desktop_click(int mx, int my, int frame);   /* a wallpaper click: select / double-click-open an icon */
 
 #endif /* TWM_H */

@@ -1252,7 +1252,10 @@ def t_files_getinfo(uefi):
         t.screenshot("/tmp/tos_getinfo.ppm")              # the pane shows Size "N, 3 items" + Owner
         # --- a system-owned item reads read-only (owner 0 -> the lock badge) ---
         _files_nav(t, wr, "/")
-        rx, ry = _files_row_xy(t, wr, 0)                  # volume root has no ".."; row 0 = first entry (Apps)
+        # volume root has no ".."; sorted dirs are Apps, System, tmp, Users. /Apps is now
+        # USER-owned (a user installs apps into it -- tos_owner_for in perm.h), so pick row 1
+        # = "System", which is genuinely system-owned (owner=0, the read-only lock).
+        rx, ry = _files_row_xy(t, wr, 1)
         t.click(rx, ry)
         m = None
         for _ in range(40):
