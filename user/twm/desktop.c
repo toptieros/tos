@@ -210,13 +210,20 @@ void desktop_drag(int mx, int my) {                      /* extend the band; res
     if (!marq_on) return;
     marq_x1 = mx; marq_y1 = my;
     struct rect b = marq_rect();
+    struct filesel prev = dsel;                          /* the set we're replacing this frame */
     dsel = marq_base;                                    /* rebuild from the drag-start set */
     desk_cols();
     for (int i = 0; i < dn; i++) {                       /* a 2D hit: any icon cell the band touches */
         struct rect c = desk_cell(i);
         if (rects_hit(b, c)) fsel_band(&dsel, i, i, 1);
     }
-    /* repaint the band's travel (old + new, grown for the 1px hairline) + the icon field */
+    /* Repaint every cell whose selection FLIPPED this frame, dirtying the WHOLE cell. The
+     * band may overlap only a corner of a cell, so dirtying just the band rect would leave
+     * the rest of a now-deselected cell's highlight on screen as residue (the bug: icons
+     * staying lit after the band slides off them). */
+    for (int i = 0; i < dn; i++)
+        if (fsel_has(&prev, i) != fsel_has(&dsel, i)) desk_dirty_cell(i);
+    /* and repaint the band rectangle's own travel (old + new, grown for the 1px hairline). */
     add_dirty(marq_pr.x - 2, marq_pr.y - 2, marq_pr.w + 4, marq_pr.h + 4);
     add_dirty(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
     marq_pr = b;
