@@ -66,6 +66,11 @@ void ugfx_rrect_a(int x, int y, int w, int h, int rad, uint32_t argb);   /* tran
 /* AA stroke following a rounded-rect outline, inset `t` px (the crisp hairline that
  * makes a modern surface read as a distinct card). */
 void ugfx_rrect_border(int x, int y, int w, int h, int rad, int t, uint32_t argb);
+/* The drag-select "rubber band": a translucent accent-tinted fill under a crisp accent
+ * hairline (the Dolphin/Breeze look). One renderer so every surface that marquee-selects
+ * -- the Files views and the desktop -- draws an identical band. `accent` is the focus
+ * colour (any A is ignored; the band derives its own fill/border alphas). */
+void ugfx_rubberband(int x, int y, int w, int h, uint32_t accent);
 /* A translucent-white "state layer" over a rounded rect: hover/press feedback. */
 void ugfx_state_layer(int x, int y, int w, int h, int rad, int alpha);
 /* The one scrollbar-thumb renderer shared by every scrollable surface in the OS

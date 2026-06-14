@@ -65,6 +65,7 @@ struct FilesApp : ui::Window {
     TabStrip     tabstrip;                    /* the folder tab strip (§4)             */
     ui::ListView list2;                       /* dual-pane: the second pane (§4)        */
     SplitDecor   splitdecor;                  /* splitter + active-pane accent (§4)     */
+    NotFoundBanner notfound;                  /* red "folder not found" strip (dead nav target) */
     ColumnHeader header;                       /* details-view sortable column header (§1) */
     Popup        menu;
     QuickLook    ql;                           /* Space-bar preview overlay (§11)        */
@@ -85,6 +86,7 @@ struct FilesApp : ui::Window {
     int              FTH = 0;                     /* footer height (0 outside picker mode) */
 
     char          path[256] = HOMEDIR;
+    bool          path_missing = false;          /* the navigated folder no longer exists (dead nav target) */
     struct dirent ents[NMAX];
     int           nents = 0;
     int           view[NMAX]; int nview = 0;     /* ents indices currently shown (after filter) */
@@ -353,6 +355,16 @@ struct FilesApp : ui::Window {
         snprintf(status.left, sizeof status.left, "\"%s\" is a system item (read only)", name);
         print("[files] denied "); print(name); print("\r\n");
         invalidate();
+    }
+    /* Refuse a mutation (New Folder/File, Paste) when the current folder no longer exists:
+     * its parent is gone, so anything created here would vanish. Flash + bail. Returns true
+     * when it refused. */
+    bool refuse_if_missing() {
+        if (!path_missing) return false;
+        snprintf(status.left, sizeof status.left, "This folder no longer exists");
+        print("[files] refuse-missing\r\n");
+        invalidate();
+        return true;
     }
     /* the badge: a small dark chip + gold padlock at the icon's lower-right (matches the
      * Get Info "Read only" badge colour). `box` is the icon's drawn size. */
@@ -647,6 +659,12 @@ struct FilesApp : ui::Window {
     void load_path(const char *p) {
         strncpy(path, p, sizeof path - 1); path[sizeof path - 1] = 0;
         if (!path[0]) { path[0] = '/'; path[1] = 0; }
+        {   /* dead nav target? a Places/sidebar shortcut whose folder was moved or deleted
+             * resolves to nothing -- flag it so the red banner shows + creates are refused. */
+            struct fstat pst;
+            path_missing = (stat_(path, &pst) != 0 || pst.type != FT_DIR);
+            if (path_missing) { print("[files] missing "); print(path); print("\r\n"); }
+        }
         if (filterfld.length() > 0) { loading = true; filterfld.set_text(""); loading = false; }  /* fresh folder, fresh filter */
         if (!picker) {                                       /* §2: restore this folder's remembered view */
             struct view_prefs v = load_view_prefs();
@@ -1442,6 +1460,7 @@ struct FilesApp : ui::Window {
      * list (the normal case) goes through paste_fileref; a legacy CLIP_FILE-of-bytes is
      * still honoured. Dedupes the name rather than clobbering; a pending Cut moves. */
     void paste() {
+        if (refuse_if_missing()) return;
         if (clip_count() <= 0) return;
         int idx = clip_active(-1);
         struct clipinfo ci;
@@ -1481,6 +1500,7 @@ struct FilesApp : ui::Window {
         return -1;
     }
     void make_folder() {
+        if (refuse_if_missing()) return;
         char name[40], child[256];
         for (int k = 0; k < 1000; k++) {
             if (k == 0) strncpy(name, "newfolder", sizeof name); else snprintf(name, sizeof name, "newfolder%d", k);
@@ -1496,6 +1516,7 @@ struct FilesApp : ui::Window {
     /* §12: New (Text) File -- create an empty "newfile.txt" here (deduped so repeats
      * never clobber) and drop into rename over it, exactly like New Folder. */
     void make_file() {
+        if (refuse_if_missing()) return;
         char name[40], child[256];
         for (int k = 0; k < 1000; k++) {
             if (k == 0) strncpy(name, "newfile.txt", sizeof name); else snprintf(name, sizeof name, "newfile%d.txt", k);
@@ -1873,8 +1894,11 @@ struct FilesApp : ui::Window {
         int FBH = filter_open ? fh + 16 : 0;             /* the live-filter bar band       */
         filterfld.visible = filter_open;
         filterfld.r = { mainx + 10, tabs_bottom + 3, mainw - 20, fh + 8 };
+        int BANH = path_missing ? fh + 14 : 0;           /* the dir-not-found banner band  */
+        notfound.visible = path_missing;
+        notfound.r = { mainx, tabs_bottom + FBH, mainw, BANH };
         FTH = picker ? fh + 26 : 0;                      /* the picker footer band         */
-        listy = tabs_bottom + FBH;
+        listy = tabs_bottom + FBH + BANH;
         int lh = h - listy - STH - FTH; if (lh < fh) lh = fh;
         list.row_h = list2.row_h = fh + 12;
         int HDRH = cols_on() ? fh + 10 : 0;              /* §1: details column-header band  */
@@ -2057,7 +2081,7 @@ struct FilesApp : ui::Window {
 
         layout_widgets();
         add(&side); add(&bar); add(&back); add(&fwd); add(&up); add(&newf); add(&del); add(&info); add(&tabstrip);
-        add(&crumbbar); add(&pathfld); add(&filterfld); add(&header); add(&list); add(&grid); add(&gal); add(&list2); add(&splitdecor); add(&renamefld); add(&details); add(&status);
+        add(&crumbbar); add(&pathfld); add(&filterfld); add(&notfound); add(&header); add(&list); add(&grid); add(&gal); add(&list2); add(&splitdecor); add(&renamefld); add(&details); add(&status);
         add(&footer); add(&nameLbl); add(&nameFld); add(&cancelBtn); add(&okBtn);
         add(&ql);                                     /* Quick Look under the menu/dialog layer (§11) */
         add(&menu); add(&overwrite);                  /* menu + overwrite last = on top + modal */

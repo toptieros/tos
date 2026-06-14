@@ -399,6 +399,19 @@ void ugfx_rrect_border(int x, int y, int w, int h, int rad, int t, uint32_t argb
         }
 }
 
+/* The drag-select rubber band: a translucent accent fill under a crisp accent hairline,
+ * lightly rounded -- the Breeze/Dolphin look. Negative w/h are normalised so a caller can
+ * pass raw (anchor -> cursor) deltas. One renderer shared by the Files views and the
+ * desktop so the band is identical everywhere. */
+void ugfx_rubberband(int x, int y, int w, int h, uint32_t accent) {
+    if (w < 0) { x += w; w = -w; }
+    if (h < 0) { y += h; h = -h; }
+    if (w <= 0 || h <= 0) return;
+    uint32_t r = (accent >> 16) & 0xff, g = (accent >> 8) & 0xff, b = accent & 0xff;
+    ugfx_rrect_a(x, y, w, h, 2, ARGB(56, r, g, b));            /* translucent tint inside  */
+    ugfx_rrect_border(x, y, w, h, 2, 1, ARGB(205, r, g, b));   /* crisp accent hairline    */
+}
+
 /* A Material-style "state layer": a faint translucent-white overlay clipped to a
  * rounded rect, painted over a control to signal hover/press. `alpha` is the 0..255
  * coverage (see TH_HOVER_A / TH_PRESS_A). */

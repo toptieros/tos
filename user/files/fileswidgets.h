@@ -506,6 +506,29 @@ public:
     bool on_mouse(int, int, int) override { return false; }      /* never consume clicks */
 };
 
+/* ---------------------------------------------------------------- NotFoundBanner */
+/* Dolphin-style "directory not found" strip: a translucent red banner across the top of
+ * the content area when the navigated folder no longer exists -- e.g. a Places/sidebar
+ * shortcut to a folder that has since been moved or deleted, so the path resolves to
+ * nothing. Decorative + non-interactive; the app sets `visible` + the rect in layout(). */
+class NotFoundBanner : public ui::Widget {
+public:
+    NotFoundBanner() { focusable = false; }
+    void draw() override {
+        if (!visible || r.h <= 0) return;
+        int fh = ugfx_font_h();
+        ugfx_fill_a(r.x, r.y, r.w, r.h, ARGB(235, 122, 32, 36));         /* muted red bar    */
+        ugfx_fill_a(r.x, r.y + r.h - 1, r.w, 1, ARGB(120, 0, 0, 0));     /* bottom hairline  */
+        int cy = r.y + r.h / 2, dot = fh - 2, dx = r.x + 12;            /* a warning lozenge */
+        ugfx_rrect_aa(dx, cy - dot / 2, dot, dot, dot / 2, ARGB(255, 240, 200, 90));
+        ugfx_text(dx + (dot - ugfx_text_w("!")) / 2, cy - fh / 2, "!", RGB(70, 46, 0), UGFX_TRANSPARENT);
+        ugfx_text(dx + dot + 10, cy - fh / 2,
+                  "Folder not found - it may have been moved or deleted",
+                  RGB(250, 236, 236), UGFX_TRANSPARENT);
+    }
+    bool on_mouse(int, int, int) override { return false; }
+};
+
 /* ---------------------------------------------------------------- ColumnHeader */
 /* The details-view header row (design/files-app.md §1): Name / Kind / Size / Date Modified.
  * Clicking a column's label sorts by it (toggling asc/desc on the active one, shown by a
