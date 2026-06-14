@@ -27,9 +27,13 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   `kbd_mods()` to route plain/Ctrl/Shift clicks, status shows "N selected", **Ctrl+A** / **Edit ▸
   Select All** select every item (boot + screenshot verified; Ctrl/Shift-*click* works on hardware
   but isn't e2e-able — the harness can't hold a modifier during a click). The **rubber-band marquee**
-  also landed: a new `Window::on_release` hook + Files `on_press`/`on_drag` live-select the row band a
-  drag over empty list space covers (e2e-verified via the drag helper; the rubber-band *rectangle* is
-  deferred polish). **Icon + gallery views** now share the same set too (each got the `is_sel`
+  also landed, and is now a **true 2D band in every view** (2026-06-14): a press on empty view space
+  arms it, a drag grows a Dolphin-style translucent-accent **rectangle** (the shared `ugfx_rubberband`
+  primitive) and live-selects every entry whose on-screen *cell* the band **intersects** — list rows,
+  icon tiles, AND gallery thumbs, via a unified `view_cell_rect()` + a new toolkit `Window::draw_overlay()`
+  hook that paints app chrome over the widgets. (Replaced the old list-only 1D row-band.) Verified by a
+  disposable boot + screenshots (list: the band over the folder rows; icon: a sub-block selecting 5/9,
+  `..` excluded). **Icon + gallery views** now share the same set too (each got the `is_sel`
   predicate; click + Ctrl+A multi-select, screenshot-verified). **Rename** (`renamefld`) and
   **drag-to-move** already exist (DnD protocol 2026-06-11; list-view onto-folder + icon/gallery sources
   2026-06-13). **Folder + multi-item copy/paste** landed too: the clipboard is now a `CLIP_FILEREF`
@@ -43,10 +47,17 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   the wallpaper in `compose()` below every window, single-click selects, double-click opens a
   folder in Files, and a 1 Hz re-scan picks up live changes. Verified by a disposable boot
   (`[twm] desktop items/reload N`) + screenshots; modelled on Plasma's desktop *containment*
-  living inside plasmashell (`inspiration/plasma-desktop`). **Left:** a 2D grid marquee + the
-  rubber-band rectangle; inter-window + onto-desktop drags; the desktop right-click context
-  menu; and multi-select/marquee/clipboard/rename **on the desktop** (these don't come free —
-  `desktop.c` is C and can't embed the C++ `FileView`, so each is reimplemented as needed).
+  living inside plasmashell (`inspiration/plasma-desktop`). **The desktop multi-select + 2D marquee
+  landed 2026-06-14** — `desktop.c` reuses the same `filesel.h` set algebra and the `ugfx_rubberband`
+  primitive: Ctrl/Shift-click select, and a drag on empty wallpaper grows the rubber-band rectangle
+  and selects the icons it intersects (twm's loop forwards the drag/release to `desktop_drag`/
+  `desktop_release`; verified — `[twm] desktop marquee N` + a screenshot of the band over the icon
+  field). The Files **dead-shortcut bug** is fixed too: clicking a sidebar Favorite whose folder was
+  moved/deleted now raises a Dolphin-style **red "folder not found" banner** (`NotFoundBanner`) instead
+  of landing in a ghost folder, and New Folder/File/Paste refuse there (`refuse_if_missing`). **Left:**
+  inter-window + onto-desktop drags; the desktop right-click context menu (blank space + per-icon); and
+  clipboard copy/cut/paste + in-place rename **on the desktop** (these don't come free — `desktop.c` is C
+  and can't embed the C++ `FileView`, so each is reimplemented as needed).
   → [`files-and-desktop.md`](design/files-and-desktop.md)
 - [~] **Files app follow-ons (files-app.md).** The planned catalog landed 2026-06-11 (see
   CHANGELOG.md). **Done 2026-06-11:** the interactive **§6 status bar** — a clickable **zoom
@@ -79,6 +90,73 @@ Legend: `[ ]` not started · `[~]` partial · `[⏸]` set aside (don't build unl
   that genuinely benefits, **Files' `layout_widgets()`**, is rewritten onto `ui::Layout` as part of
   the Files + Desktop suite below, where it's heavily touched anyway. **Left:** convert app panes to
   `ui::Layout` opportunistically as they're touched; row/grid sugar only if an app needs it.
+
+### Compositor / window management (compositor.md)
+twm is **both halves of a Plasma system in one process** — the compositor (KWin's job:
+surfaces, stacking, input, effects) *and* the shell (plasmashell's job: panel, dock,
+launchers, desktop). [`compositor.md`](design/compositor.md) mines `inspiration/plasma-desktop`
++ `inspiration/wayland` for the window-management roadmap; every item keeps the house rules
+(native C drawing, slate-blue `theme.h`, dirty-rect single-writer, **no artificial caps** on
+window/desktop/grid counts) and the testing pyramid (host unit for the pure math + ONE
+disposable boot + a screenshot, never a new permanent e2e). Ordered cheapest-first by
+leverage ÷ cost, each unblocking the next:
+- [ ] **0. `ugfx_blit_scaled` — the free-lunch primitive.** Every app surface is already
+  mapped read-only into twm at `cwin.vaddr`, so a live, scaled thumbnail of any window is a
+  pure box-downscale of bytes we already hold — no new syscall/protocol/per-app code (the wall
+  Plasma climbs with PipeWire/KWin thumbnails). One integer box-filter blit (clipped to
+  `cur_clip`, honours the title-bar offset). Unblocks 1/2/6. *Unit:* known src → known averaged
+  dst pixels.
+- [ ] **1. A — Live window previews.** Dock-hover floats a frosted card (the `shadow_box` +
+  `ugfx_frost` idiom, dirtied like the toast) with the hovered app's scaled live surface; the
+  Alt-Tab `switcher.c` card swaps its per-entry icon for the same thumbnail. Builds on 0, no
+  new IPC. *Boot:* two windows, Alt-Tab, screenshot real contents.
+- [ ] **2. D — Show-Desktop / Peek / Minimize-All.** A dock/status affordance (or Super chord)
+  that records the visible set and minimizes it, toggles back to exactly that set; *peek* is the
+  same without committing (stop drawing windows in `compose()` while held). Reuses the `min` flag
+  + restore genie. Trivial. *Boot:* 2 windows, toggle → both `min`, toggle → restored.
+- [ ] **3. C — Quick-tile / edge snapping.** Title-bar drag into an `EDGE` band paints a
+  translucent accent snap-preview (the minimize-ghost vocabulary); release tiles to work-area
+  half/quarter/full via the `WEV_RESIZE` + reposition `toggle_max` already uses; restore-on-undrag
+  remembers floating geometry (`c->sx/sy/sw/sh`). Also Meta+arrows. *Unit:* snap geometry. *Boot:*
+  drag to left edge → client rect is the left half.
+- [ ] **4. H — Hot corners + B — Overview/Present-Windows.** A tiny corner-dwell→action table
+  (registry-configurable) feeding off the cursor we already sample each frame; the headline action
+  is **Overview**: a new compositor mode (peer of `sw_overlay`) that dims the desktop and tiles the
+  non-minimized windows in a **non-overlapping grid scaled to fit** (cell count scales to the live
+  set — no fixed layout cap), each a live thumbnail; click/Enter focuses + exits, Esc cancels.
+  Reuses the switcher grab + modal scrim + (0). *Unit:* grid packer (N rects → no overlap, on-screen).
+  *Boot:* 3 windows, trigger, screenshot the field, click a cell → `[twm] focus <title>`.
+- [ ] **5. E — Dock as a real task manager.** *Grouping popup:* >1-window apps get the (A) card
+  listing each window's live preview, click focuses that window. *Progress/count/attention:* extend
+  the notify channel so an app posts `{progress, count, attention}` keyed to its window; the dock
+  draws a thin accent progress arc, a count pill, a one-shot attention pulse (the hover-lift damage
+  path exists). Audio indicator parked (no audio subsystem). *Unit:* badge/arc geometry.
+- [ ] **6. G — Panel visibility modes + J — cheap effects.** *Dodge-windows* (the new one): keep
+  bar/dock shown until a visible window's rect overlaps its band, then hide only for that window —
+  an extra predicate OR'd into `update_chrome`'s `want_bar`/`want_dock`. *Effects* (all reuse the
+  genie anim + alpha fills): fade/scale on map+close (`AN_OPEN`/`AN_CLOSE`), optional dim-inactive
+  veil (registry, off by default); note we already have dialog-parent dim (the modal scrim).
+- [ ] **7. I — Anchored popups (the Wayland `xdg_positioner` lesson).** Give popup creation an
+  optional anchor rect + gravity; twm places the popup adjacent and **flips then slides** to stay
+  on-screen. The menu-bar dropdown drops its bespoke clamp and becomes the first consumer; future
+  context menus (incl. the desktop's) the next. Formalize popup-with-parent (auto-close on parent
+  focus-loss) while here. *Unit:* positioner near each edge → expected flipped/slid rect.
+- [ ] **8. F — Virtual desktops + a pager.** The big model change — gate as its own task. Each
+  window gets a `desktop` index + a `cur_desktop`; `compose()` / hit-test / dock-running all filter
+  by it. A small pager (status cluster or left of dock) draws N cells, current highlighted, click to
+  switch, accepts a **window dropped onto a cell** (reuse the DnD machinery — drag a window like
+  Files drags a file). Rides J's slide transition. Desktop count dynamic, **never a wall**.
+  *Activities* explicitly out of scope. *Unit:* on-desktop filter predicate.
+- [⏸] **9. K — Applet/edit-mode + Wayland frame-callbacks / HiDPI.** A user-arrangeable chrome
+  (status-cluster applet list + control-center tile grid via registry + a C draw/click vtable — an
+  internal applet interface, **not** a dynamic-plugin ABI), a frame-callback "you may draw" signal
+  vs. the fixed 12 ms sleep, and per-output scale for HiDPI. All parked behind the Phase-2 userspace
+  runtime ([`app-runtime.md`](design/app-runtime.md)) / touch the toolkit, not just twm.
+
+Deliberately **not** borrowing (compositor.md): Activities (virtual desktops cover the need), a GPU
+effects pipeline (CPU `ugfx_frost` is the ceiling; the cheap effects above are the whole budget),
+live multi-monitor, and a dynamic plugin ABI. → [`compositor.md`](design/compositor.md)
+
 ### Global text-interaction contract
 The toolkit owns the in-window text contract: anything in `TextField` is inherited by every
 toolkit app for free. **Done:** blink caret, drag-select, Ctrl+A, double-click word-select,
@@ -335,9 +413,10 @@ protocol). **Left:**
   "button held" after an odd button-up ordering, which would suppress hover + swallow clicks
   desktop-wide → apparent freeze. The QEMU repro is confounded because the harness `drag()` uses
   *relative* `mouse_move` packets that can themselves desync the emulated PS/2 pointer/button (a state a
-  real mouse self-heals), so harness "input stalls" after a drag aren't trustworthy evidence. Repro
-  scaffold kept at `tests/repro_split_drag.py`. To investigate: instrument twm's button/`cdrag` state
-  across a client drag and guarantee input servicing can't wedge on a malformed button sequence.
+  real mouse self-heals), so harness "input stalls" after a drag aren't trustworthy evidence.
+  To investigate: write a disposable `tests/repro_split_drag.py` (git-ignored) that instruments twm's
+  button/`cdrag` state across a client drag and guarantees input servicing can't wedge on a malformed
+  button sequence.
   **Update (2026-06-10):** the press-vs-hover fix (hover posting frozen while a button is held +
   an explicit release packet to the `cdrag` owner — see the changelog) reworked exactly this
   button/`cdrag` machinery; if the freeze is ever seen again, re-test on a build with that fix

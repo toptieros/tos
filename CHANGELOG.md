@@ -7,6 +7,26 @@ What has **landed**, plus the history of resolved issues. What's *left* is in
 
 Terse one-liners; the full prose lives in git history and the design/ docs.
 
+- **2D rubber-band marquee everywhere — Files (all views) + the desktop (2026-06-14).** A shared
+  `ugfx_rubberband()` primitive (translucent accent fill + 1px border, the Dolphin look) draws a true
+  **2D band**, and selection is now by **cell intersection**, not a 1D row range. In Files a press on
+  empty view space arms the band; a unified `view_cell_rect()` hit-tests list rows, icon tiles, and
+  gallery thumbs alike, and a new toolkit **`Window::draw_overlay()`** hook (drawn after every child
+  widget) paints the rectangle over whichever view is active. On the **desktop** (`user/twm/desktop.c`)
+  the same `filesel.h` algebra + `ugfx_rubberband` give Ctrl/Shift-click select and a wallpaper-drag
+  marquee (twm's loop forwards the drag/release to `desktop_drag`/`desktop_release`). Verified by
+  disposable boots + screenshots (Files icon view: a sub-block selects 5/9 with `..` excluded; desktop:
+  the band over the icon field, `[twm] desktop marquee N`). Also landed: the Files **dead-shortcut fix**
+  — clicking a sidebar Favorite whose folder was moved/deleted raises a Dolphin-style red
+  **"folder not found" banner** (`NotFoundBanner`) and New Folder/File/Paste refuse there
+  (`refuse_if_missing`), instead of silently landing in a ghost folder. → `design/files-and-desktop.md`.
+- **Compositor roadmap doc + test-hygiene pass (2026-06-14).** New `design/compositor.md` mines
+  `inspiration/plasma-desktop` + `inspiration/wayland` for the window-management roadmap (the free-lunch
+  `ugfx_blit_scaled` thumbnail primitive → live previews, Overview, quick-tile, show-desktop, hot
+  corners, task-manager polish, dodge panels, anchored popups, virtual desktops); seeded into
+  NEXT_STEPS + the task list. Disposable verification scripts (`tests/repro_*.py` / `scratch_*.py`) are
+  now **git-ignored** and the 22 committed ones removed — they're scratch per `design/testing.md`, not
+  source. → `design/compositor.md`, `design/testing.md`.
 - **The desktop is now a compositor feature, not a window/app (2026-06-14).** `~/Desktop` is drawn
   by **twm itself** (`user/twm/desktop.c`, a peer of `dock.c`): `desktop_init` scans the folder,
   `draw_desktop()` paints the icon grid over the wallpaper in `compose()` below every window,

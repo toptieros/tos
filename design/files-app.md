@@ -217,7 +217,7 @@ per-tab drag/reorder.)*
   and the Ctrl+`*` chord. ⚠ **Known issue (not reliably reproducible):** a user reported a
   cross-pane click-drag freezing the whole desktop; the Files side of the drag is provably benign
   (no loop/panic), so if real the locus is twm's input loop — see the "Known issues" note in
-  NEXT_STEPS.md + the `tests/repro_split_drag.py` scaffold.)*
+  NEXT_STEPS.md for the investigation plan.)*
 
 Both are pure app-level composition over `FileView` instances — no kernel work — but
 tabs need a tab-strip widget and split needs a draggable splitter (small toolkit

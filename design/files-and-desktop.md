@@ -38,10 +38,13 @@ What exists in `user/files/files.cpp` + the toolkit today:
   unit-tested in `t_filesel`). `ListView` grew an optional `is_sel` predicate so it paints
   the whole set; the Files list reads `kbd_mods()` at click time to route plain/Ctrl/Shift
   clicks, shows "N selected", and Ctrl+A / Edit ▸ Select All select all. The **rubber-band marquee**
-  is wired too (a drag over empty list space live-selects the row band, via a new `Window::on_release`
-  hook). The **icon and gallery views** share the same set (each got an `is_sel` predicate; click +
-  Ctrl+A multi-select work there too). Deferred polish: the marquee's rubber-band rectangle and a 2D
-  grid marquee.
+  is wired too, and is now a **true 2D band in every view** (2026-06-14): a press on empty view space
+  arms it, a drag grows a Dolphin-style translucent-accent **rectangle** (`ugfx_rubberband`) and
+  live-selects every entry whose on-screen *cell* it **intersects** — list rows, icon tiles, and
+  gallery thumbs alike, via a unified `view_cell_rect()` + a new toolkit **`Window::draw_overlay()`**
+  hook (drawn after every child widget, so app chrome can float over the views). The **icon and gallery
+  views** share the same set (each got an `is_sel` predicate + a `cell_rect()` for the band). The same
+  band — same `filesel.h` + `ugfx_rubberband` — runs on the twm desktop (`user/twm/desktop.c`).
 - **Copy/Cut/Paste handles files only.** `copy_sel()` does `clip_put(CLIP_FILE, name,
   bytes, len)` — it stuffs the file's *bytes* into the clipboard ring, so it cannot
   represent a directory (the code says as much). `paste()` writes those bytes back;
@@ -225,10 +228,14 @@ Architecture:
     re-reads the registry), repainting only when a cheap content signature changes; a file
     dropped in from the shell or Files appears within a second. An fs-change notification
     (inotify-like `WEV`/signal) to avoid the poll is future work.
-  - **Right-click empty desktop** → context menu (New Folder, Paste, Change Wallpaper…,
-    Clean Up) and **multi-select / marquee / clipboard / rename on the desktop** are
-    follow-ups, reimplemented in `desktop.c` as needed (they do not come "free" — that
-    convenience was the cost of not sharing the C++ component).
+  - **Multi-select + 2D marquee** *(landed 2026-06-14)*: Ctrl/Shift-click select icons, and a drag
+    on empty wallpaper grows the same Dolphin-style `ugfx_rubberband` rectangle, selecting the icons
+    its cells intersect (twm's input loop forwards the drag/release to `desktop_drag`/`desktop_release`;
+    reuses `filesel.h`, so the desktop and Files share the exact selection contract).
+  - **Right-click empty desktop** → context menu (New Folder, Paste, Change Wallpaper…, Clean Up) and
+    **clipboard copy/cut/paste + in-place rename on the desktop** are the remaining follow-ups,
+    reimplemented in `desktop.c` as needed (they do not come "free" — that convenience was the cost of
+    not sharing the C++ component).
 
 ## Gaps this design opens (and where they're closed)
 
@@ -252,9 +259,11 @@ Architecture:
    kernel changes. Existing Files tests still pass; multi-select is screenshot-verified (Ctrl+A) +
    unit-pinned (held-modifier clicks can't be driven by the harness), the marquee is e2e-verified via
    the drag helper. **Icon + gallery views** share the same set too (each got the `is_sel` predicate;
-   click + Ctrl+A multi-select work there, screenshot-verified). *Left here:* the marquee's rubber-band
-   **rectangle** (cosmetic) and a 2D **grid marquee** (the list marquee is 1D-contiguous; a grid rect
-   selects a non-contiguous set, so it needs a per-tile hit loop rather than `fsel_marquee`).
+   click + Ctrl+A multi-select work there, screenshot-verified). *Finished 2026-06-14:* the marquee's
+   rubber-band **rectangle** (`ugfx_rubberband` via the new `Window::draw_overlay()` hook) and the **2D
+   grid marquee** — a unified `view_cell_rect()` + per-cell intersection loop (`fsel_band`) replaced the
+   1D-contiguous `fsel_marquee` row-band, so the band now selects a non-contiguous 2D set in list, icon,
+   and gallery views (and on the twm desktop, same code).
 2. **Folder/multi-item copy-cut-paste + rename + New File.** *Landed 2026-06-13.* The clipboard is a
    `CLIP_FILEREF` path-reference list (the whole selection, files + folders); `copy_sel` gathers the
    multi-set, `paste` recursively copies each source via `copy_across`/`copy_tree` (deduped; a Cut moves

@@ -5,6 +5,12 @@
 __pycache__/
 *.pyc
 
+# Disposable verification scripts. Per design/testing.md, a feature is checked with
+# host units + ONE ad-hoc boot + a screenshot; that boot driver is scratch, not a
+# permanent e2e. Name them tests/repro_*.py (or scratch_*.py) and they stay local.
+/tests/repro_*.py
+/tests/scratch_*.py
+
 # Editor / OS cruft
 *.swp
 *~

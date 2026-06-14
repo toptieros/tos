@@ -206,8 +206,11 @@ void refresh_app_menu(void);
  * The ~/Desktop icon field, drawn by the compositor over the wallpaper (a peer of
  * the dock: part of twm, not a separate app). */
 void desktop_init(void);                         /* scan ~/Desktop at startup */
-void draw_desktop(void);                         /* paint the icons; called by compose() over the wallpaper */
+void draw_desktop(void);                         /* paint the icons + marquee; called by compose() over the wallpaper */
 void desktop_tick(void);                         /* once a second: re-scan, repaint if it changed */
-int  desktop_click(int mx, int my, int frame);   /* a wallpaper click: select / double-click-open an icon */
+int  desktop_click(int mx, int my, int frame);   /* a wallpaper press: select / double-click-open / arm a marquee */
+int  desktop_marquee_active(void);               /* is a rubber-band drag in flight? */
+void desktop_drag(int mx, int my);               /* extend the marquee, reselect intersecting icons */
+void desktop_release(void);                       /* end the marquee */
 
 #endif /* TWM_H */

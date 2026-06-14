@@ -401,6 +401,11 @@ public:
      * track a gesture across the whole press..release (Files' rubber-band) override it
      * to finalise/clear that state. Fires on every release, drag or not. */
     virtual void on_release() {}
+    /* Drawn LAST each repaint, after every child widget, into the window surface (the
+     * clip is the frame's damage rect). For app-level chrome that floats over the
+     * widgets and isn't itself a widget -- e.g. Files' rubber-band marquee rectangle,
+     * which spans whichever view is active. Default: nothing. */
+    virtual void draw_overlay() {}
     virtual void on_scroll(int delta) { (void)delta; }   /* wheel not over any scrollable widget */
     /* Drag-and-drop (design/files-and-desktop.md). A source arms a typed payload with
      * begin_drag() from its on_drag (once the gesture leaves a draggable item); the

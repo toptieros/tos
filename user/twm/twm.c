@@ -1258,6 +1258,7 @@ void _ustart(void) {
                     wm_post(cdrag, WEV_MOUSE, WEV_MOUSE_PACK(rx, ry, 0));
                 }
             }
+            if (desktop_marquee_active()) desktop_release();   /* end a rubber-band over the desktop */
             drag = -1; rsz = -1; cdrag = -1;
         }
         /* Drag-and-drop ghost tracking: while a session is in flight, hit-test the
@@ -1299,6 +1300,12 @@ void _ustart(void) {
                 wm_post(cdrag, WEV_MOUSE, WEV_MOUSE_PACK(rx, ry, (ms.buttons & 1) | WEV_MOUSE_DRAG));
             }
         }
+        /* Desktop rubber-band: a press that landed on empty wallpaper armed a marquee
+         * (desktop_click). While it's held and dragging -- and not contending with a
+         * window move/resize, a client drag-select, or a DnD session -- extend the band
+         * and reselect the ~/Desktop icons it now intersects. */
+        if (desktop_marquee_active() && down && moved && drag < 0 && rsz < 0 && cdrag < 0 && !dnd_type)
+            desktop_drag(ms.x, ms.y);
         /* Live resize: while the grip is held, push size changes to the app as the
          * pointer moves (throttled to >7px so we don't reallocate the surface every
          * pixel) -- the content resizes as you drag, not just on release. */

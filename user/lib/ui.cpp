@@ -190,12 +190,14 @@ void Window::redraw() {
         ugfx_fill(c.x, c.y, c.w, c.h, bg);          /* repaint just the dirty band */
         for (int i = 0; i < kids.size(); i++)
             if (kids[i]->visible && rect_overlap(kids[i]->r, c)) kids[i]->draw();
+        draw_overlay();                             /* app chrome over the widgets (still clipped to c) */
         ugfx_clip_none();
         win_present_rect(id, c.x, c.y, c.w, c.h);   /* compositor blits only this rect */
     } else {
         ugfx_clip_none();
         ugfx_clear(bg);
         for (int i = 0; i < kids.size(); i++) if (kids[i]->visible) kids[i]->draw();
+        draw_overlay();
         win_present(id);
     }
     dmg_full = false; dmg = { 0, 0, 0, 0 };         /* start a fresh accumulation next frame */

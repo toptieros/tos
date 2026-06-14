@@ -740,6 +740,12 @@ public:
         int row = (y - r.y + top) / tile_h, i = row * c + col;
         return (i >= 0 && i < count) ? i : -1;
     }
+    /* tile i's on-screen rect (scroll-adjusted) -- the same placement draw() uses, so a
+     * rubber-band marquee can hit-test every tile by 2D intersection. */
+    ui::Rect cell_rect(int i) const {
+        int c = cols(), col = i % c, row = i / c;
+        return { r.x + col * tile_w, r.y + row * tile_h - top, tile_w, tile_h };
+    }
     void draw() override {
         if (!visible) return;
         ugfx_fill(r.x, r.y, r.w, r.h, bg);
@@ -1007,6 +1013,11 @@ public:
         if (x < r.x || x >= r.x + r.w || y < strip_y() || y >= r.y + r.h) return -1;
         int i = (x - r.x + strip_x) / tile_w;
         return (i >= 0 && i < count) ? i : -1;
+    }
+    /* filmstrip thumb i's on-screen rect (scroll-adjusted) -- mirrors draw(), so the
+     * rubber-band marquee can intersect-test the strip. */
+    ui::Rect cell_rect(int i) const {
+        return { r.x + i * tile_w - strip_x, strip_y() + 4, tile_w, strip_h - 8 };
     }
     void draw() override {
         if (!visible) return;

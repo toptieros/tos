@@ -2197,20 +2197,52 @@ struct FilesApp : ui::Window {
     int drop_row  = -1;            /* list row highlighted as the drop target (-1 none) */
     int place_src = -1;            /* §7: the Favorites index a press landed on (reorder source) */
     int dnd_place = 0;             /* §7: a Places drag-reorder is the in-flight drag */
-    int  marq_y0  = -1;            /* rubber-band marquee anchor (client y); -1 = no marquee in flight */
-    bool marq_add = false;         /* the marquee unions with the prior selection (a modifier was held) */
+    /* ---- rubber-band marquee: a true 2D band in EVERY view (list / icon / gallery),
+     * the twin of the twm desktop's band (user/twm/desktop.c). A press on empty view
+     * space arms it; a drag grows the band and live-selects every entry whose on-screen
+     * cell it intersects; draw_overlay() paints the Dolphin-style accent rectangle. */
+    bool marq_on  = false;         /* a marquee is in flight */
+    bool marq_add = false;         /* union with the prior selection (a modifier was held at press) */
+    int  marq_x0 = 0, marq_y0 = 0; /* press anchor (client px) */
+    int  marq_x1 = 0, marq_y1 = 0; /* current drag point, clamped to the view */
+    struct filesel marq_base;      /* the selection at drag-start, for an additive rebuild */
     static bool same_str(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
-    /* The contiguous list rows whose cells intersect the client y-span [y0,y1] -- the
-     * rows a rubber-band marquee covers. Skips the synthetic ".." up-row; returns false
-     * if the band touches no real row (so it clears instead of selecting). */
-    bool marquee_band(int y0, int y1, int *a, int *b) const {
-        int lo = y0 < y1 ? y0 : y1, hi = y0 < y1 ? y1 : y0, aa = -1, bb = -1;
-        for (int i = has_up(); i < list.count; i++) {
-            int rt = list.r.y + (i - list.top) * list.row_h;
-            if (rt < hi && rt + list.row_h > lo) { if (aa < 0) aa = i; bb = i; }
-        }
-        if (aa < 0) return false;
-        *a = aa; *b = bb; return true;
+    static bool rrhit(ui::Rect a, ui::Rect b) {                 /* axis-aligned rect intersection */
+        return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    }
+    /* the active view's content rect (where a marquee may roam) */
+    ui::Rect view_rect() const { return view_mode == 1 ? grid.r : view_mode == 2 ? gal.r : list.r; }
+    /* display-row i's on-screen cell rect in WHATEVER view is active -- list row, icon
+     * tile, or gallery thumb -- so the band hit-tests by 2D intersection in every view. */
+    ui::Rect view_cell_rect(int i) const {
+        if (view_mode == 1) return grid.cell_rect(i);
+        if (view_mode == 2) return gal.cell_rect(i);
+        return { list.r.x, list.r.y + (i - list.top) * list.row_h, list.r.w, list.row_h };
+    }
+    /* the normalized band rect (anchor..current corners) */
+    ui::Rect marq_rect() const {
+        int x0 = marq_x0 < marq_x1 ? marq_x0 : marq_x1, y0 = marq_y0 < marq_y1 ? marq_y0 : marq_y1;
+        int x1 = marq_x0 > marq_x1 ? marq_x0 : marq_x1, y1 = marq_y0 > marq_y1 ? marq_y0 : marq_y1;
+        return { x0, y0, x1 - x0, y1 - y0 };
+    }
+    /* rebuild lsel from the drag-start set + every entry whose cell the band crosses (the
+     * synthetic ".." up-entry at index 0 is never marquee-selectable). */
+    void marquee_select() {
+        ui::Rect b = marq_rect();
+        lsel = marq_base;
+        for (int i = has_up(); i < list.count; i++)
+            if (rrhit(b, view_cell_rect(i))) fsel_band(&lsel, i, i, 1);
+        int last = -1; for (int i = 0; i < list.count; i++) if (fsel_has(&lsel, i)) last = i;
+        lsel.cursor = last; list.sel = grid.sel = gal.sel = last;
+        update_status(); invalidate();
+    }
+    /* the Dolphin-style rubber-band rectangle, painted over whichever view is active
+     * (the selection highlight itself is drawn per-cell by each view's is_sel). Drawn by
+     * the toolkit AFTER every child widget; matches the twm desktop band. */
+    void draw_overlay() override {
+        if (!marq_on) return;
+        ui::Rect b = marq_rect();
+        if (b.w > 0 && b.h > 0) ugfx_rubberband(b.x, b.y, b.w, b.h, TH_ACCENT);
     }
     /* the list display-row under a client point, or -1 (matches render_row's `i`) */
     int list_row_at(int x, int y) const {
@@ -2234,38 +2266,41 @@ struct FilesApp : ui::Window {
         dnd_armed = 0; dnd_place = 0;          /* fresh gesture: clear a stale arm (a drag that was
                                                 * Esc-cancelled or dropped on another window never
                                                 * sent us an on_drop to reset it). */
-        marq_y0 = -1;
-        /* a left press on empty list space (in the list view, below the last row, not a
-         * Favorites row) clears the selection and arms a rubber-band marquee a drag extends.
-         * Empty space only exists when the rows don't overflow, so this never fights the
-         * scrollbar (no thumb to drag when everything fits). An open overlay (context menu /
-         * Quick Look / in-place rename) floats over the list, so a click meant for it must
-         * NOT be read as an empty-space press -- that would wipe the selection it acts on. */
-        if ((btn & 1) && view_mode == 0 && place_src < 0 && !menu.open && !ql.open && !renaming &&
-            x >= list.r.x && x < list.r.x + list.r.w && y >= list.r.y && y < list.r.y + list.r.h &&
-            list_row_at(x, y) < 0) {
+        marq_on = false;
+        /* a left press on EMPTY view space (no row/tile under it, not a Favorites row)
+         * clears the selection and arms a rubber-band marquee a drag extends -- in list,
+         * icon, AND gallery views. Empty space only exists when the items don't overflow,
+         * so this never fights a scrollbar thumb. An open overlay (context menu / Quick
+         * Look / in-place rename) floats over the view, so a click meant for it must NOT
+         * be read as an empty-space press -- that would wipe the selection it acts on. */
+        ui::Rect vr = view_rect();
+        if ((btn & 1) && place_src < 0 && !menu.open && !ql.open && !renaming &&
+            x >= vr.x && x < vr.x + vr.w && y >= vr.y && y < vr.y + vr.h &&
+            view_row_at(x, y) < 0) {
             unsigned m = kbd_mods();
             marq_add = (m & (KMOD_CTRL | KMOD_SUPER | KMOD_SHIFT)) != 0;
-            marq_y0 = y;
+            marq_on = true; marq_x0 = marq_x1 = x; marq_y0 = marq_y1 = y;
+            if (lsel.n != list.count) fsel_init(&lsel, list.count);
             if (!marq_add) {                   /* a plain click on empty space clears (Finder) */
-                fsel_init(&lsel, list.count); list.sel = -1; details.has = false;
+                fsel_init(&lsel, list.count); list.sel = grid.sel = gal.sel = -1; details.has = false;
                 update_status(); invalidate();
             }
+            marq_base = lsel;                  /* snapshot for the additive rebuild */
         }
     }
     void on_release() override {
-        if (marq_y0 >= 0) {                     /* a marquee gesture ended: report the final set */
-            marq_y0 = -1;
+        if (marq_on) {                          /* a marquee gesture ended: report the final set */
+            marq_on = false; invalidate();      /* erase the band */
             print("[files] marquee "); printu((unsigned)fsel_count(&lsel)); print("\r\n");
         }
     }
     void on_drag(int x, int y, int btn) override {
-        (void)x; (void)btn;
-        if (marq_y0 >= 0) {                      /* extend the rubber-band marquee over the row band */
-            int a, b;
-            if (marquee_band(marq_y0, y, &a, &b)) { fsel_marquee(&lsel, a, b, marq_add); list.sel = lsel.cursor; }
-            else fsel_marquee(&lsel, -1, -1, marq_add);
-            update_status(); invalidate();
+        (void)btn;
+        if (marq_on) {                          /* grow the band; live-select intersecting cells */
+            ui::Rect vr = view_rect();          /* clamp the moving corner to the view */
+            marq_x1 = x < vr.x ? vr.x : (x >= vr.x + vr.w ? vr.x + vr.w - 1 : x);
+            marq_y1 = y < vr.y ? vr.y : (y >= vr.y + vr.h ? vr.y + vr.h - 1 : y);
+            marquee_select();
             return;
         }
         if (dnd_armed) return;

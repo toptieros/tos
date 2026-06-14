@@ -77,7 +77,12 @@ of them. The structure now enforces the policy:
   drive ONE ad-hoc boot (a `tests/repro_*.py` script or a manual harness run) to see it
   work, screenshot it if it's visible — and that's it. The boot that verified the
   feature does **not** get enshrined in the suite; at most the feature earns an assert
-  folded into an existing smoke journey.
+  folded into an existing smoke journey. Those drivers are **scratch, not source**:
+  `tests/repro_*.py` (and `tests/scratch_*.py`) are **git-ignored** so they never
+  accumulate in the tree. If a repro proves so valuable you keep reaching for it, that's
+  the signal to promote its assertion into `selftest` or an existing smoke journey —
+  not to commit the throwaway. (Past CHANGELOG entries naming a `repro_*.py` are a
+  historical record of how something was verified, not a pointer to a live file.)
 
 ## The e2e smoke/journey set (what stays in QEMU)
 
